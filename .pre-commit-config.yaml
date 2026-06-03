@@ -1,0 +1,27 @@
+repos:
+  # Ruff: lint (with autofix) + format
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # Mypy and bandit run from the project venv via uv so they see all deps
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        types: [python]
+        args: [src/]
+        pass_filenames: false
+
+      - id: bandit
+        name: bandit
+        entry: uv run bandit
+        language: system
+        types: [python]
+        args: [-c, pyproject.toml, -r, src/]
+        pass_filenames: false
