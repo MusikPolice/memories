@@ -25,3 +25,10 @@ async def test_all_tables_created(db: aiosqlite.Connection) -> None:
 
 async def test_init_is_idempotent(db: aiosqlite.Connection) -> None:
     await init_db(db)
+
+
+async def test_foreign_keys_enabled(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute("PRAGMA foreign_keys")
+    row = await cursor.fetchone()
+    assert row is not None
+    assert row[0] == 1

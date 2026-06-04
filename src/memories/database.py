@@ -120,6 +120,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_turn
 async def init_db(db: aiosqlite.Connection) -> None:
     """Create all tables and set the row factory on *db*."""
     db.row_factory = aiosqlite.Row
+    await db.execute("PRAGMA foreign_keys = ON")
     await db.executescript(_DDL)
 
 
