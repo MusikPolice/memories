@@ -24,11 +24,11 @@ async def run_turn(
     user_content: str,
     ollama: OllamaClient,
     think: bool = False,
-) -> tuple[str, str]:
+) -> tuple[str, str, int]:
     """Execute one conversation turn.
 
-    Returns ``(response_content, thinking_text)``.  *thinking_text* is the
-    model's reasoning monologue; empty string if the model did not think.
+    Returns ``(response_content, thinking_text, turn_id)``.  *thinking_text* is
+    the model's reasoning monologue; empty string if the model did not think.
     """
     session = await get_session(db, session_id)
     if session is None:
@@ -74,4 +74,4 @@ async def run_turn(
         turn_id=turn_id,
     )
 
-    return content, thinking
+    return content, thinking, turn_id

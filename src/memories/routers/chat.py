@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from memories.database import get_session, next_turn_id
+from memories.database import get_session
 from memories.deps import get_db, get_ollama
 from memories.services.chat_service import run_turn
 from memories.services.ollama_client import OllamaClient
@@ -37,11 +37,11 @@ async def send_message(
     if session.ended_at is not None:
         raise HTTPException(status_code=409, detail="Session has ended")
 
-    turn_id = await next_turn_id(db, session_id)
-
     async def _stream() -> AsyncGenerator[str, None]:
         yield 'event: status\ndata: {"state": "generating"}\n\n'
-        content, thinking = await run_turn(db, session_id, body.content, ollama, think=body.think)
+        content, thinking, turn_id = await run_turn(
+            db, session_id, body.content, ollama, think=body.think
+        )
         if thinking:
             yield f"event: thinking\ndata: {json.dumps({'content': thinking})}\n\n"
         data = json.dumps({"role": "assistant", "content": content, "turn_id": turn_id})
