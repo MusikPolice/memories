@@ -151,6 +151,39 @@ async def test_ollama_receives_prior_history(
     assert "assistant" in roles
 
 
+async def test_thinking_event_emitted_when_model_thinks(
+    client: AsyncClient, character: Character, session: Session
+) -> None:
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            return_value=httpx.Response(
+                200,
+                content=make_ollama_ndjson(
+                    "My answer.", thinking="Let me consider this carefully."
+                ),
+            )
+        )
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages", json={"content": "Hello"}
+        )
+    events = _parse_sse(response.text)
+    thinking_events = [e for e in events if e.get("event") == "thinking"]
+    assert len(thinking_events) == 1
+    assert json.loads(thinking_events[0]["data"])["content"] == "Let me consider this carefully."
+
+
+async def test_thinking_event_absent_when_no_thinking(
+    client: AsyncClient, character: Character, session: Session
+) -> None:
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(return_value=_mock_ok())
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages", json={"content": "Hello"}
+        )
+    events = _parse_sse(response.text)
+    assert not any(e.get("event") == "thinking" for e in events)
+
+
 async def test_send_to_unknown_session_404(client: AsyncClient) -> None:
     response = await client.post("/api/sessions/9999/messages", json={"content": "Hello"})
     assert response.status_code == 404

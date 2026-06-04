@@ -68,6 +68,28 @@ async def test_special_tokens_truncate_content(ollama: OllamaClient) -> None:
 
 
 @respx.mock
+async def test_thinking_returned_in_metadata(ollama: OllamaClient) -> None:
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_ollama_ndjson("The answer is 42.", thinking="Let me reason through this."),
+        )
+    )
+    content, metadata = await ollama.chat("qwen3:7b", _SAMPLE_MESSAGES)
+    assert content == "The answer is 42."
+    assert metadata.get("thinking") == "Let me reason through this."
+
+
+@respx.mock
+async def test_thinking_empty_string_when_absent(ollama: OllamaClient) -> None:
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=make_ollama_ndjson("Hello."))
+    )
+    _, metadata = await ollama.chat("qwen3:7b", _SAMPLE_MESSAGES)
+    assert metadata.get("thinking") == ""
+
+
+@respx.mock
 async def test_returns_final_chunk_metadata(ollama: OllamaClient) -> None:
     respx.post(_CHAT_URL).mock(
         return_value=httpx.Response(

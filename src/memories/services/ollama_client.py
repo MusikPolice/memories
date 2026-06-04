@@ -44,11 +44,14 @@ class OllamaClient:
         contains ``prompt_eval_count`` and ``eval_count`` for token tracking.
         """
         url = f"{self.base_url}/api/chat"
+        # ``think`` must be at the top level of the request — NOT inside
+        # ``options``.  Placing it inside options is silently ignored by Ollama,
+        # leaving thinking enabled regardless of the value passed.
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": True,
-            "options": {"think": False},
+            "think": True,
         }
         try:
             async with (
@@ -60,18 +63,23 @@ class OllamaClient:
                 if response.status_code != 200:
                     raise OllamaResponseError(f"Ollama returned HTTP {response.status_code}")
                 parts: list[str] = []
+                thinking_parts: list[str] = []
                 last_chunk: dict[str, Any] = {}
                 async for line in response.aiter_lines():
                     if line.strip():
                         chunk: dict[str, Any] = json.loads(line)
                         msg = chunk.get("message", {})
                         if isinstance(msg, dict):
+                            thought: str = msg.get("thinking", "") or ""
+                            if thought:
+                                thinking_parts.append(thought)
                             token: str = msg.get("content", "") or ""
                             if token:
                                 parts.append(token)
                         last_chunk = chunk
                 raw = "".join(parts)
                 m = _SPECIAL_TOKEN_RE.search(raw)
+                last_chunk["thinking"] = "".join(thinking_parts)
                 return (raw[: m.start()].rstrip() if m else raw), last_chunk
         except httpx.ConnectError as exc:
             raise OllamaConnectionError(str(exc)) from exc

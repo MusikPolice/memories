@@ -23,8 +23,12 @@ async def run_turn(
     session_id: int,
     user_content: str,
     ollama: OllamaClient,
-) -> str:
-    """Execute one conversation turn and return the assistant response."""
+) -> tuple[str, str]:
+    """Execute one conversation turn.
+
+    Returns ``(response_content, thinking_text)``.  *thinking_text* is the
+    model's reasoning monologue; empty string if the model did not think.
+    """
     session = await get_session(db, session_id)
     if session is None:
         raise NotFoundError(f"Session {session_id} not found")
@@ -56,7 +60,8 @@ async def run_turn(
     messages.append({"role": "user", "content": user_content})
 
     model = character.current_model_name or character.modelfile_base
-    content, _ = await ollama.chat(model, messages)
+    content, metadata = await ollama.chat(model, messages)
+    thinking: str = str(metadata.get("thinking", ""))
 
     await store_message(
         db,
@@ -68,4 +73,4 @@ async def run_turn(
         turn_id=turn_id,
     )
 
-    return content
+    return content, thinking

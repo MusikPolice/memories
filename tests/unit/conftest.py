@@ -15,12 +15,28 @@ from memories.services.ollama_client import OllamaClient
 OLLAMA_BASE_URL = "http://test-ollama:11434"
 
 
-def make_ollama_ndjson(*chunks: str, prompt_eval_count: int = 10, eval_count: int = 5) -> bytes:
+def make_ollama_ndjson(
+    *chunks: str,
+    prompt_eval_count: int = 10,
+    eval_count: int = 5,
+    thinking: str = "",
+) -> bytes:
     """Build a minimal Ollama NDJSON streaming body from content *chunks*.
 
-    The last chunk carries ``done: true`` and the token-count metadata fields.
+    If *thinking* is provided a thinking chunk is prepended before the content
+    chunks, matching the format Ollama uses for thinking-enabled models.
+    The last content chunk carries ``done: true`` and the token-count metadata.
     """
     lines: list[str] = []
+    if thinking:
+        lines.append(
+            json.dumps(
+                {
+                    "message": {"role": "assistant", "content": "", "thinking": thinking},
+                    "done": False,
+                }
+            )
+        )
     for i, text in enumerate(chunks):
         is_last = i == len(chunks) - 1
         obj: dict[str, object] = {
