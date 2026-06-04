@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Memories</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, sans-serif;
+      font-size: 14px;
+      background: #f5f5f5;
+      color: #1a1a1a;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #app { display: flex; flex-direction: column; height: 100vh; }
+
+    /* ── Picker overlay ── */
+    .picker-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.4);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 100;
+    }
+    .picker-card {
+      background: #fff; border-radius: 8px; padding: 24px; min-width: 320px;
+      box-shadow: 0 4px 24px rgba(0,0,0,.2);
+    }
+    .picker-card h2 { margin-bottom: 16px; }
+    .picker-card button {
+      display: block; width: 100%; text-align: left;
+      padding: 10px 14px; margin-bottom: 8px;
+      border: 1px solid #ddd; border-radius: 6px;
+      background: #fff; cursor: pointer; font-size: 14px;
+    }
+    .picker-card button:hover { background: #f0f4ff; }
+
+    /* ── Main layout ── */
+    .layout { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Chat panel ── */
+    .chat-panel {
+      flex: 1; display: flex; flex-direction: column;
+      border-right: 1px solid #ddd;
+    }
+    .chat-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 16px; background: #fff; border-bottom: 1px solid #ddd;
+      font-weight: 600;
+    }
+    .chat-messages {
+      flex: 1; overflow-y: auto;
+      padding: 16px; display: flex; flex-direction: column; gap: 12px;
+    }
+    .msg { max-width: 70%; padding: 10px 14px; border-radius: 12px; line-height: 1.5; }
+    .msg.user  { align-self: flex-end; background: #3b5bdb; color: #fff; border-radius: 12px 12px 2px 12px; }
+    .msg.assistant { align-self: flex-start; background: #fff; border: 1px solid #ddd; border-radius: 12px 12px 12px 2px; }
+    .msg.generating { color: #888; font-style: italic; }
+
+    .chat-input-row {
+      display: flex; gap: 8px; padding: 12px 16px;
+      background: #fff; border-top: 1px solid #ddd;
+    }
+    .chat-input-row input {
+      flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;
+    }
+    .chat-input-row input:focus { outline: none; border-color: #3b5bdb; }
+    .chat-input-row button {
+      padding: 8px 18px; background: #3b5bdb; color: #fff;
+      border: none; border-radius: 6px; cursor: pointer; font-size: 14px;
+    }
+    .chat-input-row button:disabled { background: #aaa; cursor: default; }
+
+    /* ── Facts panel ── */
+    .facts-panel {
+      width: 280px; display: flex; flex-direction: column;
+      background: #fff;
+    }
+    .facts-header {
+      padding: 12px 16px; font-weight: 600; border-bottom: 1px solid #ddd;
+    }
+    .facts-list { flex: 1; overflow-y: auto; padding: 12px 16px; }
+    .fact-row {
+      display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
+    }
+    .fact-row .fact-key { font-weight: 500; min-width: 80px; font-size: 13px; }
+    .fact-row input {
+      flex: 1; padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;
+    }
+    .fact-row input:focus { outline: none; border-color: #3b5bdb; }
+    .fact-row .btn-del {
+      padding: 3px 8px; background: #fff; border: 1px solid #faa; color: #c00;
+      border-radius: 4px; cursor: pointer; font-size: 12px;
+    }
+    .fact-row .btn-del:hover { background: #fdd; }
+    .fact-row .btn-save {
+      padding: 3px 8px; background: #fff; border: 1px solid #adf; color: #06c;
+      border-radius: 4px; cursor: pointer; font-size: 12px;
+    }
+
+    .add-fact-form { padding: 12px 16px; border-top: 1px solid #ddd; }
+    .add-fact-form input {
+      width: 100%; padding: 6px 10px; margin-bottom: 6px;
+      border: 1px solid #ddd; border-radius: 4px; font-size: 13px;
+    }
+    .add-fact-form input:focus { outline: none; border-color: #3b5bdb; }
+    .add-fact-form button {
+      width: 100%; padding: 7px; background: #3b5bdb; color: #fff;
+      border: none; border-radius: 4px; cursor: pointer; font-size: 13px;
+    }
+    .add-fact-form button:hover { background: #2f4cc0; }
+
+    .facts-footer { padding: 12px 16px; border-top: 1px solid #ddd; }
+    .btn-end {
+      width: 100%; padding: 7px; background: #fff; color: #c00;
+      border: 1px solid #faa; border-radius: 4px; cursor: pointer; font-size: 13px;
+    }
+    .btn-end:hover { background: #fdd; }
+    .btn-end:disabled { opacity: .5; cursor: default; }
+
+    .error-msg { color: #c00; font-size: 12px; margin-top: 4px; }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Character picker -->
+  <div v-if="showPicker" class="picker-overlay">
+    <div class="picker-card">
+      <h2>Choose a character</h2>
+      <button v-for="ch in characters" :key="ch.id" @click="pickCharacter(ch)">
+        {{ ch.name }} <small style="color:#888">({{ ch.modelfile_base }})</small>
+      </button>
+      <p v-if="characters.length === 0" style="color:#888">No characters found.</p>
+    </div>
+  </div>
+
+  <!-- Main UI -->
+  <div v-else class="layout">
+
+    <!-- Chat -->
+    <div class="chat-panel">
+      <div class="chat-header">
+        <span>{{ currentCharacter?.name ?? 'Chat' }}</span>
+        <span style="font-size:18px;cursor:pointer" title="Session ended" v-if="sessionEnded">🔒</span>
+      </div>
+      <div class="chat-messages" ref="messagesEl">
+        <div
+          v-for="(msg, i) in messages"
+          :key="i"
+          :class="['msg', msg.role]"
+        >{{ msg.content }}</div>
+        <div v-if="generating" class="msg generating">generating…</div>
+      </div>
+      <div class="chat-input-row">
+        <input
+          v-model="inputText"
+          placeholder="Type a message…"
+          :disabled="sending || sessionEnded"
+          @keyup.enter="sendMessage"
+          ref="inputEl"
+        />
+        <button :disabled="sending || sessionEnded || !inputText.trim()" @click="sendMessage">
+          {{ sending ? '…' : 'Send' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Facts sidebar -->
+    <div class="facts-panel">
+      <div class="facts-header">Facts</div>
+      <div class="facts-list">
+        <div v-for="fact in facts" :key="fact.id" class="fact-row">
+          <span class="fact-key">{{ fact.key }}</span>
+          <input
+            v-model="fact._editValue"
+            @keyup.enter="saveFact(fact)"
+            :title="fact.key"
+          />
+          <button class="btn-save" @click="saveFact(fact)" title="Save">✓</button>
+          <button class="btn-del" @click="deleteFact(fact)" title="Delete">✕</button>
+        </div>
+        <p v-if="facts.length === 0" style="color:#aaa;font-size:13px">No facts yet.</p>
+      </div>
+      <div class="add-fact-form">
+        <input v-model="newKey" placeholder="key" />
+        <input v-model="newValue" placeholder="value" @keyup.enter="addFact" />
+        <button @click="addFact">+ Add Fact</button>
+        <p v-if="factError" class="error-msg">{{ factError }}</p>
+      </div>
+      <div class="facts-footer">
+        <button class="btn-end" :disabled="sessionEnded" @click="endSession">
+          {{ sessionEnded ? 'Session ended' : 'End Session' }}
+        </button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const { createApp, ref, nextTick } = Vue;
+
+createApp({
+  setup() {
+    const showPicker = ref(true);
+    const characters = ref([]);
+    const currentCharacter = ref(null);
+    const sessionId = ref(null);
+    const messages = ref([]);
+    const facts = ref([]);
+    const inputText = ref('');
+    const sending = ref(false);
+    const generating = ref(false);
+    const sessionEnded = ref(false);
+    const newKey = ref('');
+    const newValue = ref('');
+    const factError = ref('');
+    const messagesEl = ref(null);
+    const inputEl = ref(null);
+
+    async function loadCharacters() {
+      const r = await fetch('/api/characters/');
+      characters.value = await r.json();
+      if (characters.value.length === 1) {
+        pickCharacter(characters.value[0]);
+      }
+    }
+
+    async function pickCharacter(ch) {
+      currentCharacter.value = ch;
+      const r = await fetch('/api/sessions/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ character_id: ch.id }),
+      });
+      const sess = await r.json();
+      sessionId.value = sess.id;
+      showPicker.value = false;
+      await loadFacts();
+      nextTick(() => inputEl.value?.focus());
+    }
+
+    async function loadFacts() {
+      if (!currentCharacter.value) return;
+      const r = await fetch(`/api/characters/${currentCharacter.value.id}/facts`);
+      const raw = await r.json();
+      facts.value = raw.map(f => ({ ...f, _editValue: f.value }));
+    }
+
+    async function addFact() {
+      factError.value = '';
+      if (!newKey.value.trim() || !newValue.value.trim()) return;
+      const r = await fetch(`/api/characters/${currentCharacter.value.id}/facts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: newKey.value.trim(), value: newValue.value.trim() }),
+      });
+      if (r.status === 409) {
+        factError.value = `Fact '${newKey.value}' already exists.`;
+        return;
+      }
+      newKey.value = '';
+      newValue.value = '';
+      await loadFacts();
+    }
+
+    async function saveFact(fact) {
+      await fetch(`/api/characters/${currentCharacter.value.id}/facts/${fact.key}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: fact._editValue }),
+      });
+      await loadFacts();
+    }
+
+    async function deleteFact(fact) {
+      await fetch(`/api/characters/${currentCharacter.value.id}/facts/${fact.key}`, {
+        method: 'DELETE',
+      });
+      await loadFacts();
+    }
+
+    async function endSession() {
+      await fetch(`/api/sessions/${sessionId.value}/end`, { method: 'POST' });
+      sessionEnded.value = true;
+    }
+
+    async function sendMessage() {
+      const text = inputText.value.trim();
+      if (!text || sending.value || sessionEnded.value) return;
+      inputText.value = '';
+      sending.value = true;
+      generating.value = true;
+      messages.value.push({ role: 'user', content: text });
+      await scrollToBottom();
+
+      try {
+        const response = await fetch(`/api/sessions/${sessionId.value}/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: text }),
+        });
+
+        if (!response.ok) {
+          messages.value.push({ role: 'assistant', content: `[Error ${response.status}]` });
+          return;
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const blocks = buffer.split('\n\n');
+          buffer = blocks.pop() ?? '';
+
+          for (const block of blocks) {
+            const lines = block.split('\n');
+            let eventName = '';
+            let dataStr = '';
+            for (const line of lines) {
+              if (line.startsWith('event: ')) eventName = line.slice(7);
+              if (line.startsWith('data: ')) dataStr = line.slice(6);
+            }
+            if (eventName === 'message' && dataStr) {
+              const payload = JSON.parse(dataStr);
+              generating.value = false;
+              messages.value.push({ role: 'assistant', content: payload.content });
+              await scrollToBottom();
+            }
+          }
+        }
+      } finally {
+        generating.value = false;
+        sending.value = false;
+        await nextTick();
+        inputEl.value?.focus();
+      }
+    }
+
+    async function scrollToBottom() {
+      await nextTick();
+      if (messagesEl.value) {
+        messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
+      }
+    }
+
+    loadCharacters();
+
+    return {
+      showPicker, characters, currentCharacter, sessionId,
+      messages, facts, inputText, sending, generating, sessionEnded,
+      newKey, newValue, factError, messagesEl, inputEl,
+      pickCharacter, addFact, saveFact, deleteFact, endSession, sendMessage,
+    };
+  },
+}).mount('#app');
+</script>
+</body>
+</html>
