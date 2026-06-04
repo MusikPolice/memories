@@ -47,7 +47,9 @@ class OllamaClient:
         }
         try:
             async with (
-                httpx.AsyncClient() as http,
+                httpx.AsyncClient(
+                    timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0)
+                ) as http,
                 http.stream("POST", url, json=payload) as response,
             ):
                 if response.status_code != 200:
