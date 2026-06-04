@@ -13,7 +13,7 @@ from memories.database import (
     next_turn_id,
     store_message,
 )
-from memories.exceptions import NotFoundError
+from memories.exceptions import NotFoundError, SessionEndedError
 from memories.services.ollama_client import OllamaClient
 from memories.services.prompt_builder import build_system_prompt
 
@@ -34,7 +34,7 @@ async def run_turn(
     if session is None:
         raise NotFoundError(f"Session {session_id} not found")
     if session.ended_at is not None:
-        raise NotFoundError(f"Session {session_id} has ended")
+        raise SessionEndedError(f"Session {session_id} has ended")
 
     character = await get_character(db, session.character_id)
     assert character is not None

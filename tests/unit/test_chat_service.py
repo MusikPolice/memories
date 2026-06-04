@@ -16,7 +16,7 @@ import pytest
 import respx
 
 from memories.database import create_fact, get_messages
-from memories.exceptions import NotFoundError
+from memories.exceptions import NotFoundError, SessionEndedError
 from memories.models import Character, Session
 from memories.services.chat_service import run_turn
 from memories.services.ollama_client import OllamaClient, OllamaConnectionError
@@ -175,5 +175,5 @@ async def test_run_turn_raises_on_ended_session(
     from memories.database import end_session
 
     await end_session(db, session.id)
-    with pytest.raises(NotFoundError):
+    with pytest.raises(SessionEndedError):
         await run_turn(db, session.id, "Hello", ollama)
