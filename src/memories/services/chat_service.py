@@ -23,6 +23,7 @@ async def run_turn(
     session_id: int,
     user_content: str,
     ollama: OllamaClient,
+    think: bool = False,
 ) -> tuple[str, str]:
     """Execute one conversation turn.
 
@@ -60,7 +61,7 @@ async def run_turn(
     messages.append({"role": "user", "content": user_content})
 
     model = character.current_model_name or character.modelfile_base
-    content, metadata = await ollama.chat(model, messages)
+    content, metadata = await ollama.chat(model, messages, think=think)
     thinking: str = str(metadata.get("thinking", ""))
 
     await store_message(

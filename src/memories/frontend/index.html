@@ -93,6 +93,17 @@
     }
     .chat-input-row button:disabled { background: #aaa; cursor: default; }
 
+    .think-toggle {
+      display: flex; align-items: center; gap: 5px;
+      padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px;
+      background: #fff; cursor: pointer; font-size: 13px; color: #555;
+      white-space: nowrap; user-select: none;
+    }
+    .think-toggle.active {
+      border-color: #7c5cbf; background: #f3eeff; color: #7c5cbf;
+    }
+    .think-toggle input[type="checkbox"] { display: none; }
+
     /* ── Facts panel ── */
     .facts-panel {
       width: 280px; display: flex; flex-direction: column;
@@ -187,6 +198,10 @@
           @keyup.enter="sendMessage"
           ref="inputEl"
         />
+        <label :class="['think-toggle', { active: thinkEnabled }]" title="Toggle model thinking">
+          <input type="checkbox" v-model="thinkEnabled" />
+          &#129504; Think
+        </label>
         <button :disabled="sending || sessionEnded || !inputText.trim()" @click="sendMessage">
           {{ sending ? '…' : 'Send' }}
         </button>
@@ -240,6 +255,7 @@ createApp({
     const sending = ref(false);
     const generating = ref(false);
     const sessionEnded = ref(false);
+    const thinkEnabled = ref(false);
     const newKey = ref('');
     const newValue = ref('');
     const factError = ref('');
@@ -326,7 +342,7 @@ createApp({
         const response = await fetch(`/api/sessions/${sessionId.value}/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: text }),
+          body: JSON.stringify({ content: text, think: thinkEnabled.value }),
         });
 
         if (!response.ok) {
@@ -387,7 +403,7 @@ createApp({
     return {
       showPicker, characters, currentCharacter, sessionId,
       messages, facts, inputText, sending, generating, sessionEnded,
-      newKey, newValue, factError, messagesEl, inputEl,
+      thinkEnabled, newKey, newValue, factError, messagesEl, inputEl,
       pickCharacter, addFact, saveFact, deleteFact, endSession, sendMessage,
     };
   },

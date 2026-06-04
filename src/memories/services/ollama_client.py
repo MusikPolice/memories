@@ -37,21 +37,21 @@ class OllamaClient:
         self,
         model: str,
         messages: list[dict[str, str]],
+        think: bool = False,
     ) -> tuple[str, dict[str, Any]]:
         """Send a chat request and return ``(assembled_content, final_chunk)``.
 
         *final_chunk* is the last NDJSON object from the stream, which
         contains ``prompt_eval_count`` and ``eval_count`` for token tracking.
+        ``think`` must be at the top level of the request body — NOT inside
+        ``options`` — which Ollama silently ignores.
         """
         url = f"{self.base_url}/api/chat"
-        # ``think`` must be at the top level of the request — NOT inside
-        # ``options``.  Placing it inside options is silently ignored by Ollama,
-        # leaving thinking enabled regardless of the value passed.
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": True,
-            "think": True,
+            "think": think,
         }
         try:
             async with (

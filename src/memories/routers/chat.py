@@ -24,6 +24,7 @@ _Ollama = Annotated[OllamaClient, Depends(get_ollama)]
 
 class _SendBody(BaseModel):
     content: str
+    think: bool = False
 
 
 @router.post("/{session_id}/messages")
@@ -40,7 +41,7 @@ async def send_message(
 
     async def _stream() -> AsyncGenerator[str, None]:
         yield 'event: status\ndata: {"state": "generating"}\n\n'
-        content, thinking = await run_turn(db, session_id, body.content, ollama)
+        content, thinking = await run_turn(db, session_id, body.content, ollama, think=body.think)
         if thinking:
             yield f"event: thinking\ndata: {json.dumps({'content': thinking})}\n\n"
         data = json.dumps({"role": "assistant", "content": content, "turn_id": turn_id})
