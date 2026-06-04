@@ -16,6 +16,7 @@ from memories.services.ollama_client import (
 from tests.unit.conftest import OLLAMA_BASE_URL, make_ollama_ndjson
 
 _CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
+_GENERATE_URL = f"{OLLAMA_BASE_URL}/api/generate"
 _SAMPLE_MESSAGES = [{"role": "user", "content": "Hello"}]
 
 
@@ -87,3 +88,31 @@ async def test_raises_ollama_response_error_on_non_200(
     respx.post(_CHAT_URL).mock(return_value=httpx.Response(500, content=b"Internal Server Error"))
     with pytest.raises(OllamaResponseError):
         await ollama.chat("qwen3:7b", _SAMPLE_MESSAGES)
+
+
+# ---------------------------------------------------------------------------
+# warmup
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_warmup_posts_to_generate_endpoint(ollama: OllamaClient) -> None:
+    route = respx.post(_GENERATE_URL).mock(return_value=httpx.Response(200, json={"done": True}))
+    await ollama.warmup("qwen3:7b")
+    assert route.called
+    body = json.loads(route.calls[0].request.content)
+    assert body["model"] == "qwen3:7b"
+
+
+@respx.mock
+async def test_warmup_raises_connection_error(ollama: OllamaClient) -> None:
+    respx.post(_GENERATE_URL).mock(side_effect=httpx.ConnectError("refused"))
+    with pytest.raises(OllamaConnectionError):
+        await ollama.warmup("qwen3:7b")
+
+
+@respx.mock
+async def test_warmup_raises_response_error_on_non_200(ollama: OllamaClient) -> None:
+    respx.post(_GENERATE_URL).mock(return_value=httpx.Response(404, content=b"Not Found"))
+    with pytest.raises(OllamaResponseError):
+        await ollama.warmup("qwen3:7b")
