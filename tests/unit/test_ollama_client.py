@@ -59,6 +59,15 @@ async def test_chunks_are_concatenated(ollama: OllamaClient) -> None:
 
 
 @respx.mock
+async def test_special_tokens_truncate_content(ollama: OllamaClient) -> None:
+    """Content after the first special token (and the token itself) is dropped."""
+    raw = "Good answer.<|endoftext|><|im_start|>user Repeated text"
+    respx.post(_CHAT_URL).mock(return_value=httpx.Response(200, content=make_ollama_ndjson(raw)))
+    content, _ = await ollama.chat("qwen3:7b", _SAMPLE_MESSAGES)
+    assert content == "Good answer."
+
+
+@respx.mock
 async def test_returns_final_chunk_metadata(ollama: OllamaClient) -> None:
     respx.post(_CHAT_URL).mock(
         return_value=httpx.Response(

@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 import httpx
+
+# Matches chat-template control tokens that some models emit past their
+# natural stop point (e.g. qwen3 emitting <|endoftext|> then repeating).
+_SPECIAL_TOKEN_RE = re.compile(r"<\|[^|>]+\|>|</s>")
 
 
 class OllamaConnectionError(Exception):
@@ -65,7 +70,9 @@ class OllamaClient:
                             if token:
                                 parts.append(token)
                         last_chunk = chunk
-                return "".join(parts), last_chunk
+                raw = "".join(parts)
+                m = _SPECIAL_TOKEN_RE.search(raw)
+                return (raw[: m.start()].rstrip() if m else raw), last_chunk
         except httpx.ConnectError as exc:
             raise OllamaConnectionError(str(exc)) from exc
 
