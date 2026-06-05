@@ -182,13 +182,15 @@ async def run_turn(
         ungrounded_implications=ungrounded,
     )
 
-    # Auto-promote logical inferences with depth cap
+    # Auto-promote logical inferences with depth cap.
+    # Append each stored inference to the snapshot so subsequent depth
+    # computations in the same batch see the correct chain depth.
     if eval_result.verdict == "new_inference_logical":
         for inf in eval_result.new_inferences:
             depth = compute_depth(inf.source_inference_ids, inferences)
             if depth > MAX_INFERENCE_DEPTH:
                 continue
-            await create_inference(
+            stored = await create_inference(
                 db,
                 character_id=session.character_id,
                 statement=inf.statement,
@@ -198,6 +200,7 @@ async def run_turn(
                 inference_type=inf.inference_type,
                 depth=depth,
             )
+            inferences.append(stored)
 
     # Log decision
     violations_for_log = (

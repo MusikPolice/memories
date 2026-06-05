@@ -716,3 +716,55 @@ async def test_send_message_lazy_inference_exceeding_depth_not_stored(
 
     stored = await get_inferences(db, character.id)
     assert not any("Exceeds depth cap" in i.statement for i in stored)
+
+
+async def test_send_message_lazy_batch_second_inference_sees_first_in_depth_snapshot(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """Depth snapshot is refreshed per-inference in a batch so B cites A correctly.
+
+    Scenario: E exists at depth 1.  Evaluator returns [A (cites E, depth=2),
+    B (cites A, should be depth=3)].  Without the snapshot-append fix, B would
+    not see A in the snapshot and fall back to depth=1.
+    """
+    existing = await create_inference(
+        db, character_id=character.id, statement="E at depth 1", derivation="e", depth=1
+    )
+    # Determine A's expected database id so we can reference it in B's payload
+    row = await (await db.execute("SELECT COALESCE(MAX(id), 0) FROM inferences")).fetchone()
+    assert row is not None
+    a_expected_id = row[0] + 1
+
+    new_inf_payload = [
+        {
+            "inference_type": "logical",
+            "statement": "Inference A (cites E)",
+            "derivation": "from E",
+            "source_fact_ids": [],
+            "source_inference_ids": [existing.id],
+        },
+        {
+            "inference_type": "logical",
+            "statement": "Inference B (cites A)",
+            "derivation": "from A",
+            "source_fact_ids": [],
+            "source_inference_ids": [a_expected_id],
+        },
+    ]
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=_mock_turn(
+                "Statement.", "new_inference_logical", new_inferences=new_inf_payload
+            )
+        )
+        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Tell me"})
+
+    stored = await get_inferences(db, character.id)
+    inf_a = next(i for i in stored if "Inference A" in i.statement)
+    inf_b = next(i for i in stored if "Inference B" in i.statement)
+    assert inf_a.depth == 2
+    # Without the snapshot refresh, B's compute_depth would not find A and return 1
+    assert inf_b.depth == 3
