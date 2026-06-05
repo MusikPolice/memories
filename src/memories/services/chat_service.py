@@ -19,6 +19,7 @@ from memories.database import (
     store_message,
 )
 from memories.exceptions import NotFoundError, SessionEndedError
+from memories.models import Character, Fact
 from memories.services.evaluator import (
     ContradictionNotification,
     EvaluatorParseError,
@@ -29,6 +30,79 @@ from memories.services.ollama_client import OllamaClient
 from memories.services.prompt_builder import build_system_prompt
 
 MAX_CONTRADICTION_RETRIES: int = int(os.getenv("MAX_CONTRADICTION_RETRIES", "3"))
+
+
+async def run_contradiction_loop(
+    model: str,
+    base_messages: list[dict[str, str]],
+    character: Character,
+    facts: list[Fact],
+    user_content: str,
+    ollama: OllamaClient,
+    think: bool = False,
+    max_retries: int = MAX_CONTRADICTION_RETRIES,
+) -> tuple[str, str, EvaluatorResult]:
+    """Run the character LLM + evaluator, retrying until no contradictions remain.
+
+    Returns ``(content, thinking, eval_result)``.
+    ``eval_result.contradiction_notifications`` accumulates one entry per contradiction
+    found during the loop.  ``eval_result.max_retries_exceeded`` is set if the loop
+    exhausted all retries without a clean response.
+    """
+    contradiction_notifications: list[ContradictionNotification] = []
+    contradiction_hints: list[str] = []
+    content = ""
+    thinking = ""
+    eval_result: EvaluatorResult | None = None
+
+    for attempt in range(max_retries + 1):
+        messages = list(base_messages)
+        if contradiction_hints:
+            note = (
+                "[SYSTEM NOTE: Your previous response contained a contradiction. "
+                + "; ".join(contradiction_hints)
+                + ". Please revise your response so it does not contradict any established facts.]"
+            )
+            messages.append({"role": "user", "content": note})
+
+        raw_content, metadata = await ollama.chat(model, messages, think=think)
+        content = raw_content
+        thinking = str(metadata.get("thinking", ""))
+
+        try:
+            ev = await run_evaluator(
+                character,
+                facts,
+                user_content,
+                content,
+                ollama,
+                contradiction_hints=contradiction_hints or None,
+            )
+        except EvaluatorParseError:
+            ev = EvaluatorResult(
+                verdict="pass",
+                decision_log="(evaluator parse error — response delivered unverified)",
+            )
+
+        if ev.verdict != "contradiction":
+            eval_result = ev
+            break
+
+        for v in ev.violations:
+            if v.type == "contradiction":
+                contradiction_notifications.append(
+                    ContradictionNotification(iteration=attempt + 1, description=v.description)
+                )
+                contradiction_hints.append(v.description)
+
+        if attempt == max_retries:
+            ev.max_retries_exceeded = True
+            eval_result = ev
+            break
+
+    assert eval_result is not None
+    eval_result.contradiction_notifications = contradiction_notifications
+    return content, thinking, eval_result
 
 
 async def run_turn(
@@ -76,62 +150,9 @@ async def run_turn(
 
     model = character.current_model_name or character.modelfile_base
 
-    # --- contradiction loop ---
-    contradiction_notifications: list[ContradictionNotification] = []
-    contradiction_hints: list[str] = []
-    char_content = ""
-    char_thinking = ""
-    eval_result: EvaluatorResult | None = None
-
-    for attempt in range(MAX_CONTRADICTION_RETRIES + 1):
-        # Build messages for this attempt (append system note on retry)
-        char_messages = list(base_messages)
-        if contradiction_hints:
-            note = (
-                "[SYSTEM NOTE: Your previous response contained a contradiction. "
-                + "; ".join(contradiction_hints)
-                + ". Please revise your response so it does not contradict any established facts.]"
-            )
-            char_messages.append({"role": "user", "content": note})
-
-        raw_content, metadata = await ollama.chat(model, char_messages, think=think)
-        char_content = raw_content
-        char_thinking = str(metadata.get("thinking", ""))
-
-        try:
-            ev = await run_evaluator(
-                character,
-                facts,
-                user_content,
-                char_content,
-                ollama,
-                contradiction_hints=contradiction_hints or None,
-            )
-        except EvaluatorParseError:
-            ev = EvaluatorResult(
-                verdict="pass",
-                decision_log="(evaluator parse error — response delivered unverified)",
-            )
-
-        if ev.verdict != "contradiction":
-            eval_result = ev
-            break
-
-        # Collect contradiction notifications
-        for v in ev.violations:
-            if v.type == "contradiction":
-                contradiction_notifications.append(
-                    ContradictionNotification(iteration=attempt + 1, description=v.description)
-                )
-                contradiction_hints.append(v.description)
-
-        if attempt == MAX_CONTRADICTION_RETRIES:
-            ev.max_retries_exceeded = True
-            eval_result = ev
-            break
-
-    assert eval_result is not None
-    eval_result.contradiction_notifications = contradiction_notifications
+    char_content, char_thinking, eval_result = await run_contradiction_loop(
+        model, base_messages, character, facts, user_content, ollama, think=think
+    )
 
     # Determine ungrounded_implications to store with the assistant message
     ungrounded: list[dict[str, Any]] | None = None

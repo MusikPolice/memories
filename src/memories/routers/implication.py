@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,11 +16,12 @@ from memories.database import (
     get_messages,
     get_session,
     replace_message_content,
+    store_decision,
+    update_fact,
 )
 from memories.deps import get_db, get_ollama
 from memories.exceptions import NotFoundError
-from memories.services.chat_service import MAX_CONTRADICTION_RETRIES
-from memories.services.evaluator import run_evaluator
+from memories.services.chat_service import MAX_CONTRADICTION_RETRIES, run_contradiction_loop
 from memories.services.ollama_client import OllamaClient
 from memories.services.prompt_builder import build_system_prompt
 
@@ -49,7 +50,7 @@ async def accept_implication(
     body: _AcceptImplicationBody,
     db: _DB,
     ollama: _Ollama,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """Create a Fact from an implied value and regenerate the assistant response."""
     session = await get_session(db, session_id)
     if session is None:
@@ -66,13 +67,10 @@ async def accept_implication(
     if assistant_msg.ungrounded_implications is None:
         raise HTTPException(status_code=422, detail="Turn has no ungrounded implications")
 
-    # Create the fact
+    # Create the fact; update if the key already exists
     try:
         await create_fact(db, character_id=session.character_id, key=body.key, value=body.value)
-    except Exception:
-        # Fact may already exist (e.g. duplicate key) — update it instead
-        from memories.database import update_fact
-
+    except aiosqlite.IntegrityError:
         await update_fact(db, character_id=session.character_id, key=body.key, value=body.value)
 
     # Reload facts and rebuild context for regeneration
@@ -90,41 +88,19 @@ async def accept_implication(
 
     model = character.current_model_name or character.modelfile_base
 
-    # Regenerate with contradiction loop
-    contradiction_hints: list[str] = []
-    new_content = ""
-    for attempt in range(MAX_CONTRADICTION_RETRIES + 1):
-        regen_messages = list(history_messages)
-        if contradiction_hints:
-            note = (
-                "[SYSTEM NOTE: Your previous response contained a contradiction. "
-                + "; ".join(contradiction_hints)
-                + ". Please revise.]"
-            )
-            regen_messages.append({"role": "user", "content": note})
+    # Find the user message for this turn (evaluator context)
+    user_msg = next((m for m in messages if m.role == "user" and m.turn_id == turn_id), None)
+    user_text = user_msg.content if user_msg else ""
 
-        raw_content, _ = await ollama.chat(model, regen_messages)
-        new_content = raw_content
-
-        # Find the user message for this turn (for evaluator context)
-        user_msg = next((m for m in messages if m.role == "user" and m.turn_id == turn_id), None)
-        user_text = user_msg.content if user_msg else ""
-
-        ev = await run_evaluator(
-            character,
-            facts,
-            user_text,
-            new_content,
-            ollama,
-            contradiction_hints=contradiction_hints or None,
-        )
-        if ev.verdict != "contradiction":
-            break
-        for v in ev.violations:
-            if v.type == "contradiction":
-                contradiction_hints.append(v.description)
-        if attempt == MAX_CONTRADICTION_RETRIES:
-            break
+    new_content, _, ev = await run_contradiction_loop(
+        model,
+        history_messages,
+        character,
+        facts,
+        user_text,
+        ollama,
+        max_retries=MAX_CONTRADICTION_RETRIES,
+    )
 
     # Replace the stored message and clear the ungrounded flag
     try:
@@ -134,19 +110,25 @@ async def accept_implication(
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail="Turn not found") from exc
 
-    # Log a new decision for the regenerated response
-    from memories.database import store_decision
-
+    # Log a new decision using the actual verdict from the regenerated response
+    violations_for_log = [v.model_dump() for v in ev.violations] if ev.violations else None
     await store_decision(
         db,
         character_id=session.character_id,
         session_id=session_id,
         turn_id=turn_id,
-        reasoning="Response regenerated after implication accepted.",
-        verdict="pass",
+        reasoning=ev.decision_log or "Response regenerated after implication accepted.",
+        verdict=ev.verdict,
+        violations=violations_for_log,
     )
 
-    return {"content": new_content, "turn_id": turn_id}
+    response: dict[str, Any] = {"content": new_content, "turn_id": turn_id}
+    # If the regenerated response is itself ungrounded, surface that to the caller
+    if ev.verdict in ("implication", "new_inference_probabilistic"):
+        response["ungrounded"] = True
+        response["violations"] = [v.model_dump() for v in ev.violations]
+        response["new_inferences"] = [i.model_dump() for i in ev.new_inferences]
+    return response
 
 
 @router.post("/{session_id}/turns/{turn_id}/ignore-implication", status_code=204)
@@ -168,7 +150,7 @@ async def accept_inference(
     turn_id: int,
     body: _AcceptInferenceBody,
     db: _DB,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """Store a user-approved probabilistic inference."""
     session = await get_session(db, session_id)
     if session is None:
