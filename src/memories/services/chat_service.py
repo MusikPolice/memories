@@ -21,6 +21,7 @@ from memories.database import (
 from memories.exceptions import NotFoundError, SessionEndedError
 from memories.services.evaluator import (
     ContradictionNotification,
+    EvaluatorParseError,
     EvaluatorResult,
     run_evaluator,
 )
@@ -97,14 +98,20 @@ async def run_turn(
         char_content = raw_content
         char_thinking = str(metadata.get("thinking", ""))
 
-        ev = await run_evaluator(
-            character,
-            facts,
-            user_content,
-            char_content,
-            ollama,
-            contradiction_hints=contradiction_hints or None,
-        )
+        try:
+            ev = await run_evaluator(
+                character,
+                facts,
+                user_content,
+                char_content,
+                ollama,
+                contradiction_hints=contradiction_hints or None,
+            )
+        except EvaluatorParseError:
+            ev = EvaluatorResult(
+                verdict="pass",
+                decision_log="(evaluator parse error — response delivered unverified)",
+            )
 
         if ev.verdict != "contradiction":
             eval_result = ev

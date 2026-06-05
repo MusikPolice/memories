@@ -540,3 +540,21 @@ async def test_decision_stored_for_every_completed_turn(
         await run_turn(db, session.id, "Turn two", ollama)
     decisions = await get_decisions(db, session.id)
     assert len(decisions) == 2
+
+
+async def test_run_turn_falls_back_to_pass_on_evaluator_parse_error(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """EvaluatorParseError (e.g. unescaped quote in LLM output) must not crash the request."""
+    # Evaluator LLM returns JSON with an unescaped " — invalid JSON that json.loads rejects.
+    malformed_eval = make_ollama_ndjson('{"verdict": "pass", "decision_log": "height 5\'6" tall"}')
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[_mock_ok("I am fine."), httpx.Response(200, content=malformed_eval)]
+        )
+        content, _, _, result = await run_turn(db, session.id, "How are you?", ollama)
+
+    assert content == "I am fine."
+    assert result.verdict == "pass"
+    msgs = await get_messages(db, session.id)
+    assert any(m.role == "assistant" and m.content == "I am fine." for m in msgs)
