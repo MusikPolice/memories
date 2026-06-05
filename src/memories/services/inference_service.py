@@ -242,7 +242,9 @@ async def revalidate_single_inference(
         content, _ = await ollama.chat(model, messages, think=False, format="json")
         data = json.loads(_strip_fences(content))
         return bool(data.get("holds", True))
-    except Exception:
+    except (json.JSONDecodeError, ValueError, KeyError):
+        # Conservative: don't mark stale on parse ambiguity.
+        # OllamaConnectionError / OllamaResponseError propagate upward.
         return True
 
 
