@@ -88,7 +88,8 @@ def test_evaluator_prompt_includes_user_message() -> None:
 
 def test_evaluator_prompt_no_facts_uses_fallback_text() -> None:
     prompt = build_evaluator_prompt(_CHARACTER, [], _USER_MSG, _CHAR_RESPONSE)
-    assert "occupation" not in prompt
+    # The character's specific fact values must not appear in the facts section
+    assert "surgeon" not in prompt
     # Some indicator that there are no facts
     assert "none" in prompt.lower() or "no facts" in prompt.lower()
 
@@ -243,6 +244,38 @@ async def test_evaluator_raises_parse_error_on_non_json(ollama: OllamaClient) ->
     respx.post(_CHAT_URL).mock(
         return_value=httpx.Response(200, content=make_ollama_ndjson("This is not JSON at all."))
     )
+    with pytest.raises(EvaluatorParseError):
+        await run_evaluator(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, ollama)
+
+
+@respx.mock
+async def test_evaluator_strips_markdown_code_fence(ollama: OllamaClient) -> None:
+    # Some models wrap their JSON in ```json...``` despite being told to return only the object.
+    fenced = (
+        "```json\n"
+        + json.dumps(
+            {
+                "verdict": "pass",
+                "new_inferences": [],
+                "violations": [],
+                "decision_log": "Clean.",
+            }
+        )
+        + "\n```"
+    )
+    respx.post(_CHAT_URL).mock(return_value=httpx.Response(200, content=make_ollama_ndjson(fenced)))
+    result = await run_evaluator(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, ollama)
+    assert result.verdict == "pass"
+
+
+@respx.mock
+async def test_evaluator_raises_parse_error_on_unescaped_quote_in_string(
+    ollama: OllamaClient,
+) -> None:
+    # LLM produced a string containing a literal " (e.g. 5'6" height) — invalid JSON.
+    # The chat service catches EvaluatorParseError and falls back to a pass verdict.
+    raw = '{"verdict": "pass", "decision_log": "height 5\'6" tall"}'
+    respx.post(_CHAT_URL).mock(return_value=httpx.Response(200, content=make_ollama_ndjson(raw)))
     with pytest.raises(EvaluatorParseError):
         await run_evaluator(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, ollama)
 

@@ -87,11 +87,27 @@ def build_evaluator_prompt(
     parts.append(
         """
 ## Your Task
-Analyze the character's response against the established Facts above.
+Analyze the character's response. Every specific claim must be TRACEABLE to an
+established Fact or strictly derived from one.
+
+CRITICAL DISTINCTION: "consistent with facts" is NOT the same as "grounded in facts."
+A detail is only grounded if it can be directly looked up in the Facts list above or
+is a necessary logical consequence (e.g. deriving birth year from age).
+If the character INVENTED a specific detail — clothing, accessories, a hairstyle,
+a location, a relationship, a personal history item — that is an IMPLICATION,
+even if it seems plausible for this type of character.
+
+Examples:
+- Character says "I enjoy organising things" (occupation=PA) → new_inference_probabilistic
+- Character describes wearing a specific outfit not in the facts → implication
+- Character states a birthplace not in the facts → implication
+- Character says their eye colour contradicts the eye colour fact → contradiction
+- Character says "I'm 26" and the age fact is 26 → pass
+
 Return a JSON object with this exact structure:
 
 {
-  "verdict": "<pass|contradiction|implication|new_inference_logical|new_inference_probabilistic>",
+  "verdict": "<contradiction|implication|new_inference_logical|new_inference_probabilistic|pass>",
   "new_inferences": [
     {
       "inference_type": "logical | probabilistic",
@@ -104,19 +120,26 @@ Return a JSON object with this exact structure:
   "violations": [
     {
       "type": "contradiction | implication",
-      "description": "what was wrong",
+      "description": "what was wrong or what new fact was implied",
       "suggested_fact": {"key": "...", "value": "..."} or null
     }
   ],
   "decision_log": "One-sentence summary of why you chose this verdict."
 }
 
-Verdict definitions:
-- pass: response is grounded; no contradictions or unestablished details
-- contradiction: response contradicts an established Fact (highest priority — overrides all others)
-- implication: response asserts an unestablished, non-derivable detail (a new Fact is implied)
-- new_inference_logical: response asserts something derivable from Facts by logic (not yet stored)
-- new_inference_probabilistic: something likely but not strictly derivable from Facts
+Verdict definitions (evaluate in this priority order):
+1. contradiction: response directly contradicts an established Fact — HIGHEST PRIORITY
+2. implication: response asserts a specific new detail not in the Facts and not
+   strictly derivable (clothing, accessories, locations, names, relationships,
+   precise measurements not in facts) — even if plausible, if it was invented,
+   it is an implication; add one violation entry per distinct implied fact
+3. new_inference_logical: something strictly provable from Facts by pure logic
+4. new_inference_probabilistic: a broad behavioural/personality tendency likely
+   given the Facts but not a specific new assertion
+5. pass: ONLY when every specific claim in the response is a direct Fact or a
+   strict logical derivation — NOT merely "consistent with" or "plausible for"
+
+pass is the LAST resort. When in doubt, prefer implication or new_inference_*.
 
 Return only the JSON object, no other text."""
     )
@@ -152,7 +175,14 @@ async def run_evaluator(
     content, _ = await ollama.chat(model, messages, think=False, format="json")
 
     try:
-        data: dict[str, Any] = json.loads(content)
+        # Strip markdown code fences that some models emit despite being told not to
+        stripped = content.strip()
+        if stripped.startswith("```"):
+            lines = stripped.split("\n")
+            start = 1
+            end = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
+            stripped = "\n".join(lines[start:end]).strip()
+        data: dict[str, Any] = json.loads(stripped)
     except json.JSONDecodeError as exc:
         raise EvaluatorParseError(f"Evaluator returned non-JSON content: {content!r}") from exc
 
