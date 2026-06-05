@@ -36,6 +36,16 @@ uv run uvicorn memories.main:app --reload --host 0.0.0.0 --port 8000
 
 All commands use `uv run`. Install deps with `uv sync`.
 
+```bash
+# Run frontend JS tests (Vitest)
+npm test
+
+# Frontend tests in watch mode
+npm run test:watch
+```
+
+Install JS dev deps once with `npm install` (creates `node_modules/`, not committed).
+
 ## Architecture
 
 ### What this project is
@@ -80,6 +90,7 @@ src/memories/
     prompt_builder.py  # build_system_prompt(character, facts) → str
     chat_service.py    # run_turn(): load → build prompt → store user msg → call Ollama → store reply
   frontend/index.html  # Vue 3 CDN app (no build step); two-panel chat + facts sidechannel
+  frontend/chat.js     # Extracted pure logic (SSE parsing, notification builder, API helpers); tested
 ```
 
 ### Key patterns
@@ -111,11 +122,15 @@ tests/
     test_db_init.py
     test_*_repo.py         # one file per DB repository
     test_api_*.py          # one file per router
+  frontend/
+    chat.test.js           # Vitest tests for chat.js pure logic (SSE parsing, notifications, API helpers)
 ```
 
-Integration tests override both `get_db` (with the `db` fixture connection) and `get_ollama` (with a client pointing to `http://test-ollama-integration:11434`). Ollama HTTP calls are mocked with `respx`. No real Ollama instance required to run tests.
+**Python tests** (`uv run pytest`): Integration tests override both `get_db` (with the `db` fixture connection) and `get_ollama` (with a client pointing to `http://test-ollama-integration:11434`). Ollama HTTP calls are mocked with `respx`. No real Ollama instance required. Coverage threshold is 80% overall (enforced by `--cov-fail-under=80`). The `frontend/` directory is excluded from Python coverage.
 
-Coverage threshold is 80% overall (enforced by `--cov-fail-under=80`). The `frontend/` directory is excluded from coverage.
+**Frontend tests** (`npm test`): Vitest + jsdom, targeting `tests/frontend/**/*.test.js`. Tests cover pure functions in `chat.js` — SSE block parsing, status label mapping, notification object construction, and API call shape/URL correctness (with `fetch` mocked via `vi.fn()`). Vue-reactive logic in `index.html` is not unit-tested; rely on manual testing and Python integration tests for the full SSE flow.
+
+**Rule:** any new logic added to `chat.js` must have corresponding tests in `tests/frontend/`. When adding new SSE event types, notification types, or API endpoints, update both `chat.js` and `chat.test.js` in the same commit.
 
 ### What's deferred
 

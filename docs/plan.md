@@ -289,6 +289,8 @@ Streaming within the character LLM call still occurs (standard Ollama streaming)
 | Svelte | Reactive, compiles to vanilla JS, small bundle | Build step required |
 | Vue 3 | Familiar, good docs, CDN-loadable (no build) | Heavier than Svelte |
 **Leaning toward Vue 3 via CDN** — no build toolchain needed, reactive enough to handle the two-panel layout and streaming without a lot of manual DOM wrangling, and can be served directly from FastAPI.
+
+**Frontend testing:** Pure/testable logic (SSE parsing, notification building, API helpers) lives in `frontend/chat.js` and is imported by `index.html` as an ES module. Tests live in `tests/frontend/chat.test.js` and run via Vitest + jsdom (`npm test`). Vue-reactive glue in `index.html` is not unit-tested — rely on manual testing for that layer. Any new SSE event type, notification type, or API endpoint added during future phases must have a corresponding test in `chat.test.js`.
 ### Database: SQLite
 Facts and Inferences are small and curated — injected in full, no retrieval needed. Experiences accumulate over sessions and require **vector search** (semantic similarity at session start). Decisions are append-only and retrieved on demand.
 
@@ -439,6 +441,7 @@ CREATE INDEX idx_messages_session_turn ON messages(session_id, turn_id);
 - Inject active Inferences into character system prompt alongside Facts
 - Lazy discovery: evaluator promotes new logical Inferences found during conversation; surfaces probabilistic ones to user; lazy discovery does not trigger a new eager pass
 - Cascade: Fact edit re-invokes evaluator per downstream Inference; marks stale those that no longer hold; Fact delete marks all downstream Inferences invalidated and surfaces to user
+- **Frontend tests:** update `chat.test.js` if any new SSE events or sidechannel types are introduced for stale/invalidated inference notifications
 
 ### Phase 4 — Experiences and session memory
 - End-of-session flow: single evaluator pass outputs closing journal + Experience proposals
@@ -449,8 +452,10 @@ CREATE INDEX idx_messages_session_turn ON messages(session_id, turn_id);
 - Cold start: embed previous session's closing journal, retrieve top-k Experiences as seed context
 - Source annotation ("told by user" vs "observed") visible in sidechannel
 - Experience invalidation: delete contradicted Experiences immediately on `experience_update` verdict
+- **Frontend tests:** add `chat.test.js` coverage for the end-of-session sidechannel events (Experience proposals) and any new API helpers for accept/edit/discard
 
 ### Phase 5a — Budget visibility and message annotation
+- **Frontend tests:** add `chat.test.js` coverage for any new SSE status events (e.g. context pressure percentage) and the `sseStateToLabel` mapping if new states are added
 - Track token counts using Ollama response `prompt_eval_count` / `eval_count` after each call
 - Estimate pre-flight token cost of new prompts via `tiktoken` (cl100k_base)
 - Track reserved zone size dynamically (Facts + Inferences + active Experiences), recalculated each turn

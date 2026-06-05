@@ -368,7 +368,17 @@
   </div>
 </div>
 
-<script>
+<script type="module">
+import {
+  parseSSEBlock,
+  sseStateToLabel,
+  buildNotificationFromSidechannel,
+  apiAcceptImplication,
+  apiIgnoreImplication,
+  apiAcceptInference,
+  apiIgnoreInference,
+} from './chat.js';
+
 const { createApp, ref, nextTick } = Vue;
 
 createApp({
@@ -465,13 +475,8 @@ createApp({
       notif._loading = true;
       const value = violation._editValue ?? violation.suggested_fact.value;
       try {
-        const r = await fetch(
-          `/api/sessions/${sessionId.value}/turns/${notif.turn_id}/accept-implication`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ key: violation.suggested_fact.key, value }),
-          }
+        const r = await apiAcceptImplication(
+          sessionId.value, notif.turn_id, violation.suggested_fact.key, value
         );
         if (r.ok) {
           const data = await r.json();
@@ -488,29 +493,14 @@ createApp({
     }
 
     async function ignoreImplication(notif) {
-      await fetch(
-        `/api/sessions/${sessionId.value}/turns/${notif.turn_id}/ignore-implication`,
-        { method: 'POST' }
-      );
+      await apiIgnoreImplication(sessionId.value, notif.turn_id);
       dismissNotification(notif);
     }
 
     async function acceptInference(notif, inference) {
       notif._loading = true;
       try {
-        const r = await fetch(
-          `/api/sessions/${sessionId.value}/turns/${notif.turn_id}/accept-inference`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              statement: inference.statement,
-              derivation: inference.derivation,
-              source_fact_ids: inference.source_fact_ids || [],
-              inference_type: inference.inference_type || 'probabilistic',
-            }),
-          }
-        );
+        const r = await apiAcceptInference(sessionId.value, notif.turn_id, inference);
         if (r.ok) dismissNotification(notif);
       } finally {
         notif._loading = false;
@@ -518,10 +508,7 @@ createApp({
     }
 
     async function ignoreInference(notif) {
-      await fetch(
-        `/api/sessions/${sessionId.value}/turns/${notif.turn_id}/ignore-inference`,
-        { method: 'POST' }
-      );
+      await apiIgnoreInference(sessionId.value, notif.turn_id);
       dismissNotification(notif);
     }
 
@@ -563,28 +550,22 @@ createApp({
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
 
-          const blocks = buffer.split('\n\n');
-          buffer = blocks.pop() ?? '';
+          const completedBlocks = buffer.split('\n\n');
+          buffer = completedBlocks.pop() ?? '';
 
-          for (const block of blocks) {
-            const lines = block.split('\n');
-            let eventName = '';
-            let dataStr = '';
-            for (const line of lines) {
-              if (line.startsWith('event: ')) eventName = line.slice(7);
-              if (line.startsWith('data: ')) dataStr = line.slice(6);
-            }
+          for (const block of completedBlocks) {
+            const parsed = parseSSEBlock(block);
+            if (!parsed) continue;
+            const { event: eventName, data: dataStr } = parsed;
 
             if (eventName === 'status' && dataStr) {
-              const payload = JSON.parse(dataStr);
-              if (payload.state === 'generating') statusText.value = 'Generating response…';
-              else if (payload.state === 'reviewing') statusText.value = 'Reviewing against facts…';
-              else if (payload.state === 'regenerating') statusText.value = 'Regenerating (contradiction found)…';
+              statusText.value = sseStateToLabel(JSON.parse(dataStr).state);
 
             } else if (eventName === 'thinking' && dataStr) {
-              const payload = JSON.parse(dataStr);
               generating.value = false;
-              messages.value.push({ role: 'thinking', content: payload.content, _open: false });
+              messages.value.push({
+                role: 'thinking', content: JSON.parse(dataStr).content, _open: false,
+              });
               await scrollToBottom();
 
             } else if (eventName === 'message' && dataStr) {
@@ -600,37 +581,9 @@ createApp({
               await scrollToBottom();
 
             } else if (eventName === 'sidechannel' && dataStr) {
-              const payload = JSON.parse(dataStr);
-              if (payload.type === 'implication') {
-                // Initialise _editValue for each violation's suggested fact
-                const violations = (payload.violations || []).map(v => ({
-                  ...v,
-                  _editValue: v.suggested_fact?.value ?? '',
-                }));
-                messages.value.push({
-                  role: 'notification',
-                  scType: 'implication',
-                  turn_id: payload.turn_id,
-                  violations,
-                  _loading: false,
-                });
-                await scrollToBottom();
-              } else if (payload.type === 'new_inference_probabilistic') {
-                messages.value.push({
-                  role: 'notification',
-                  scType: 'new_inference_probabilistic',
-                  turn_id: payload.turn_id,
-                  new_inferences: payload.new_inferences || [],
-                  _loading: false,
-                });
-                await scrollToBottom();
-              } else if (payload.type === 'contradiction') {
-                messages.value.push({
-                  role: 'notification',
-                  scType: 'contradiction',
-                  iteration: payload.iteration,
-                  description: payload.description,
-                });
+              const notif = buildNotificationFromSidechannel(JSON.parse(dataStr));
+              if (notif) {
+                messages.value.push(notif);
                 await scrollToBottom();
               }
             }

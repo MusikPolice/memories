@@ -222,3 +222,7 @@ __marimo__/
 *.db-journal
 playwright-report/
 test-results/
+
+# Node / frontend tooling
+node_modules/
+.vitest-cache/
