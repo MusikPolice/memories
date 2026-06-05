@@ -610,6 +610,47 @@ async def test_cascade_edit_does_not_mark_if_revalidation_returns_true(
     assert any(a.id == inf.id for a in active)
 
 
+@respx.mock
+async def test_cascade_edit_propagates_through_stale_intermediary(
+    db: aiosqlite.Connection, character: Character, fact: Fact, ollama: OllamaClient
+) -> None:
+    """An active inference that depends on a stale intermediary must be revalidated.
+
+    A (stale, cites F) → C (active, cites A).  When F changes, C must be
+    added to the cascade worklist via A even though A is already stale.
+    """
+    cols = (
+        "character_id, statement, derivation, "
+        "source_fact_ids, source_inference_ids, depth, inference_type, status"
+    )
+    cursor = await db.execute(
+        f"INSERT INTO inferences ({cols}) VALUES (?, ?, ?, ?, ?, 1, 'logical', 'stale')",
+        (character.id, "Stale intermediary A", "from fact", json.dumps([fact.id]), json.dumps([])),
+    )
+    await db.commit()
+    inf_a_id = cursor.lastrowid
+    inf_c = await create_inference(
+        db,
+        character_id=character.id,
+        statement="Active inference C cites A",
+        derivation="from A",
+        source_fact_ids=[],
+        source_inference_ids=[inf_a_id],
+        depth=2,
+    )
+    # Revalidation of C returns False — C no longer holds
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200, content=make_ollama_ndjson(json.dumps({"holds": False, "reason": "source stale"}))
+        )
+    )
+    stale = await cascade_on_fact_edit(db, character.id, fact.id, ollama)
+    # C (active) must have been marked stale; A (already stale) is not in the return set
+    assert any(s.id == inf_c.id for s in stale)
+    inferences = await get_inferences(db, character.id, status="stale")
+    assert any(i.id == inf_c.id for i in inferences)
+
+
 # ---------------------------------------------------------------------------
 # cascade_on_fact_delete — requires db, character, fact; NO ollama
 # ---------------------------------------------------------------------------

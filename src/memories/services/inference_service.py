@@ -258,14 +258,20 @@ async def cascade_on_fact_edit(
     character = await get_character(db, character_id)
     model = (character.current_model_name or character.modelfile_base) if character else "default"
 
-    active = await get_inferences(db, character_id, status="active")
+    # Include stale inferences in the cascade so transitive chains through a
+    # pre-existing stale intermediary are propagated correctly (Bug 6 fix).
+    # Already-stale inferences are used as propagation seeds without re-calling
+    # the LLM; only active inferences are revalidated.
+    _all = await get_inferences(db, character_id, status="all")
+    non_invalidated = [inf for inf in _all if inf.status != "invalidated"]
+    active = [inf for inf in non_invalidated if inf.status == "active"]
     facts = await get_facts(db, character_id)
 
     newly_stale: set[int] = set()
     processed: set[int] = set()
 
-    # Seed with inferences that directly depend on the changed fact
-    worklist = [inf for inf in active if changed_fact_id in inf.source_fact_ids]
+    # Seed with all non-invalidated inferences that directly depend on the changed fact
+    worklist = [inf for inf in non_invalidated if changed_fact_id in inf.source_fact_ids]
 
     while worklist:
         inference = worklist.pop(0)
@@ -273,18 +279,26 @@ async def cascade_on_fact_edit(
             continue
         processed.add(inference.id)
 
-        # remaining_active excludes already-stale inferences
-        remaining_active = [i for i in active if i.id not in newly_stale and i.id != inference.id]
+        should_propagate = False
 
-        holds = await revalidate_single_inference(
-            inference, facts, remaining_active, ollama, model=model
-        )
-        if not holds:
-            await update_inference_status(db, inference.id, "stale")
-            newly_stale.add(inference.id)
+        if inference.status == "stale":
+            # Already stale: propagate to downstream inferences without an LLM call
+            should_propagate = True
+        else:
+            # Active: revalidate and mark stale if it no longer holds
+            remaining_active = [
+                i for i in active if i.id not in newly_stale and i.id != inference.id
+            ]
+            holds = await revalidate_single_inference(
+                inference, facts, remaining_active, ollama, model=model
+            )
+            if not holds:
+                await update_inference_status(db, inference.id, "stale")
+                newly_stale.add(inference.id)
+                should_propagate = True
 
-            # Enqueue inferences that transitively depend on this now-stale one
-            for other in active:
+        if should_propagate:
+            for other in non_invalidated:
                 if other.id not in processed and inference.id in other.source_inference_ids:
                     worklist.append(other)
 
