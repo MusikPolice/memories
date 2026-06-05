@@ -45,8 +45,9 @@
 
     /* ── Chat panel ── */
     .chat-panel {
-      flex: 1; display: flex; flex-direction: column;
+      flex: 2; display: flex; flex-direction: column;
       border-right: 1px solid #ddd;
+      min-width: 0;
     }
     .chat-header {
       display: flex; align-items: center; justify-content: space-between;
@@ -61,6 +62,7 @@
     .msg.user  { align-self: flex-end; background: #3b5bdb; color: #fff; border-radius: 12px 12px 2px 12px; }
     .msg.assistant { align-self: flex-start; background: #fff; border: 1px solid #ddd; border-radius: 12px 12px 12px 2px; }
     .msg.generating { color: #888; font-style: italic; }
+    .msg.contradiction-exhausted { border-color: #faa; }
 
     .thinking-block {
       align-self: flex-start; max-width: 70%;
@@ -78,6 +80,54 @@
       font-size: 12px; color: #555; font-style: italic; line-height: 1.6;
       white-space: pre-wrap; max-height: 200px; overflow-y: auto;
     }
+
+    /* ── Notification cards ── */
+    .notification-card {
+      align-self: flex-start; max-width: 70%;
+      border-radius: 8px; overflow: hidden;
+      border: 1px solid #ddd;
+      font-size: 13px;
+    }
+    .notification-title {
+      padding: 8px 12px; font-weight: 600; font-size: 12px;
+    }
+    .notification-body { padding: 0 12px 10px; }
+    .notification-card.implication { border-color: #f0a040; }
+    .notification-card.implication .notification-title { background: #fff8ee; color: #a05000; }
+    .notification-card.inference { border-color: #40a080; }
+    .notification-card.inference .notification-title { background: #eefff8; color: #006040; }
+    .notification-card.contradiction { border-color: #f04040; }
+    .notification-card.contradiction .notification-title { background: #fff0ee; color: #a00000; }
+
+    .violation-desc { color: #555; margin: 8px 0 4px; line-height: 1.4; }
+    .violation-fact { margin: 4px 0 8px; }
+    .violation-fact label { font-size: 12px; color: #888; display: block; margin-bottom: 2px; }
+    .violation-fact .fact-key-display {
+      font-family: monospace; background: #f5f5f5; padding: 3px 6px;
+      border-radius: 3px; margin-right: 4px; font-size: 12px;
+    }
+    .violation-fact input {
+      padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px;
+      font-size: 13px; width: 100%; margin-top: 4px;
+    }
+    .violation-fact input:focus { outline: none; border-color: #3b5bdb; }
+
+    .inference-statement { font-weight: 500; margin: 8px 0 2px; }
+    .inference-derivation { color: #777; font-size: 12px; font-style: italic; margin-bottom: 8px; }
+
+    .notification-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+    .btn-accept {
+      padding: 4px 12px; background: #2f9e44; color: #fff;
+      border: none; border-radius: 4px; cursor: pointer; font-size: 12px;
+    }
+    .btn-accept:hover { background: #237032; }
+    .btn-accept:disabled { background: #aaa; cursor: default; }
+    .btn-ignore {
+      padding: 4px 12px; background: #fff; color: #555;
+      border: 1px solid #ccc; border-radius: 4px; cursor: pointer; font-size: 12px;
+    }
+    .btn-ignore:hover { background: #f5f5f5; }
+    .btn-ignore:disabled { opacity: .5; cursor: default; }
 
     .chat-input-row {
       display: flex; gap: 8px; padding: 12px 16px;
@@ -106,8 +156,8 @@
 
     /* ── Facts panel ── */
     .facts-panel {
-      width: 280px; display: flex; flex-direction: column;
-      background: #fff;
+      flex: 1; display: flex; flex-direction: column;
+      background: #fff; min-width: 0;
     }
     .facts-header {
       padding: 12px 16px; font-weight: 600; border-bottom: 1px solid #ddd;
@@ -179,6 +229,8 @@
       </div>
       <div class="chat-messages" ref="messagesEl">
         <template v-for="(msg, i) in messages" :key="i">
+
+          <!-- Thinking block -->
           <div v-if="msg.role === 'thinking'" class="thinking-block">
             <div class="thinking-header" @click="msg._open = !msg._open">
               <span>&#129504; Thinking</span>
@@ -186,9 +238,85 @@
             </div>
             <div v-if="msg._open" class="thinking-body">{{ msg.content }}</div>
           </div>
-          <div v-else :class="['msg', msg.role]">{{ msg.content }}</div>
+
+          <!-- User / assistant messages -->
+          <div v-else-if="msg.role === 'user' || msg.role === 'assistant'"
+               :class="['msg', msg.role, msg.contradictionExhausted ? 'contradiction-exhausted' : '']">
+            {{ msg.content }}
+            <div v-if="msg.contradictionExhausted"
+                 style="font-size:11px;color:#c55;margin-top:4px">
+              ⚠ Max contradiction retries reached — response may not be fully grounded.
+            </div>
+          </div>
+
+          <!-- Implication notification -->
+          <div v-else-if="msg.role === 'notification' && msg.scType === 'implication'"
+               class="notification-card implication">
+            <div class="notification-title">🔍 New detail implied by character</div>
+            <div class="notification-body">
+              <div v-for="(v, vi) in msg.violations" :key="vi">
+                <p class="violation-desc">{{ v.description }}</p>
+                <div v-if="v.suggested_fact" class="violation-fact">
+                  <label>Suggested fact</label>
+                  <span class="fact-key-display">{{ v.suggested_fact.key }}</span>
+                  <input v-model="v._editValue" :placeholder="v.suggested_fact.value" />
+                </div>
+                <div class="notification-actions">
+                  <button v-if="v.suggested_fact"
+                          class="btn-accept"
+                          :disabled="msg._loading"
+                          @click="acceptImplication(msg, v)">
+                    {{ msg._loading ? 'Working…' : 'Accept & add fact' }}
+                  </button>
+                  <button class="btn-ignore"
+                          :disabled="msg._loading"
+                          @click="ignoreImplication(msg)">
+                    Ignore
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Probabilistic inference notification -->
+          <div v-else-if="msg.role === 'notification' && msg.scType === 'new_inference_probabilistic'"
+               class="notification-card inference">
+            <div class="notification-title">💡 New inference (probabilistic)</div>
+            <div class="notification-body">
+              <div v-for="(inf, ii) in msg.new_inferences" :key="ii">
+                <p class="inference-statement">{{ inf.statement }}</p>
+                <p class="inference-derivation">{{ inf.derivation }}</p>
+                <div class="notification-actions">
+                  <button class="btn-accept"
+                          :disabled="msg._loading"
+                          @click="acceptInference(msg, inf)">
+                    {{ msg._loading ? 'Saving…' : 'Accept inference' }}
+                  </button>
+                  <button class="btn-ignore"
+                          :disabled="msg._loading"
+                          @click="ignoreInference(msg)">
+                    Ignore
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Contradiction notification (informational) -->
+          <div v-else-if="msg.role === 'notification' && msg.scType === 'contradiction'"
+               class="notification-card contradiction">
+            <div class="notification-title">⚡ Contradiction detected (attempt {{ msg.iteration }}) — response regenerated</div>
+            <div class="notification-body">
+              <p class="violation-desc">{{ msg.description }}</p>
+              <div class="notification-actions">
+                <button class="btn-ignore" @click="dismissNotification(msg)">Dismiss</button>
+              </div>
+            </div>
+          </div>
+
         </template>
-        <div v-if="generating" class="msg generating">thinking…</div>
+
+        <div v-if="generating" class="msg generating">{{ statusText || 'Thinking…' }}</div>
       </div>
       <div class="chat-input-row">
         <input
@@ -254,6 +382,7 @@ createApp({
     const inputText = ref('');
     const sending = ref(false);
     const generating = ref(false);
+    const statusText = ref('');
     const sessionEnded = ref(false);
     const thinkEnabled = ref(false);
     const newKey = ref('');
@@ -329,12 +458,87 @@ createApp({
       sessionEnded.value = true;
     }
 
+    // ── Notification actions ──
+
+    async function acceptImplication(notif, violation) {
+      if (!violation.suggested_fact) return;
+      notif._loading = true;
+      const value = violation._editValue ?? violation.suggested_fact.value;
+      try {
+        const r = await fetch(
+          `/api/sessions/${sessionId.value}/turns/${notif.turn_id}/accept-implication`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key: violation.suggested_fact.key, value }),
+          }
+        );
+        if (r.ok) {
+          const data = await r.json();
+          const assistantMsg = messages.value.find(
+            m => m.role === 'assistant' && m.turn_id === notif.turn_id
+          );
+          if (assistantMsg) assistantMsg.content = data.content;
+          dismissNotification(notif);
+          await loadFacts();
+        }
+      } finally {
+        notif._loading = false;
+      }
+    }
+
+    async function ignoreImplication(notif) {
+      await fetch(
+        `/api/sessions/${sessionId.value}/turns/${notif.turn_id}/ignore-implication`,
+        { method: 'POST' }
+      );
+      dismissNotification(notif);
+    }
+
+    async function acceptInference(notif, inference) {
+      notif._loading = true;
+      try {
+        const r = await fetch(
+          `/api/sessions/${sessionId.value}/turns/${notif.turn_id}/accept-inference`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              statement: inference.statement,
+              derivation: inference.derivation,
+              source_fact_ids: inference.source_fact_ids || [],
+              inference_type: inference.inference_type || 'probabilistic',
+            }),
+          }
+        );
+        if (r.ok) dismissNotification(notif);
+      } finally {
+        notif._loading = false;
+      }
+    }
+
+    async function ignoreInference(notif) {
+      await fetch(
+        `/api/sessions/${sessionId.value}/turns/${notif.turn_id}/ignore-inference`,
+        { method: 'POST' }
+      );
+      dismissNotification(notif);
+    }
+
+    function dismissNotification(notif) {
+      const idx = messages.value.indexOf(notif);
+      if (idx !== -1) messages.value.splice(idx, 1);
+    }
+
+    // ── Chat ──
+
     async function sendMessage() {
       const text = inputText.value.trim();
       if (!text || sending.value || sessionEnded.value) return;
       inputText.value = '';
       sending.value = true;
       generating.value = true;
+      statusText.value = 'Generating response…';
       messages.value.push({ role: 'user', content: text });
       await scrollToBottom();
 
@@ -370,21 +574,71 @@ createApp({
               if (line.startsWith('event: ')) eventName = line.slice(7);
               if (line.startsWith('data: ')) dataStr = line.slice(6);
             }
-            if (eventName === 'thinking' && dataStr) {
+
+            if (eventName === 'status' && dataStr) {
+              const payload = JSON.parse(dataStr);
+              if (payload.state === 'generating') statusText.value = 'Generating response…';
+              else if (payload.state === 'reviewing') statusText.value = 'Reviewing against facts…';
+              else if (payload.state === 'regenerating') statusText.value = 'Regenerating (contradiction found)…';
+
+            } else if (eventName === 'thinking' && dataStr) {
               const payload = JSON.parse(dataStr);
               generating.value = false;
               messages.value.push({ role: 'thinking', content: payload.content, _open: false });
               await scrollToBottom();
+
             } else if (eventName === 'message' && dataStr) {
               const payload = JSON.parse(dataStr);
               generating.value = false;
-              messages.value.push({ role: 'assistant', content: payload.content });
+              statusText.value = '';
+              messages.value.push({
+                role: 'assistant',
+                content: payload.content,
+                turn_id: payload.turn_id,
+                contradictionExhausted: payload.contradiction_exhausted || false,
+              });
               await scrollToBottom();
+
+            } else if (eventName === 'sidechannel' && dataStr) {
+              const payload = JSON.parse(dataStr);
+              if (payload.type === 'implication') {
+                // Initialise _editValue for each violation's suggested fact
+                const violations = (payload.violations || []).map(v => ({
+                  ...v,
+                  _editValue: v.suggested_fact?.value ?? '',
+                }));
+                messages.value.push({
+                  role: 'notification',
+                  scType: 'implication',
+                  turn_id: payload.turn_id,
+                  violations,
+                  _loading: false,
+                });
+                await scrollToBottom();
+              } else if (payload.type === 'new_inference_probabilistic') {
+                messages.value.push({
+                  role: 'notification',
+                  scType: 'new_inference_probabilistic',
+                  turn_id: payload.turn_id,
+                  new_inferences: payload.new_inferences || [],
+                  _loading: false,
+                });
+                await scrollToBottom();
+              } else if (payload.type === 'contradiction') {
+                messages.value.push({
+                  role: 'notification',
+                  scType: 'contradiction',
+                  iteration: payload.iteration,
+                  description: payload.description,
+                });
+                await scrollToBottom();
+              }
             }
           }
         }
       } finally {
         generating.value = false;
+        statusText.value = '';
         sending.value = false;
         await nextTick();
         inputEl.value?.focus();
@@ -402,9 +656,11 @@ createApp({
 
     return {
       showPicker, characters, currentCharacter, sessionId,
-      messages, facts, inputText, sending, generating, sessionEnded,
+      messages, facts, inputText, sending, generating, statusText, sessionEnded,
       thinkEnabled, newKey, newValue, factError, messagesEl, inputEl,
       pickCharacter, addFact, saveFact, deleteFact, endSession, sendMessage,
+      acceptImplication, ignoreImplication, acceptInference, ignoreInference,
+      dismissNotification,
     };
   },
 }).mount('#app');

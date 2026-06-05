@@ -39,7 +39,6 @@ async def send_message(
 
     async def _stream() -> AsyncGenerator[str, None]:
         yield 'event: status\ndata: {"state": "generating"}\n\n'
-        yield 'event: status\ndata: {"state": "reviewing"}\n\n'
         content, thinking, turn_id, eval_result = await run_turn(
             db, session_id, body.content, ollama, think=body.think
         )

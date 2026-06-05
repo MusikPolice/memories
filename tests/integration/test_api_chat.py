@@ -228,7 +228,7 @@ async def test_send_to_ended_session_409(
 # ---------------------------------------------------------------------------
 
 
-async def test_send_message_emits_reviewing_event(
+async def test_send_message_emits_generating_status(
     client: AsyncClient, character: Character, session: Session
 ) -> None:
     with respx.mock:
@@ -239,10 +239,10 @@ async def test_send_message_emits_reviewing_event(
     events = _parse_sse(response.text)
     status_events = [e for e in events if e.get("event") == "status"]
     states = [json.loads(e["data"])["state"] for e in status_events]
-    assert "reviewing" in states
+    assert "generating" in states
 
 
-async def test_send_message_reviewing_event_before_message_event(
+async def test_send_message_generating_event_before_message_event(
     client: AsyncClient, character: Character, session: Session
 ) -> None:
     with respx.mock:
@@ -251,13 +251,13 @@ async def test_send_message_reviewing_event_before_message_event(
             f"/api/sessions/{session.id}/messages", json={"content": "Hello"}
         )
     events = _parse_sse(response.text)
-    reviewing_idx = next(
+    generating_idx = next(
         i
         for i, e in enumerate(events)
-        if e.get("event") == "status" and json.loads(e["data"])["state"] == "reviewing"
+        if e.get("event") == "status" and json.loads(e["data"])["state"] == "generating"
     )
     message_idx = next(i for i, e in enumerate(events) if e.get("event") == "message")
-    assert reviewing_idx < message_idx
+    assert generating_idx < message_idx
 
 
 async def test_send_message_pass_verdict_no_ungrounded_field(
@@ -520,15 +520,10 @@ async def test_send_message_status_event_order_for_pass(
             f"/api/sessions/{session.id}/messages", json={"content": "Hello"}
         )
     events = _parse_sse(response.text)
-    event_names = [e.get("event") for e in events]
-    # generating → reviewing → message → done
-    assert event_names[0] == "status"
+    # generating → message → done
+    assert events[0].get("event") == "status"
     assert json.loads(events[0]["data"])["state"] == "generating"
-    reviewing_idx = next(
-        i
-        for i, e in enumerate(events)
-        if e.get("event") == "status" and json.loads(e["data"])["state"] == "reviewing"
-    )
+    generating_idx = 0
     message_idx = next(i for i, e in enumerate(events) if e.get("event") == "message")
     done_idx = next(i for i, e in enumerate(events) if e.get("event") == "done")
-    assert reviewing_idx < message_idx < done_idx
+    assert generating_idx < message_idx < done_idx
