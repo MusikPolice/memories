@@ -63,55 +63,75 @@ A locally-hosted character roleplay chatbot. The core problem it solves: LLMs in
 | Tier | Description | Status |
 |---|---|---|
 | **Facts** | Ground truths set by the user. Never invented by the model. | Phase 1 — active |
-| **Inferences** | Logical/probabilistic conclusions derived from Facts. Traceable derivation graph. | Phase 3 |
-| **Experiences** | Episodic memory accumulated across sessions. Retrieved by embedding similarity. | Phase 4 |
-| **Decisions** | Evaluator audit log. Debugging only; not injected into context. | Phase 2 |
+| **Inferences** | Logical/probabilistic conclusions derived from Facts. Traceable derivation graph. | Phase 3 — active |
+| **Experiences** | Episodic memory accumulated across sessions. Retrieved by embedding similarity. | Phase 4 — deferred |
+| **Decisions** | Evaluator audit log. Debugging only; not injected into context. | Phase 2 — active |
 
 ### Two-LLM design
 
 Every turn involves two sequential Ollama calls:
-1. **Character LLM** — generates a response in-character (stream buffered server-side)
-2. **Evaluator LLM** — checks the buffered response against Facts/Inferences/Experiences; returns a structured JSON verdict
+1. **Character LLM** — generates an in-character response (buffered server-side)
+2. **Evaluator LLM** — checks the buffered response against Facts and Inferences; returns a structured JSON verdict
 
-The evaluator is not yet wired in (Phase 2). Phase 1 buffers the Ollama response and forwards it directly.
+Both calls use the same model (`character.current_model_name or character.modelfile_base`), always with `think=False`. The contradiction loop repeats both calls until the evaluator returns a non-contradiction verdict or `MAX_CONTRADICTION_RETRIES` (default 3, env-overridable) is exhausted.
 
-Six evaluator verdicts: `pass`, `new_inference_logical`, `new_inference_probabilistic`, `implication`, `contradiction`, `experience_update`. Contradictions suppress the response and trigger automatic regeneration; other verdicts deliver with or without a sidechannel notification. See `docs/plan.md` for the full flow.
+Six evaluator verdicts: `pass`, `new_inference_logical`, `new_inference_probabilistic`, `implication`, `contradiction`, `experience_update`. `experience_update` is coerced to `pass` until Phase 4. Contradictions suppress the response and trigger automatic regeneration. See `docs/plan.md` for the full flow.
 
 ### Code layout
 
 ```
 src/memories/
-  main.py              # FastAPI app, lifespan (opens DB, sets deps._db), mounts routers + static files
+  main.py              # FastAPI app, lifespan (opens DB, warms up Ollama models, sets deps._db)
   deps.py              # get_db() and get_ollama() FastAPI dependencies; set_db() called by lifespan
-  database.py          # All SQL — schema DDL + repository functions; row_factory set on every connection
-  models/__init__.py   # Pydantic models: Character, Fact, Session, Segment, Message
+  database.py          # All SQL — schema DDL + all repository functions; row_factory on every connection
+  models/__init__.py   # Pydantic models: Character, Fact, Session, Segment, Message, Decision, Inference
   exceptions.py        # NotFoundError, SessionEndedError
   routers/
     characters.py      # GET/POST /api/characters
     facts.py           # GET/POST/PUT/DELETE /api/characters/{id}/facts
+                       #   PUT triggers cascade_on_fact_edit; DELETE triggers cascade_on_fact_delete
+    inferences.py      # POST /api/characters/{id}/inferences/generate (eager pass)
+                       #   POST .../revalidate, DELETE/PATCH .../inferences/{id}
     sessions.py        # POST /api/sessions, POST /api/sessions/{id}/end, GET /api/sessions/{id}/messages
     chat.py            # POST /api/sessions/{id}/messages → text/event-stream (SSE)
+    implication.py     # POST .../turns/{turn_id}/accept-implication  (creates Fact, optionally regenerates)
+                       #   POST .../turns/{turn_id}/ignore-implication (no-op; client dismisses)
+                       #   POST .../turns/{turn_id}/accept-inference   (stores probabilistic inference)
+                       #   POST .../turns/{turn_id}/ignore-inference   (no-op)
+    decisions.py       # GET /api/sessions/{id}/decisions
   services/
-    ollama_client.py   # Async httpx wrapper for POST /api/chat; stream:true, think:false
-    prompt_builder.py  # build_system_prompt(character, facts) → str
-    chat_service.py    # run_turn(): load → build prompt → store user msg → call Ollama → store reply
-  frontend/index.html  # Vue 3 CDN app (no build step); two-panel chat + facts sidechannel
+    ollama_client.py   # Async httpx wrapper; stream:true buffered; strips special tokens; warmup()
+    prompt_builder.py  # build_system_prompt(character, facts, inferences) → str
+    evaluator.py       # build_evaluator_prompt(), run_evaluator() → EvaluatorResult
+    inference_service.py  # run_eager_pass(), revalidate_single_inference(),
+                          #   cascade_on_fact_edit(), cascade_on_fact_delete(), compute_depth()
+    chat_service.py    # run_turn(): full per-turn orchestration
+                       # run_contradiction_loop(): character + evaluator, retries until clean
+  frontend/index.html  # Vue 3 CDN app (no build step); two-panel chat + facts/inferences sidechannel
   frontend/chat.js     # Extracted pure logic (SSE parsing, notification builder, API helpers); tested
 ```
 
 ### Key patterns
 
-**DB dependency**: `deps.get_db()` is an async generator that yields the single module-level `_db` connection. The lifespan in `main.py` opens the connection, calls `init_db()`, and calls `deps.set_db(conn)`. Integration tests override `get_db` with a fixture that yields an in-memory connection.
+**DB dependency**: `deps.get_db()` yields the single module-level `_db` connection. The lifespan in `main.py` opens it, calls `init_db()`, then `deps.set_db(conn)`. Integration tests override `get_db` with a fixture yielding an in-memory connection.
 
-**Schema is created in full at Phase 1**: `init_db()` creates all eight tables (including `inferences`, `experiences`, `decisions`). Tables unused in later phases sit empty. No migrations needed between phases.
+**Schema is created in full at startup**: `init_db()` creates all eight tables (characters, sessions, facts, inferences, experiences, decisions, segments, messages). Tables for Phase 4+ sit empty. No migrations.
 
-**Every session starts with a segment**: `create_session()` also inserts a `segments` row with `boundary_reason="session_start"`. All Phase 1 messages go into this segment. Phase 5b will add boundary logic on top.
+**Every session starts with a segment**: `create_session()` also inserts a `segments` row with `boundary_reason="session_start"`. All messages link to their segment via `segment_id`.
 
-**Facts are loaded per turn**: `run_turn()` reloads facts from DB on every call so mid-conversation fact edits take effect on the next message without a session restart.
+**Facts and Inferences are loaded per turn**: `run_turn()` reloads both from DB on every call so mid-conversation edits take effect immediately on the next message.
 
-**SSE event sequence** from the chat endpoint: `status` (generating) → `message` (full assistant content + turn_id) → `done`. The frontend uses `fetch` + `ReadableStream` rather than `EventSource` because `EventSource` does not support POST bodies.
+**Inference depth cap**: `MAX_INFERENCE_DEPTH=5` (env-overridable). `compute_depth()` in `inference_service.py` resolves depth from source inference ids at write time. Inferences exceeding the cap are silently discarded. The same cap applies to lazy discovery in `run_turn()`.
 
-**Ollama options**: both character and evaluator calls set `"options": {"think": false}`. This is intentional — the harness provides the structured reasoning context, so thinking mode adds latency without benefit.
+**Cascade on Fact edit**: `cascade_on_fact_edit()` BFS-walks downstream inferences, calling `revalidate_single_inference()` (an LLM call) for each active one. Ones that no longer hold are marked `stale`. Already-stale inferences propagate the cascade without an LLM call. `cascade_on_fact_delete()` is pure DB: marks all transitively-dependent inferences `invalidated`.
+
+**SSE event sequence** from the chat endpoint: `status(generating)` → `status(reviewing)` → *(if contradictions occurred)* `sidechannel(contradiction)` + `status(regenerating)` + `status(reviewing)` per retry → *(if think=true)* `thinking` → `message` → *(if implication/probabilistic)* `sidechannel` → `done`. The frontend uses `fetch` + `ReadableStream` rather than `EventSource` because `EventSource` does not support POST bodies.
+
+**Implication acceptance** (`POST .../accept-implication`): creates the Fact, then by default regenerates the assistant response through the full contradiction loop. When `regenerate=false` (user accepted the character's exact value), no regeneration is needed — the existing response is already correct.
+
+**Ollama special-token stripping**: `_SPECIAL_TOKEN_RE` strips chat-template control tokens (e.g., `<|endoftext|>`) that some models emit past their natural stop point.
+
+**Model warmup**: at lifespan start, `_warmup_models()` sends `POST /api/generate` with `keep_alive: 10m` for every model in the DB. Connection/response errors are logged as warnings and do not block startup.
 
 ### Test layout
 
@@ -119,25 +139,39 @@ src/memories/
 tests/
   conftest.py              # db fixture (in-memory aiosqlite) + root client fixture
   unit/
-    conftest.py            # character/session/fact/ollama fixtures; make_ollama_ndjson() helper
+    conftest.py            # character/session/fact/ollama fixtures; make_ollama_ndjson() + make_evaluator_ndjson()
     test_prompt_builder.py
     test_ollama_client.py
     test_chat_service.py
+    test_evaluator_service.py
+    test_inference_service.py
+    test_health.py
   integration/
     conftest.py            # overrides get_db and get_ollama dependencies; character/session/fact fixtures
     test_db_init.py
     test_*_repo.py         # one file per DB repository
-    test_api_*.py          # one file per router
+    test_api_*.py          # one file per router (including test_api_inference_generation.py, test_api_implication.py)
   frontend/
-    chat.test.js           # Vitest tests for chat.js pure logic (SSE parsing, notifications, API helpers)
+    chat.test.js           # Vitest tests for chat.js pure logic
 ```
 
-**Python tests** (`uv run pytest`): Integration tests override both `get_db` (with the `db` fixture connection) and `get_ollama` (with a client pointing to `http://test-ollama-integration:11434`). Ollama HTTP calls are mocked with `respx`. No real Ollama instance required. Coverage threshold is 80% overall (enforced by `--cov-fail-under=80`). The `frontend/` directory is excluded from Python coverage.
+**Python tests**: Integration tests override both `get_db` (in-memory aiosqlite) and `get_ollama` (client pointing to `http://test-ollama-integration:11434`). Ollama HTTP calls are mocked with `respx`. Use `make_ollama_ndjson()` for character responses and `make_evaluator_ndjson()` for evaluator responses. Coverage threshold is 80% overall; `frontend/` is excluded.
 
-**Frontend tests** (`npm test`): Vitest + jsdom, targeting `tests/frontend/**/*.test.js`. Tests cover pure functions in `chat.js` — SSE block parsing, status label mapping, notification object construction, and API call shape/URL correctness (with `fetch` mocked via `vi.fn()`). Vue-reactive logic in `index.html` is not unit-tested; rely on manual testing and Python integration tests for the full SSE flow.
+**Frontend tests**: Vitest + jsdom, targeting `tests/frontend/**/*.test.js`. Cover SSE block parsing, status label mapping, notification object construction, and API call shape/URL.
 
 **Rule:** any new logic added to `chat.js` must have corresponding tests in `tests/frontend/`. When adding new SSE event types, notification types, or API endpoints, update both `chat.js` and `chat.test.js` in the same commit.
 
+### Configurable limits (environment variables)
+
+| Variable | Default | Effect |
+|---|---|---|
+| `MAX_CONTRADICTION_RETRIES` | `3` | Max times the contradiction loop retries before giving up |
+| `MAX_INFERENCE_DEPTH` | `5` | Max hops from root Facts in an inference chain |
+| `MAX_INFERENCE_BREADTH` | `5` | Max inferences generated per eager pass |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
+| `MEMORIES_DB_PATH` | `memories.db` | SQLite database file path |
+
 ### What's deferred
 
-The database schema and `OllamaClient` are already structured to support future phases. The evaluator call slots in between "buffer complete" and "deliver to client" in `chat_service.run_turn()`. Inferences, Experiences, and Decisions tables exist but are empty. Segment boundary logic (Phase 5b) will extend `get_active_segment()`.
+- **Phase 4 (Experiences)**: `experience_update` verdict is coerced to `pass` in `evaluator.py`. The `experiences` table exists but is empty. `nomic-embed-text` embedding, session-end flow, and cold-start retrieval are not yet implemented.
+- **Phase 5a/5b (Context budget & compression)**: `segments` table exists; all messages go into a single `session_start` segment. Token counting, `captured_by` annotation, and compression passes are not yet implemented.
