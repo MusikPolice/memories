@@ -92,7 +92,7 @@ export function buildNotificationFromSidechannel(payload) {
       role: 'notification',
       scType: 'new_inference_probabilistic',
       turn_id: payload.turn_id,
-      new_inferences: payload.new_inferences || [],
+      new_inferences: (payload.new_inferences || []).map(inf => ({ ...inf, _loading: false })),
       _loading: false,
     };
   }

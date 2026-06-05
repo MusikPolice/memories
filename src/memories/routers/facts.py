@@ -15,11 +15,12 @@ from memories.database import (
     delete_fact,
     get_character,
     get_facts,
+    get_inferences,
     update_fact,
 )
 from memories.deps import get_db
 from memories.exceptions import NotFoundError
-from memories.models import Fact
+from memories.models import Fact, Inference
 
 router = APIRouter()
 
@@ -41,6 +42,14 @@ async def list_facts_endpoint(character_id: int, db: _DB) -> list[Fact]:
     if character is None:
         raise HTTPException(status_code=404, detail="Character not found")
     return await get_facts(db, character_id)
+
+
+@router.get("/{character_id}/inferences", response_model=list[Inference])
+async def list_inferences_endpoint(character_id: int, db: _DB) -> list[Inference]:
+    character = await get_character(db, character_id)
+    if character is None:
+        raise HTTPException(status_code=404, detail="Character not found")
+    return await get_inferences(db, character_id)
 
 
 @router.post("/{character_id}/facts", status_code=201, response_model=Fact)

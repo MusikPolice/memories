@@ -166,6 +166,21 @@ describe('buildNotificationFromSidechannel', () => {
     expect(notif._loading).toBe(false);
   });
 
+  it('adds _loading: false to each inference item', () => {
+    const payload = {
+      type: 'new_inference_probabilistic',
+      turn_id: 2,
+      violations: [],
+      new_inferences: [
+        { inference_type: 'probabilistic', statement: 'A', derivation: 'x' },
+        { inference_type: 'probabilistic', statement: 'B', derivation: 'y' },
+      ],
+    };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif.new_inferences[0]._loading).toBe(false);
+    expect(notif.new_inferences[1]._loading).toBe(false);
+  });
+
   it('builds a contradiction notification with iteration and description', () => {
     const payload = { type: 'contradiction', iteration: 2, description: 'character said London' };
     const notif = buildNotificationFromSidechannel(payload);
