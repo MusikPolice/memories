@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import json
+
 import aiosqlite
 import httpx
 import pytest
 import respx
 from httpx import AsyncClient
 
-from memories.database import get_decisions, get_facts, get_inferences, get_messages
+from memories.database import (
+    create_inference,
+    get_decisions,
+    get_facts,
+    get_inferences,
+    get_messages,
+)
 from memories.models import Character, Session
 from tests.unit.conftest import make_evaluator_ndjson, make_ollama_ndjson
 
@@ -251,6 +259,31 @@ async def test_accept_implication_regen_ungrounded_returns_ungrounded_flag(
     data = response.json()
     assert data.get("ungrounded") is True
     assert "violations" in data
+
+
+async def test_accept_implication_regeneration_includes_inferences(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    implication_session: tuple[Session, int],
+) -> None:
+    """Inferences must appear in the regenerated system prompt after accepting an implication."""
+    session, turn_id = implication_session
+    await create_inference(
+        db,
+        character_id=character.id,
+        statement="Alice was born in 1991",
+        derivation="age=33, year=2024",
+    )
+    with respx.mock:
+        route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_pass_turn())
+        await client.post(
+            f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
+            json={"key": "siblings", "value": "one sister"},
+        )
+    body = json.loads(route.calls[0].request.content)
+    system_content = body["messages"][0]["content"]
+    assert "Alice was born in 1991" in system_content
 
 
 # ---------------------------------------------------------------------------

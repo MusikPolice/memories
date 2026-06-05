@@ -13,6 +13,7 @@ from memories.database import (
     create_inference,
     get_character,
     get_facts,
+    get_inferences,
     get_messages,
     get_session,
     replace_message_content,
@@ -77,7 +78,8 @@ async def accept_implication(
     character = await get_character(db, session.character_id)
     assert character is not None
     facts = await get_facts(db, session.character_id)
-    system_prompt = build_system_prompt(character, facts)
+    inferences = await get_inferences(db, session.character_id)
+    system_prompt = build_system_prompt(character, facts, inferences)
 
     # Reconstruct conversation history up to (but not including) this turn's assistant message
     history_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
@@ -100,6 +102,7 @@ async def accept_implication(
         user_text,
         ollama,
         max_retries=MAX_CONTRADICTION_RETRIES,
+        inferences=inferences,
     )
 
     # Replace the stored message and clear the ungrounded flag
