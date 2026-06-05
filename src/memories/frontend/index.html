@@ -281,12 +281,12 @@
                 <div class="notification-actions">
                   <button v-if="v.suggested_fact"
                           class="btn-accept"
-                          :disabled="msg._loading"
+                          :disabled="v._loading"
                           @click="acceptImplication(msg, v)">
-                    {{ msg._loading ? 'Working…' : 'Accept & add fact' }}
+                    {{ v._loading ? 'Working…' : 'Accept & add fact' }}
                   </button>
                   <button class="btn-ignore"
-                          :disabled="msg._loading"
+                          :disabled="v._loading"
                           @click="ignoreImplication(msg, v)">
                     Ignore
                   </button>
@@ -511,7 +511,7 @@ createApp({
 
     async function acceptImplication(notif, violation) {
       if (!violation.suggested_fact) return;
-      notif._loading = true;
+      violation._loading = true;
       const value = violation._editValue ?? violation.suggested_fact.value;
       try {
         const r = await apiAcceptImplication(
@@ -527,7 +527,7 @@ createApp({
           await loadFacts();
         }
       } finally {
-        notif._loading = false;
+        violation._loading = false;
       }
     }
 

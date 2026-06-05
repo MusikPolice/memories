@@ -139,6 +139,21 @@ describe('buildNotificationFromSidechannel', () => {
     expect(notif.violations[0]._editValue).toBe('expected-value');
   });
 
+  it('initialises _loading: false on each violation', () => {
+    const payload = {
+      type: 'implication',
+      turn_id: 1,
+      violations: [
+        { type: 'implication', description: 'd1', suggested_fact: { key: 'k1', value: 'v1' } },
+        { type: 'implication', description: 'd2', suggested_fact: { key: 'k2', value: 'v2' } },
+      ],
+      new_inferences: [],
+    };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif.violations[0]._loading).toBe(false);
+    expect(notif.violations[1]._loading).toBe(false);
+  });
+
   it('initialises _editValue to empty string when suggested_fact is null', () => {
     const payload = {
       type: 'implication',

@@ -82,6 +82,7 @@ export function buildNotificationFromSidechannel(payload) {
       violations: (payload.violations || []).map(v => ({
         ...v,
         _editValue: v.suggested_fact?.value ?? '',
+        _loading: false,
       })),
       _loading: false,
     };
