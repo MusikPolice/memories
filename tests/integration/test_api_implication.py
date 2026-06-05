@@ -287,6 +287,83 @@ async def test_accept_implication_regeneration_includes_inferences(
 
 
 # ---------------------------------------------------------------------------
+# regenerate=False — accept without LLM regeneration
+# ---------------------------------------------------------------------------
+
+
+async def test_accept_implication_no_regen_creates_fact_without_llm_call(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    implication_session: tuple[Session, int],
+) -> None:
+    """With regenerate=False the fact is saved but no Ollama call is made."""
+    session, turn_id = implication_session
+    with respx.mock:
+        # No mocked Ollama routes; any call would raise an error
+        response = await client.post(
+            f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
+            json={"key": "siblings", "value": "one sister", "regenerate": False},
+        )
+    assert response.status_code == 200
+    facts = await get_facts(db, character.id)
+    assert any(f.key == "siblings" and f.value == "one sister" for f in facts)
+
+
+async def test_accept_implication_no_regen_returns_original_content(
+    client: AsyncClient,
+    character: Character,
+    implication_session: tuple[Session, int],
+) -> None:
+    """With regenerate=False the response contains the original assistant message."""
+    session, turn_id = implication_session
+    with respx.mock:
+        response = await client.post(
+            f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
+            json={"key": "siblings", "value": "one sister", "regenerate": False},
+        )
+    data = response.json()
+    assert data["content"] == "I have a sister, actually."
+    assert data["turn_id"] == turn_id
+
+
+async def test_accept_implication_no_regen_clears_ungrounded_flag(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    implication_session: tuple[Session, int],
+) -> None:
+    """With regenerate=False the ungrounded_implications flag is still cleared."""
+    session, turn_id = implication_session
+    with respx.mock:
+        await client.post(
+            f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
+            json={"key": "siblings", "value": "one sister", "regenerate": False},
+        )
+    msgs = await get_messages(db, session.id)
+    assistant_msg = next(m for m in msgs if m.role == "assistant" and m.turn_id == turn_id)
+    assert assistant_msg.ungrounded_implications is None
+
+
+async def test_accept_implication_no_regen_does_not_store_extra_decision(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    implication_session: tuple[Session, int],
+) -> None:
+    """With regenerate=False no second decision row is written."""
+    session, turn_id = implication_session
+    with respx.mock:
+        await client.post(
+            f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
+            json={"key": "siblings", "value": "one sister", "regenerate": False},
+        )
+    decisions = await get_decisions(db, session.id)
+    # Only the original implication decision — no regeneration decision
+    assert len(decisions) == 1
+
+
+# ---------------------------------------------------------------------------
 # Ignore implication
 # ---------------------------------------------------------------------------
 

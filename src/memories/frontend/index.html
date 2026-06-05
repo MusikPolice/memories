@@ -515,9 +515,10 @@ createApp({
       if (!violation.suggested_fact) return;
       violation._loading = true;
       const value = violation._editValue ?? violation.suggested_fact.value;
+      const regenerate = value !== violation.suggested_fact.value;
       try {
         const r = await apiAcceptImplication(
-          sessionId.value, notif.turn_id, violation.suggested_fact.key, value
+          sessionId.value, notif.turn_id, violation.suggested_fact.key, value, regenerate
         );
         if (r.ok) {
           const data = await r.json();

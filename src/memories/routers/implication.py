@@ -36,6 +36,7 @@ _Ollama = Annotated[OllamaClient, Depends(get_ollama)]
 class _AcceptImplicationBody(BaseModel):
     key: str
     value: str
+    regenerate: bool = True
 
 
 class _AcceptInferenceBody(BaseModel):
@@ -75,6 +76,17 @@ async def accept_implication(
         await create_fact(db, character_id=session.character_id, key=body.key, value=body.value)
     except aiosqlite.IntegrityError:
         await update_fact(db, character_id=session.character_id, key=body.key, value=body.value)
+
+    # When the user accepted the value exactly as suggested, no regeneration is needed —
+    # the character's existing response already reflects the fact correctly.
+    if not body.regenerate:
+        try:
+            await replace_message_content(
+                db, session_id=session_id, turn_id=turn_id, new_content=assistant_msg.content
+            )
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Turn not found") from exc
+        return {"content": assistant_msg.content, "turn_id": turn_id}
 
     # Reload facts and rebuild context for regeneration
     character = await get_character(db, session.character_id)

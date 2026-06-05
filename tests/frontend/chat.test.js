@@ -262,13 +262,24 @@ describe('API helpers', () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: true });
   });
 
-  it('apiAcceptImplication POSTs to the correct URL with key and value', async () => {
+  it('apiAcceptImplication POSTs to the correct URL with key, value, and regenerate=true', async () => {
     await apiAcceptImplication(5, 3, 'siblings', 'one sister');
     expect(fetch).toHaveBeenCalledWith(
       '/api/sessions/5/turns/3/accept-implication',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ key: 'siblings', value: 'one sister' }),
+        body: JSON.stringify({ key: 'siblings', value: 'one sister', regenerate: true }),
+      })
+    );
+  });
+
+  it('apiAcceptImplication sends regenerate=false when explicitly passed', async () => {
+    await apiAcceptImplication(5, 3, 'siblings', 'one sister', false);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/5/turns/3/accept-implication',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ key: 'siblings', value: 'one sister', regenerate: false }),
       })
     );
   });

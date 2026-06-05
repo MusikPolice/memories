@@ -137,13 +137,15 @@ export function removeViolation(notif, violation) {
  * @param {number} turnId
  * @param {string} key
  * @param {string} value
+ * @param {boolean} [regenerate=true]  Pass false when the value is unchanged from the suggestion;
+ *                                     the backend will save the fact without re-running the LLM.
  * @returns {Promise<Response>}
  */
-export function apiAcceptImplication(sessionId, turnId, key, value) {
+export function apiAcceptImplication(sessionId, turnId, key, value, regenerate = true) {
   return fetch(`/api/sessions/${sessionId}/turns/${turnId}/accept-implication`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key, value }),
+    body: JSON.stringify({ key, value, regenerate }),
   });
 }
 
