@@ -6,8 +6,7 @@ import sqlite3
 from typing import Annotated
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi import Response as FastAPIResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from memories.database import (
@@ -45,11 +44,15 @@ async def list_facts_endpoint(character_id: int, db: _DB) -> list[Fact]:
 
 
 @router.get("/{character_id}/inferences", response_model=list[Inference])
-async def list_inferences_endpoint(character_id: int, db: _DB) -> list[Inference]:
+async def list_inferences_endpoint(
+    character_id: int,
+    db: _DB,
+    status: str = Query(default="active"),
+) -> list[Inference]:
     character = await get_character(db, character_id)
     if character is None:
         raise HTTPException(status_code=404, detail="Character not found")
-    return await get_inferences(db, character_id)
+    return await get_inferences(db, character_id, status=status)
 
 
 @router.post("/{character_id}/facts", status_code=201, response_model=Fact)
@@ -71,10 +74,25 @@ async def update_fact_endpoint(character_id: int, key: str, body: _UpdateBody, d
         raise HTTPException(status_code=404, detail=f"Fact '{key}' not found") from exc
 
 
-@router.delete("/{character_id}/facts/{key}", status_code=204)
-async def delete_fact_endpoint(character_id: int, key: str, db: _DB) -> FastAPIResponse:
+@router.delete("/{character_id}/facts/{key}")
+async def delete_fact_endpoint(character_id: int, key: str, db: _DB) -> dict[str, object]:
+    from memories.services.inference_service import cascade_on_fact_delete
+
+    # Get the fact's id before deletion so we can cascade
+    row = await (
+        await db.execute(
+            "SELECT id FROM facts WHERE character_id = ? AND key = ?",
+            (character_id, key),
+        )
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Fact '{key}' not found")
+    fact_id: int = row[0]
+
     try:
         await delete_fact(db, character_id=character_id, key=key)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Fact '{key}' not found") from exc
-    return FastAPIResponse(status_code=204)
+
+    invalidated = await cascade_on_fact_delete(db, character_id, fact_id)
+    return {"invalidated_inferences": [inf.model_dump() for inf in invalidated]}

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 import httpx
 import pytest
 import respx
 
-from memories.models import Character, Fact
+from memories.models import Character, Fact, Inference
 from memories.services.evaluator import (
     EvaluatorParseError,
     EvaluatorResult,
@@ -314,4 +315,65 @@ async def test_evaluator_raises_parse_error_on_unknown_verdict(ollama: OllamaCli
 async def test_run_evaluator_returns_evaluator_result_type(ollama: OllamaClient) -> None:
     respx.post(_CHAT_URL).mock(return_value=httpx.Response(200, content=_eval_json()))
     result = await run_evaluator(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, ollama)
+    assert isinstance(result, EvaluatorResult)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 additions — inferences parameter
+# ---------------------------------------------------------------------------
+
+_EVAL_NOW = datetime(2026, 1, 1)
+
+_ESTABLISHED_INFERENCE = Inference(
+    id=10,
+    character_id=1,
+    statement="Alice was born in 1993",
+    derivation="age=33, current_year=2026",
+    source_fact_ids=[1],
+    source_inference_ids=[],
+    depth=1,
+    inference_type="logical",
+    status="active",
+    created_at=_EVAL_NOW,
+)
+
+
+def test_evaluator_prompt_includes_established_inferences() -> None:
+    prompt = build_evaluator_prompt(
+        _CHARACTER,
+        _FACTS,
+        _USER_MSG,
+        _CHAR_RESPONSE,
+        inferences=[_ESTABLISHED_INFERENCE],
+    )
+    assert "Alice was born in 1993" in prompt
+
+
+def test_evaluator_prompt_no_inferences_uses_fallback() -> None:
+    prompt = build_evaluator_prompt(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, inferences=[])
+    assert "(no inferences established yet)" in prompt
+
+
+def test_evaluator_prompt_includes_inference_ids() -> None:
+    prompt = build_evaluator_prompt(
+        _CHARACTER,
+        _FACTS,
+        _USER_MSG,
+        _CHAR_RESPONSE,
+        inferences=[_ESTABLISHED_INFERENCE],
+    )
+    assert "[10]" in prompt
+
+
+@respx.mock
+async def test_evaluator_accepts_inferences_parameter(ollama: OllamaClient) -> None:
+    respx.post(_CHAT_URL).mock(return_value=httpx.Response(200, content=_eval_json()))
+    result = await run_evaluator(
+        _CHARACTER,
+        _FACTS,
+        _USER_MSG,
+        _CHAR_RESPONSE,
+        ollama,
+        inferences=[_ESTABLISHED_INFERENCE],
+    )
     assert isinstance(result, EvaluatorResult)

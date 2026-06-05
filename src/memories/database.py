@@ -473,9 +473,49 @@ async def create_inference(
 async def get_inferences(
     db: aiosqlite.Connection, character_id: int, status: str = "active"
 ) -> list[Inference]:
-    cursor = await db.execute(
-        "SELECT * FROM inferences WHERE character_id = ? AND status = ? ORDER BY id",
-        (character_id, status),
-    )
+    if status == "all":
+        cursor = await db.execute(
+            "SELECT * FROM inferences WHERE character_id = ? ORDER BY id",
+            (character_id,),
+        )
+    else:
+        cursor = await db.execute(
+            "SELECT * FROM inferences WHERE character_id = ? AND status = ? ORDER BY id",
+            (character_id, status),
+        )
     rows = await cursor.fetchall()
     return [_parse_inference(r) for r in rows]
+
+
+async def get_inference(db: aiosqlite.Connection, inference_id: int) -> Inference | None:
+    row = await (
+        await db.execute("SELECT * FROM inferences WHERE id = ?", (inference_id,))
+    ).fetchone()
+    return _parse_inference(row) if row else None
+
+
+async def update_inference_status(
+    db: aiosqlite.Connection, inference_id: int, new_status: str
+) -> Inference:
+    cursor = await db.execute(
+        "UPDATE inferences SET status = ? WHERE id = ?",
+        (new_status, inference_id),
+    )
+    await db.commit()
+    if cursor.rowcount == 0:
+        raise NotFoundError(f"Inference {inference_id} not found")
+    row = await (
+        await db.execute("SELECT * FROM inferences WHERE id = ?", (inference_id,))
+    ).fetchone()
+    assert row is not None
+    return _parse_inference(row)
+
+
+async def delete_inference(db: aiosqlite.Connection, inference_id: int) -> None:
+    cursor = await db.execute(
+        "DELETE FROM inferences WHERE id = ?",
+        (inference_id,),
+    )
+    await db.commit()
+    if cursor.rowcount == 0:
+        raise NotFoundError(f"Inference {inference_id} not found")

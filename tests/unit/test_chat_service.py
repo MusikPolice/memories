@@ -558,3 +558,180 @@ async def test_run_turn_falls_back_to_pass_on_evaluator_parse_error(
     assert result.verdict == "pass"
     msgs = await get_messages(db, session.id)
     assert any(m.role == "assistant" and m.content == "I am fine." for m in msgs)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 additions — inference loading and depth capping
+# ---------------------------------------------------------------------------
+
+
+async def test_run_turn_loads_inferences_for_character(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """When active inferences exist, run_turn includes them in the system message."""
+    await create_fact(db, character_id=character.id, key="age", value="33")
+    from memories.database import create_inference
+
+    await create_inference(
+        db,
+        character_id=character.id,
+        statement="Alice was born in 1993",
+        derivation="age=33",
+    )
+    with respx.mock:
+        route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Hello", ollama)
+
+    # First call (calls[0]) is the character LLM — check its system message
+    body = json.loads(route.calls[0].request.content)
+    system_content = body["messages"][0]["content"]
+    assert "Alice was born in 1993" in system_content
+
+
+async def test_run_turn_system_message_includes_inference_text(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """System message content contains a known inference statement."""
+    from memories.database import create_inference
+
+    await create_inference(
+        db,
+        character_id=character.id,
+        statement="Alice likely works weekends",
+        derivation="occupation=surgeon",
+    )
+    with respx.mock:
+        route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Work-life balance?", ollama)
+
+    body = json.loads(route.calls[0].request.content)
+    system_msg = body["messages"][0]["content"]
+    assert "Alice likely works weekends" in system_msg
+
+
+async def test_lazy_inference_depth_computed_before_storing(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """Lazy-discovered logical inference with an existing source at depth 2 is stored at depth 3."""
+    from memories.database import create_inference
+
+    existing = await create_inference(
+        db,
+        character_id=character.id,
+        statement="Existing inference at depth 2",
+        derivation="d",
+        depth=2,
+    )
+    new_inf_payload = [
+        {
+            "inference_type": "logical",
+            "statement": "Derived from depth-2 inference",
+            "derivation": "from existing",
+            "source_fact_ids": [],
+            "source_inference_ids": [existing.id],
+        }
+    ]
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=_mock_turn(
+                "Derived statement.", "new_inference_logical", new_inferences=new_inf_payload
+            )
+        )
+        await run_turn(db, session.id, "Tell me more", ollama)
+
+    stored = await get_inferences(db, character.id)
+    new_inf = next((i for i in stored if "Derived from depth-2" in i.statement), None)
+    assert new_inf is not None
+    assert new_inf.depth == 3
+
+
+async def test_lazy_inference_at_max_depth_is_stored(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """Inference at exactly MAX_INFERENCE_DEPTH is stored (not discarded)."""
+    from memories.database import create_inference
+    from memories.services.inference_service import MAX_INFERENCE_DEPTH
+
+    existing = await create_inference(
+        db,
+        character_id=character.id,
+        statement="Source at max-1 depth",
+        derivation="d",
+        depth=MAX_INFERENCE_DEPTH - 1,
+    )
+    new_inf_payload = [
+        {
+            "inference_type": "logical",
+            "statement": "At exactly max depth",
+            "derivation": "from source",
+            "source_fact_ids": [],
+            "source_inference_ids": [existing.id],
+        }
+    ]
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=_mock_turn(
+                "At the limit.", "new_inference_logical", new_inferences=new_inf_payload
+            )
+        )
+        await run_turn(db, session.id, "Depth test", ollama)
+
+    stored = await get_inferences(db, character.id)
+    assert any("At exactly max depth" in i.statement for i in stored)
+
+
+async def test_lazy_inference_exceeding_depth_cap_not_stored(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """Inference whose depth would exceed MAX_INFERENCE_DEPTH is silently discarded."""
+    from memories.database import create_inference
+    from memories.services.inference_service import MAX_INFERENCE_DEPTH
+
+    existing = await create_inference(
+        db,
+        character_id=character.id,
+        statement="Source at max depth",
+        derivation="d",
+        depth=MAX_INFERENCE_DEPTH,
+    )
+    new_inf_payload = [
+        {
+            "inference_type": "logical",
+            "statement": "Exceeds the cap",
+            "derivation": "from source",
+            "source_fact_ids": [],
+            "source_inference_ids": [existing.id],
+        }
+    ]
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=_mock_turn(
+                "Too deep.", "new_inference_logical", new_inferences=new_inf_payload
+            )
+        )
+        await run_turn(db, session.id, "Depth exceeded", ollama)
+
+    stored = await get_inferences(db, character.id)
+    assert not any("Exceeds the cap" in i.statement for i in stored)
+
+
+async def test_evaluator_called_with_inferences(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """The second Ollama call (evaluator) includes active inference statements in its prompt."""
+    from memories.database import create_inference
+
+    await create_inference(
+        db,
+        character_id=character.id,
+        statement="Alice is probably left-handed",
+        derivation="occupation=surgeon, handedness patterns",
+    )
+    with respx.mock:
+        route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Tell me about yourself", ollama)
+
+    # calls[1] is the evaluator call
+    eval_body = json.loads(route.calls[1].request.content)
+    eval_prompt = eval_body["messages"][1]["content"]  # user message has the evaluator prompt
+    assert "Alice is probably left-handed" in eval_prompt

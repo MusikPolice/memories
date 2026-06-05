@@ -9,7 +9,13 @@ import httpx
 import respx
 from httpx import AsyncClient
 
-from memories.database import create_fact, get_decisions, get_inferences, get_messages
+from memories.database import (
+    create_fact,
+    create_inference,
+    get_decisions,
+    get_inferences,
+    get_messages,
+)
 from memories.models import Character, Session
 from tests.unit.conftest import make_evaluator_ndjson, make_ollama_ndjson
 
@@ -557,3 +563,156 @@ async def test_send_message_reviewing_event_before_message_event(
     )
     message_idx = next(i for i, e in enumerate(events) if e.get("event") == "message")
     assert reviewing_idx < message_idx
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 additions — inferences in chat flow
+# ---------------------------------------------------------------------------
+
+
+async def test_send_message_system_message_includes_inferences(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """When character has active inferences, Ollama request system message contains them."""
+    await create_fact(db, character_id=character.id, key="age", value="33")
+    await create_inference(
+        db,
+        character_id=character.id,
+        statement="Alice was born in 1993",
+        derivation="age=33",
+    )
+
+    with respx.mock:
+        route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
+        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
+
+    body = json.loads(route.calls[0].request.content)
+    system_content = body["messages"][0]["content"]
+    assert "Alice was born in 1993" in system_content
+
+
+async def test_send_message_no_inferences_section_when_none_exist(
+    client: AsyncClient, character: Character, session: Session
+) -> None:
+    """When no inferences exist, the system message does not contain the inferences header."""
+    with respx.mock:
+        route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
+        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
+
+    body = json.loads(route.calls[0].request.content)
+    system_content = body["messages"][0]["content"]
+    assert "## Your Inferences" not in system_content
+
+
+async def test_send_message_lazy_logical_inference_stored_with_depth(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """new_inference_logical with source_inference_ids=[existing_id] → stored with depth=2."""
+    existing = await create_inference(
+        db,
+        character_id=character.id,
+        statement="Existing at depth 1",
+        derivation="d",
+        depth=1,
+    )
+    new_inf_payload = [
+        {
+            "inference_type": "logical",
+            "statement": "Derived from existing",
+            "derivation": "from existing",
+            "source_fact_ids": [],
+            "source_inference_ids": [existing.id],
+        }
+    ]
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=_mock_turn(
+                "Statement.", "new_inference_logical", new_inferences=new_inf_payload
+            )
+        )
+        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Tell me"})
+
+    stored = await get_inferences(db, character.id)
+    derived = next((i for i in stored if "Derived from existing" in i.statement), None)
+    assert derived is not None
+    assert derived.depth == 2
+
+
+async def test_send_message_lazy_inference_at_max_depth_is_stored(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """Lazy inference at exactly MAX_INFERENCE_DEPTH is stored."""
+    from memories.services.inference_service import MAX_INFERENCE_DEPTH
+
+    existing = await create_inference(
+        db,
+        character_id=character.id,
+        statement="At max-1 depth",
+        derivation="d",
+        depth=MAX_INFERENCE_DEPTH - 1,
+    )
+    new_inf_payload = [
+        {
+            "inference_type": "logical",
+            "statement": "At exactly max depth",
+            "derivation": "from existing",
+            "source_fact_ids": [],
+            "source_inference_ids": [existing.id],
+        }
+    ]
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=_mock_turn(
+                "Statement.", "new_inference_logical", new_inferences=new_inf_payload
+            )
+        )
+        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Tell me"})
+
+    stored = await get_inferences(db, character.id)
+    assert any("At exactly max depth" in i.statement for i in stored)
+
+
+async def test_send_message_lazy_inference_exceeding_depth_not_stored(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """Lazy inference at depth > MAX_INFERENCE_DEPTH is not stored."""
+    from memories.services.inference_service import MAX_INFERENCE_DEPTH
+
+    existing = await create_inference(
+        db,
+        character_id=character.id,
+        statement="At max depth",
+        derivation="d",
+        depth=MAX_INFERENCE_DEPTH,
+    )
+    new_inf_payload = [
+        {
+            "inference_type": "logical",
+            "statement": "Exceeds depth cap",
+            "derivation": "from existing",
+            "source_fact_ids": [],
+            "source_inference_ids": [existing.id],
+        }
+    ]
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=_mock_turn(
+                "Statement.", "new_inference_logical", new_inferences=new_inf_payload
+            )
+        )
+        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Tell me"})
+
+    stored = await get_inferences(db, character.id)
+    assert not any("Exceeds depth cap" in i.statement for i in stored)

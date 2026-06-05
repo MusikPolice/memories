@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from memories.models import Character, Fact
+from memories.models import Character, Fact, Inference
 from memories.services.ollama_client import OllamaClient
 
 _VALID_VERDICTS = frozenset(
@@ -65,6 +65,7 @@ def build_evaluator_prompt(
     user_message: str,
     character_response: str,
     contradiction_hints: list[str] | None = None,
+    inferences: list[Inference] | None = None,
 ) -> str:
     """Build the user-facing content for the evaluator Ollama call."""
     parts: list[str] = [f"Character: {character.name}"]
@@ -75,6 +76,13 @@ def build_evaluator_prompt(
             parts.append(f"[{f.id}] {f.key}: {f.value}")
     else:
         parts.append("(no facts established yet)")
+
+    parts.append("\n## Established Inferences (id: statement)")
+    if inferences:
+        for inf in inferences:
+            parts.append(f"[{inf.id}] {inf.statement}  (from: {inf.derivation})")
+    else:
+        parts.append("(no inferences established yet)")
 
     parts.append(f'\n## Conversation Context\nUser said: "{user_message}"')
     parts.append(f"\n## Character Response to Evaluate\n{character_response}")
@@ -91,11 +99,16 @@ Analyze the character's response. Every specific claim must be TRACEABLE to an
 established Fact or strictly derived from one.
 
 CRITICAL DISTINCTION: "consistent with facts" is NOT the same as "grounded in facts."
-A detail is only grounded if it can be directly looked up in the Facts list above or
-is a necessary logical consequence (e.g. deriving birth year from age).
+A detail is grounded if it can be directly looked up in the **Established Facts** list,
+found verbatim in the **Established Inferences** list, or is a necessary logical
+consequence of the above. A detail is NOT automatically grounded just because it is
+consistent with the facts or sounds plausible.
 If the character INVENTED a specific detail — clothing, accessories, a hairstyle,
 a location, a relationship, a personal history item — that is an IMPLICATION,
 even if it seems plausible for this type of character.
+
+The new_inference_logical / new_inference_probabilistic verdicts should only fire for
+conclusions that are NOT already in the Established Inferences list.
 
 Examples:
 - Character says "I enjoy organising things" (occupation=PA) → new_inference_probabilistic
@@ -154,10 +167,11 @@ async def run_evaluator(
     character_response: str,
     ollama: OllamaClient,
     contradiction_hints: list[str] | None = None,
+    inferences: list[Inference] | None = None,
 ) -> EvaluatorResult:
     """Run the evaluator LLM and return a parsed verdict."""
     prompt = build_evaluator_prompt(
-        character, facts, user_message, character_response, contradiction_hints
+        character, facts, user_message, character_response, contradiction_hints, inferences
     )
     model = character.current_model_name or character.modelfile_base
     messages: list[dict[str, str]] = [

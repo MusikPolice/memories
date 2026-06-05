@@ -5,6 +5,9 @@ from __future__ import annotations
 import aiosqlite
 from httpx import AsyncClient
 
+from memories.database import create_inference, get_inferences
+from memories.models import Character
+
 
 async def test_add_fact_201(client: AsyncClient) -> None:
     char_resp = await client.post(
@@ -61,14 +64,14 @@ async def test_update_nonexistent_fact_404(client: AsyncClient) -> None:
     assert response.status_code == 404
 
 
-async def test_delete_fact_204(client: AsyncClient) -> None:
+async def test_delete_fact_returns_200(client: AsyncClient) -> None:
     char_resp = await client.post(
         "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
     )
     char_id = char_resp.json()["id"]
     await client.post(f"/api/characters/{char_id}/facts", json={"key": "age", "value": "30"})
     response = await client.delete(f"/api/characters/{char_id}/facts/age")
-    assert response.status_code == 204
+    assert response.status_code == 200
 
 
 async def test_delete_nonexistent_fact_404(client: AsyncClient) -> None:
@@ -129,3 +132,87 @@ async def test_list_inferences_returns_active_inferences(
 async def test_list_inferences_unknown_character_404(client: AsyncClient) -> None:
     response = await client.get("/api/characters/9999/inferences")
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — DELETE fact cascade
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_fact_response_has_invalidated_inferences_key(
+    client: AsyncClient,
+) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    await client.post(f"/api/characters/{char_id}/facts", json={"key": "age", "value": "30"})
+    response = await client.delete(f"/api/characters/{char_id}/facts/age")
+    assert "invalidated_inferences" in response.json()
+    assert isinstance(response.json()["invalidated_inferences"], list)
+
+
+async def test_delete_fact_cascade_marks_dependent_inference_invalidated(
+    client: AsyncClient,
+    character: Character,
+    db: aiosqlite.Connection,
+) -> None:
+    # Create a fact and an inference that depends on it
+    fact_resp = await client.post(
+        f"/api/characters/{character.id}/facts", json={"key": "age", "value": "33"}
+    )
+    fact_id = fact_resp.json()["id"]
+    inf = await create_inference(
+        db,
+        character_id=character.id,
+        statement="Alice was born in 1993",
+        derivation="age=33",
+        source_fact_ids=[fact_id],
+    )
+
+    response = await client.delete(f"/api/characters/{character.id}/facts/age")
+    data = response.json()
+
+    assert any(i["id"] == inf.id for i in data["invalidated_inferences"])
+    invalidated_db = await get_inferences(db, character.id, status="invalidated")
+    assert any(i.id == inf.id for i in invalidated_db)
+
+
+async def test_delete_fact_cascade_leaves_unrelated_inference_active(
+    client: AsyncClient,
+    character: Character,
+    db: aiosqlite.Connection,
+) -> None:
+    # Create a fact to delete, and an inference that references a DIFFERENT fact
+    await client.post(f"/api/characters/{character.id}/facts", json={"key": "age", "value": "33"})
+    unrelated = await create_inference(
+        db,
+        character_id=character.id,
+        statement="Unrelated inference",
+        derivation="d",
+        source_fact_ids=[999],  # different fact id
+    )
+
+    await client.delete(f"/api/characters/{character.id}/facts/age")
+
+    active = await get_inferences(db, character.id, status="active")
+    assert any(a.id == unrelated.id for a in active)
+
+
+async def test_delete_fact_no_dependents_returns_empty_list(
+    client: AsyncClient,
+    character: Character,
+    db: aiosqlite.Connection,
+) -> None:
+    await client.post(f"/api/characters/{character.id}/facts", json={"key": "age", "value": "33"})
+    # Create an inference that does NOT depend on this fact
+    await create_inference(
+        db,
+        character_id=character.id,
+        statement="Independent inference",
+        derivation="d",
+        source_fact_ids=[999],
+    )
+
+    response = await client.delete(f"/api/characters/{character.id}/facts/age")
+    assert response.json()["invalidated_inferences"] == []

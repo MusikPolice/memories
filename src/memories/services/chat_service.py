@@ -12,6 +12,7 @@ from memories.database import (
     get_active_segment,
     get_character,
     get_facts,
+    get_inferences,
     get_messages,
     get_session,
     next_turn_id,
@@ -19,13 +20,14 @@ from memories.database import (
     store_message,
 )
 from memories.exceptions import NotFoundError, SessionEndedError
-from memories.models import Character, Fact
+from memories.models import Character, Fact, Inference
 from memories.services.evaluator import (
     ContradictionNotification,
     EvaluatorParseError,
     EvaluatorResult,
     run_evaluator,
 )
+from memories.services.inference_service import MAX_INFERENCE_DEPTH, compute_depth
 from memories.services.ollama_client import OllamaClient
 from memories.services.prompt_builder import build_system_prompt
 
@@ -41,6 +43,7 @@ async def run_contradiction_loop(
     ollama: OllamaClient,
     think: bool = False,
     max_retries: int = MAX_CONTRADICTION_RETRIES,
+    inferences: list[Inference] | None = None,
 ) -> tuple[str, str, EvaluatorResult]:
     """Run the character LLM + evaluator, retrying until no contradictions remain.
 
@@ -77,6 +80,7 @@ async def run_contradiction_loop(
                 content,
                 ollama,
                 contradiction_hints=contradiction_hints or None,
+                inferences=inferences or None,
             )
         except EvaluatorParseError:
             ev = EvaluatorResult(
@@ -128,7 +132,8 @@ async def run_turn(
     assert character is not None
 
     facts = await get_facts(db, session.character_id)
-    system_prompt = build_system_prompt(character, facts)
+    inferences = await get_inferences(db, session.character_id)
+    system_prompt = build_system_prompt(character, facts, inferences)
     history = await get_messages(db, session_id)
     segment = await get_active_segment(db, session_id)
     turn_id = await next_turn_id(db, session_id)
@@ -151,7 +156,14 @@ async def run_turn(
     model = character.current_model_name or character.modelfile_base
 
     char_content, char_thinking, eval_result = await run_contradiction_loop(
-        model, base_messages, character, facts, user_content, ollama, think=think
+        model,
+        base_messages,
+        character,
+        facts,
+        user_content,
+        ollama,
+        think=think,
+        inferences=inferences,
     )
 
     # Determine ungrounded_implications to store with the assistant message
@@ -170,9 +182,12 @@ async def run_turn(
         ungrounded_implications=ungrounded,
     )
 
-    # Auto-promote logical inferences
+    # Auto-promote logical inferences with depth cap
     if eval_result.verdict == "new_inference_logical":
         for inf in eval_result.new_inferences:
+            depth = compute_depth(inf.source_inference_ids, inferences)
+            if depth > MAX_INFERENCE_DEPTH:
+                continue
             await create_inference(
                 db,
                 character_id=session.character_id,
@@ -181,6 +196,7 @@ async def run_turn(
                 source_fact_ids=inf.source_fact_ids,
                 source_inference_ids=inf.source_inference_ids,
                 inference_type=inf.inference_type,
+                depth=depth,
             )
 
     # Log decision
