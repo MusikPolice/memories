@@ -110,6 +110,24 @@ export function buildNotificationFromSidechannel(payload) {
 }
 
 // ---------------------------------------------------------------------------
+// Violation helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove one violation from a notification's violations array in-place.
+ * Returns true when the list is now empty (caller should dismiss the card).
+ *
+ * @param {{ violations: object[] }} notif
+ * @param {object} violation
+ * @returns {boolean}
+ */
+export function removeViolation(notif, violation) {
+  const idx = notif.violations.indexOf(violation);
+  if (idx !== -1) notif.violations.splice(idx, 1);
+  return notif.violations.length === 0;
+}
+
+// ---------------------------------------------------------------------------
 // API helpers
 // ---------------------------------------------------------------------------
 

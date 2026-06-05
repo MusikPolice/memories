@@ -4,6 +4,7 @@ import {
   parseSSEBlocks,
   sseStateToLabel,
   buildNotificationFromSidechannel,
+  removeViolation,
   apiAcceptImplication,
   apiIgnoreImplication,
   apiAcceptInference,
@@ -191,6 +192,45 @@ describe('buildNotificationFromSidechannel', () => {
 
   it('returns null for an unrecognised sidechannel type', () => {
     expect(buildNotificationFromSidechannel({ type: 'unknown' })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// removeViolation
+// ---------------------------------------------------------------------------
+
+describe('removeViolation', () => {
+  function makeNotif(...keys) {
+    return {
+      violations: keys.map(k => ({ suggested_fact: { key: k, value: 'v' }, _editValue: 'v' })),
+    };
+  }
+
+  it('removes the target violation from the array', () => {
+    const notif = makeNotif('age', 'hometown');
+    const v = notif.violations[0];
+    removeViolation(notif, v);
+    expect(notif.violations).toHaveLength(1);
+    expect(notif.violations[0].suggested_fact.key).toBe('hometown');
+  });
+
+  it('returns false when other violations still remain', () => {
+    const notif = makeNotif('age', 'hometown');
+    const result = removeViolation(notif, notif.violations[0]);
+    expect(result).toBe(false);
+  });
+
+  it('returns true when the last violation is removed', () => {
+    const notif = makeNotif('age');
+    const result = removeViolation(notif, notif.violations[0]);
+    expect(result).toBe(true);
+    expect(notif.violations).toHaveLength(0);
+  });
+
+  it('is a no-op and returns true when the violation is not in the array', () => {
+    const notif = makeNotif();
+    const result = removeViolation(notif, { suggested_fact: { key: 'x', value: 'y' } });
+    expect(result).toBe(true);
   });
 });
 
