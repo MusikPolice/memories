@@ -459,6 +459,65 @@ async def test_ignore_inference_returns_204(
     assert response.status_code == 204
 
 
+async def test_accept_inference_depth_computed_from_source_inference_ids(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    probabilistic_session: tuple[Session, int],
+) -> None:
+    """Depth is computed from source_inference_ids; depth-1 source → stored at depth 2."""
+    session, turn_id = probabilistic_session
+    base = await create_inference(
+        db,
+        character_id=character.id,
+        statement="Base inference at depth 1",
+        derivation="base",
+        depth=1,
+    )
+    response = await client.post(
+        f"/api/sessions/{session.id}/turns/{turn_id}/accept-inference",
+        json={
+            "statement": "Derived inference",
+            "derivation": "from base",
+            "source_fact_ids": [],
+            "source_inference_ids": [base.id],
+            "inference_type": "probabilistic",
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["depth"] == 2
+
+
+async def test_accept_inference_exceeding_depth_cap_returns_422(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    probabilistic_session: tuple[Session, int],
+) -> None:
+    """Accepting an inference that would exceed MAX_INFERENCE_DEPTH returns 422."""
+    from memories.services.inference_service import MAX_INFERENCE_DEPTH
+
+    session, turn_id = probabilistic_session
+    at_max = await create_inference(
+        db,
+        character_id=character.id,
+        statement="At max depth",
+        derivation="base",
+        depth=MAX_INFERENCE_DEPTH,
+    )
+    response = await client.post(
+        f"/api/sessions/{session.id}/turns/{turn_id}/accept-inference",
+        json={
+            "statement": "Would exceed depth cap",
+            "derivation": "from at_max",
+            "source_fact_ids": [],
+            "source_inference_ids": [at_max.id],
+            "inference_type": "probabilistic",
+        },
+    )
+    assert response.status_code == 422
+
+
 async def test_ignore_inference_does_not_create_inference_row(
     db: aiosqlite.Connection,
     client: AsyncClient,

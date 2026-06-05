@@ -23,6 +23,7 @@ from memories.database import (
 from memories.deps import get_db, get_ollama
 from memories.exceptions import NotFoundError
 from memories.services.chat_service import MAX_CONTRADICTION_RETRIES, run_contradiction_loop
+from memories.services.inference_service import MAX_INFERENCE_DEPTH, compute_depth
 from memories.services.ollama_client import OllamaClient
 from memories.services.prompt_builder import build_system_prompt
 
@@ -41,6 +42,7 @@ class _AcceptInferenceBody(BaseModel):
     statement: str
     derivation: str
     source_fact_ids: list[int] = []
+    source_inference_ids: list[int] = []
     inference_type: str = "probabilistic"
 
 
@@ -159,13 +161,23 @@ async def accept_inference(
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    existing = await get_inferences(db, session.character_id)
+    depth = compute_depth(body.source_inference_ids, existing)
+    if depth > MAX_INFERENCE_DEPTH:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Inference depth {depth} exceeds cap {MAX_INFERENCE_DEPTH}",
+        )
+
     inference = await create_inference(
         db,
         character_id=session.character_id,
         statement=body.statement,
         derivation=body.derivation,
         source_fact_ids=body.source_fact_ids,
+        source_inference_ids=body.source_inference_ids,
         inference_type=body.inference_type,
+        depth=depth,
     )
     return inference.model_dump()
 
