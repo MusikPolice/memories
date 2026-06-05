@@ -39,13 +39,49 @@ async def send_message(
 
     async def _stream() -> AsyncGenerator[str, None]:
         yield 'event: status\ndata: {"state": "generating"}\n\n'
-        content, thinking, turn_id = await run_turn(
+        yield 'event: status\ndata: {"state": "reviewing"}\n\n'
+        content, thinking, turn_id, eval_result = await run_turn(
             db, session_id, body.content, ollama, think=body.think
         )
+
+        # Emit contradiction loop events (Option B: after run_turn returns)
+        for notif in eval_result.contradiction_notifications:
+            sc_data = json.dumps(
+                {
+                    "type": "contradiction",
+                    "iteration": notif.iteration,
+                    "description": notif.description,
+                }
+            )
+            yield f"event: sidechannel\ndata: {sc_data}\n\n"
+            yield 'event: status\ndata: {"state": "regenerating"}\n\n'
+            yield 'event: status\ndata: {"state": "reviewing"}\n\n'
+
         if thinking:
             yield f"event: thinking\ndata: {json.dumps({'content': thinking})}\n\n"
-        data = json.dumps({"role": "assistant", "content": content, "turn_id": turn_id})
-        yield f"event: message\ndata: {data}\n\n"
+
+        msg_data: dict[str, object] = {
+            "role": "assistant",
+            "content": content,
+            "turn_id": turn_id,
+        }
+        if eval_result.verdict in ("implication", "new_inference_probabilistic"):
+            msg_data["ungrounded"] = True
+        if eval_result.max_retries_exceeded:
+            msg_data["contradiction_exhausted"] = True
+
+        yield f"event: message\ndata: {json.dumps(msg_data)}\n\n"
+
+        # Emit sidechannel for non-contradiction violations / probabilistic inferences
+        if eval_result.verdict in ("implication", "new_inference_probabilistic"):
+            sc_payload: dict[str, object] = {
+                "type": eval_result.verdict,
+                "turn_id": turn_id,
+                "violations": [v.model_dump() for v in eval_result.violations],
+                "new_inferences": [i.model_dump() for i in eval_result.new_inferences],
+            }
+            yield f"event: sidechannel\ndata: {json.dumps(sc_payload)}\n\n"
+
         yield "event: done\ndata: {}\n\n"
 
     return StreamingResponse(_stream(), media_type="text/event-stream")

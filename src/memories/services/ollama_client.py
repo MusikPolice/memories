@@ -38,6 +38,7 @@ class OllamaClient:
         model: str,
         messages: list[dict[str, str]],
         think: bool = False,
+        format: dict[str, Any] | str | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """Send a chat request and return ``(assembled_content, final_chunk)``.
 
@@ -45,6 +46,8 @@ class OllamaClient:
         contains ``prompt_eval_count`` and ``eval_count`` for token tracking.
         ``think`` must be at the top level of the request body — NOT inside
         ``options`` — which Ollama silently ignores.
+        ``format`` is passed verbatim to Ollama; use ``"json"`` or a JSON
+        schema dict to constrain the output format (e.g. for the evaluator).
         """
         url = f"{self.base_url}/api/chat"
         payload: dict[str, Any] = {
@@ -53,6 +56,8 @@ class OllamaClient:
             "stream": True,
             "think": think,
         }
+        if format is not None:
+            payload["format"] = format
         try:
             async with (
                 httpx.AsyncClient(

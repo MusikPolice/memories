@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import aiosqlite
 import pytest
@@ -48,6 +49,27 @@ def make_ollama_ndjson(
             obj["eval_count"] = eval_count
         lines.append(json.dumps(obj))
     return ("\n".join(lines) + "\n").encode()
+
+
+def make_evaluator_ndjson(
+    verdict: str = "pass",
+    new_inferences: list[dict[str, Any]] | None = None,
+    violations: list[dict[str, Any]] | None = None,
+    decision_log: str = "Response is grounded and clean.",
+) -> bytes:
+    """Build a minimal Ollama NDJSON body whose content is an evaluator JSON verdict.
+
+    Use this to mock the second Ollama call (evaluator) in any test that exercises
+    ``run_turn``.  The returned bytes can be passed to
+    ``httpx.Response(200, content=...)``.
+    """
+    data: dict[str, Any] = {
+        "verdict": verdict,
+        "new_inferences": new_inferences or [],
+        "violations": violations or [],
+        "decision_log": decision_log,
+    }
+    return make_ollama_ndjson(json.dumps(data))
 
 
 @pytest.fixture

@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from memories import deps
 from memories.database import init_db, list_characters
-from memories.routers import characters, chat, facts, sessions
+from memories.routers import characters, chat, decisions, facts, implication, sessions
 from memories.services.ollama_client import OllamaClient, OllamaConnectionError, OllamaResponseError
 
 _log = logging.getLogger(__name__)
@@ -51,6 +51,8 @@ app.include_router(characters.router, prefix="/api/characters", tags=["character
 app.include_router(facts.router, prefix="/api/characters", tags=["facts"])
 app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])
 app.include_router(chat.router, prefix="/api/sessions", tags=["chat"])
+app.include_router(implication.router, prefix="/api/sessions", tags=["implication"])
+app.include_router(decisions.router, prefix="/api/sessions", tags=["decisions"])
 
 
 @app.get("/health")

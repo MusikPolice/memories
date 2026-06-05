@@ -147,3 +147,39 @@ async def test_warmup_raises_response_error_on_non_200(ollama: OllamaClient) -> 
     respx.post(_GENERATE_URL).mock(return_value=httpx.Response(404, content=b"Not Found"))
     with pytest.raises(OllamaResponseError):
         await ollama.warmup("qwen3:7b")
+
+
+# ---------------------------------------------------------------------------
+# format parameter
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_format_parameter_included_in_request_body(ollama: OllamaClient) -> None:
+    route = respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=make_ollama_ndjson('{"verdict":"pass"}'))
+    )
+    await ollama.chat("qwen3:7b", _SAMPLE_MESSAGES, format="json")
+    body = json.loads(route.calls[0].request.content)
+    assert body.get("format") == "json"
+
+
+@respx.mock
+async def test_format_parameter_absent_when_not_passed(ollama: OllamaClient) -> None:
+    route = respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=make_ollama_ndjson("Hi"))
+    )
+    await ollama.chat("qwen3:7b", _SAMPLE_MESSAGES)
+    body = json.loads(route.calls[0].request.content)
+    assert "format" not in body
+
+
+@respx.mock
+async def test_format_schema_dict_passed_through(ollama: OllamaClient) -> None:
+    schema = {"type": "object", "properties": {"verdict": {"type": "string"}}}
+    route = respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=make_ollama_ndjson('{"verdict":"pass"}'))
+    )
+    await ollama.chat("qwen3:7b", _SAMPLE_MESSAGES, format=schema)
+    body = json.loads(route.calls[0].request.content)
+    assert body.get("format") == schema

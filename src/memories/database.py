@@ -13,7 +13,7 @@ from typing import Any
 import aiosqlite
 
 from memories.exceptions import NotFoundError
-from memories.models import Character, Fact, Message, Segment, Session
+from memories.models import Character, Decision, Fact, Inference, Message, Segment, Session
 
 # ---------------------------------------------------------------------------
 # Full schema — created once at startup; all tables present from Phase 1
@@ -309,12 +309,17 @@ async def store_message(
     role: str,
     content: str,
     turn_id: int,
+    ungrounded_implications: list[dict[str, Any]] | None = None,
 ) -> Message:
+    ungrounded_json = (
+        json.dumps(ungrounded_implications) if ungrounded_implications is not None else None
+    )
     cursor = await db.execute(
         """INSERT INTO messages
-               (character_id, session_id, segment_id, role, content, turn_id)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (character_id, session_id, segment_id, role, content, turn_id),
+               (character_id, session_id, segment_id, role, content, turn_id,
+                ungrounded_implications)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (character_id, session_id, segment_id, role, content, turn_id, ungrounded_json),
     )
     await db.commit()
     assert cursor.lastrowid is not None
@@ -344,3 +349,149 @@ async def next_turn_id(db: aiosqlite.Connection, session_id: int) -> int:
     ).fetchone()
     max_id: int | None = row[0] if row else None
     return (max_id or 0) + 1
+
+
+async def tag_message_ungrounded(
+    db: aiosqlite.Connection,
+    *,
+    session_id: int,
+    turn_id: int,
+    implications: list[dict[str, Any]],
+) -> None:
+    """Set ungrounded_implications on the assistant message for *turn_id*."""
+    await db.execute(
+        "UPDATE messages SET ungrounded_implications = ? "
+        "WHERE session_id = ? AND turn_id = ? AND role = 'assistant'",
+        (json.dumps(implications), session_id, turn_id),
+    )
+    await db.commit()
+
+
+async def replace_message_content(
+    db: aiosqlite.Connection,
+    *,
+    session_id: int,
+    turn_id: int,
+    new_content: str,
+) -> Message:
+    """Replace content and clear ungrounded_implications on the assistant message."""
+    cursor = await db.execute(
+        "UPDATE messages SET content = ?, ungrounded_implications = NULL "
+        "WHERE session_id = ? AND turn_id = ? AND role = 'assistant'",
+        (new_content, session_id, turn_id),
+    )
+    await db.commit()
+    if cursor.rowcount == 0:
+        raise NotFoundError(f"No assistant message for session {session_id} turn {turn_id}")
+    row = await (
+        await db.execute(
+            "SELECT * FROM messages WHERE session_id = ? AND turn_id = ? AND role = 'assistant'",
+            (session_id, turn_id),
+        )
+    ).fetchone()
+    assert row is not None
+    return _parse_message(row)
+
+
+# ---------------------------------------------------------------------------
+# Decisions
+# ---------------------------------------------------------------------------
+
+
+def _parse_decision(row: aiosqlite.Row) -> Decision:
+    d = _row(row)
+    if d.get("violations"):
+        d["violations"] = json.loads(d["violations"])
+    return Decision.model_validate(d)
+
+
+async def store_decision(
+    db: aiosqlite.Connection,
+    *,
+    character_id: int,
+    session_id: int,
+    turn_id: int,
+    reasoning: str,
+    verdict: str,
+    violations: list[dict[str, Any]] | None = None,
+) -> Decision:
+    violations_json = json.dumps(violations) if violations is not None else None
+    cursor = await db.execute(
+        """INSERT INTO decisions (character_id, session_id, turn_id, reasoning, verdict, violations)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (character_id, session_id, turn_id, reasoning, verdict, violations_json),
+    )
+    await db.commit()
+    assert cursor.lastrowid is not None
+    row = await (
+        await db.execute("SELECT * FROM decisions WHERE id = ?", (cursor.lastrowid,))
+    ).fetchone()
+    assert row is not None
+    return _parse_decision(row)
+
+
+async def get_decisions(db: aiosqlite.Connection, session_id: int) -> list[Decision]:
+    cursor = await db.execute(
+        "SELECT * FROM decisions WHERE session_id = ? ORDER BY turn_id DESC",
+        (session_id,),
+    )
+    rows = await cursor.fetchall()
+    return [_parse_decision(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Inferences
+# ---------------------------------------------------------------------------
+
+
+def _parse_inference(row: aiosqlite.Row) -> Inference:
+    d = _row(row)
+    if d.get("source_fact_ids"):
+        d["source_fact_ids"] = json.loads(d["source_fact_ids"])
+    else:
+        d["source_fact_ids"] = []
+    if d.get("source_inference_ids"):
+        d["source_inference_ids"] = json.loads(d["source_inference_ids"])
+    else:
+        d["source_inference_ids"] = []
+    return Inference.model_validate(d)
+
+
+async def create_inference(
+    db: aiosqlite.Connection,
+    *,
+    character_id: int,
+    statement: str,
+    derivation: str,
+    source_fact_ids: list[int] | None = None,
+    source_inference_ids: list[int] | None = None,
+    depth: int = 1,
+    inference_type: str = "logical",
+) -> Inference:
+    fact_ids_json = json.dumps(source_fact_ids or [])
+    inf_ids_json = json.dumps(source_inference_ids or [])
+    cursor = await db.execute(
+        """INSERT INTO inferences
+               (character_id, statement, derivation, source_fact_ids, source_inference_ids,
+                depth, inference_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (character_id, statement, derivation, fact_ids_json, inf_ids_json, depth, inference_type),
+    )
+    await db.commit()
+    assert cursor.lastrowid is not None
+    row = await (
+        await db.execute("SELECT * FROM inferences WHERE id = ?", (cursor.lastrowid,))
+    ).fetchone()
+    assert row is not None
+    return _parse_inference(row)
+
+
+async def get_inferences(
+    db: aiosqlite.Connection, character_id: int, status: str = "active"
+) -> list[Inference]:
+    cursor = await db.execute(
+        "SELECT * FROM inferences WHERE character_id = ? AND status = ? ORDER BY id",
+        (character_id, status),
+    )
+    rows = await cursor.fetchall()
+    return [_parse_inference(r) for r in rows]
