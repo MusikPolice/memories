@@ -69,10 +69,10 @@ def build_evaluator_prompt(
     """Build the user-facing content for the evaluator Ollama call."""
     parts: list[str] = [f"Character: {character.name}"]
 
-    parts.append("\n## Established Facts")
+    parts.append("\n## Established Facts (id: key: value)")
     if facts:
         for f in facts:
-            parts.append(f"{f.key}: {f.value}")
+            parts.append(f"[{f.id}] {f.key}: {f.value}")
     else:
         parts.append("(no facts established yet)")
 
@@ -173,6 +173,13 @@ async def run_evaluator(
     violations_raw: list[dict[str, Any]] = data.get("violations", []) or []
     if any(v.get("type") == "contradiction" for v in violations_raw):
         data["verdict"] = "contradiction"
+
+    # Coerce source_fact_ids / source_inference_ids: drop any value that isn't an integer.
+    # Small models sometimes put "key: value" strings here instead of the numeric IDs.
+    for inf in data.get("new_inferences", []) or []:
+        for field in ("source_fact_ids", "source_inference_ids"):
+            raw = inf.get(field, []) or []
+            inf[field] = [v for v in raw if isinstance(v, int)]
 
     try:
         return EvaluatorResult.model_validate(data)
