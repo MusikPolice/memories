@@ -8,7 +8,7 @@ import pytest
 import respx
 from httpx import AsyncClient
 
-from memories.database import get_facts, get_inferences, get_messages
+from memories.database import get_decisions, get_facts, get_inferences, get_messages
 from memories.models import Character, Session
 from tests.unit.conftest import make_evaluator_ndjson, make_ollama_ndjson
 
@@ -152,6 +152,105 @@ async def test_edit_implication_uses_user_provided_value(
         )
     facts = await get_facts(db, character.id)
     assert any(f.key == "siblings" and f.value == "two brothers" for f in facts)
+
+
+async def test_accept_implication_stores_new_decision(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    implication_session: tuple[Session, int],
+) -> None:
+    """After accepting, a new decision row is stored with the regenerated verdict."""
+    session, turn_id = implication_session
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_pass_turn("I am an only child."))
+        await client.post(
+            f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
+            json={"key": "siblings", "value": "none"},
+        )
+    decisions = await get_decisions(db, session.id)
+    # Two decisions: one from the original turn (implication), one from the regen (pass)
+    assert len(decisions) == 2
+    regen_decision = next(d for d in decisions if d.reasoning != "Clean.")
+    assert regen_decision.verdict == "pass"
+    assert regen_decision.turn_id == turn_id
+
+
+async def test_accept_implication_duplicate_key_updates_existing_fact(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    implication_session: tuple[Session, int],
+) -> None:
+    """Accepting an implication for an existing key updates the fact rather than failing."""
+    session, turn_id = implication_session
+    # Accept once to create the fact
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_pass_turn())
+        await client.post(
+            f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
+            json={"key": "siblings", "value": "one sister"},
+        )
+
+    # Trigger a second implication turn so we have a new ungrounded message
+    second_turn_side_effect = [
+        httpx.Response(200, content=make_ollama_ndjson("She's two years older.")),
+        httpx.Response(200, content=make_evaluator_ndjson("implication", violations=[_VIOLATION])),
+    ]
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=second_turn_side_effect)
+        await client.post(
+            f"/api/sessions/{session.id}/messages", json={"content": "Tell me about your sister."}
+        )
+    msgs = await get_messages(db, session.id)
+    second_assistant = next(
+        m for m in reversed(msgs) if m.role == "assistant" and m.ungrounded_implications is not None
+    )
+    second_turn_id = second_assistant.turn_id
+
+    # Accept with a different value — should update, not fail with 500
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_pass_turn())
+        response = await client.post(
+            f"/api/sessions/{session.id}/turns/{second_turn_id}/accept-implication",
+            json={"key": "siblings", "value": "two brothers"},
+        )
+    assert response.status_code == 200
+    facts = await get_facts(db, character.id)
+    siblings = next(f for f in facts if f.key == "siblings")
+    assert siblings.value == "two brothers"
+
+
+async def test_accept_implication_regen_ungrounded_returns_ungrounded_flag(
+    client: AsyncClient,
+    character: Character,
+    implication_session: tuple[Session, int],
+) -> None:
+    """If the regenerated response is itself ungrounded, the endpoint returns ungrounded=True."""
+    session, turn_id = implication_session
+    second_violation = {
+        "type": "implication",
+        "description": "implied a favourite colour",
+        "suggested_fact": {"key": "favourite_colour", "value": "blue"},
+    }
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=[
+                httpx.Response(200, content=make_ollama_ndjson("I like blue things.")),
+                httpx.Response(
+                    200,
+                    content=make_evaluator_ndjson("implication", violations=[second_violation]),
+                ),
+            ]
+        )
+        response = await client.post(
+            f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
+            json={"key": "siblings", "value": "none"},
+        )
+    assert response.status_code == 200
+    data = response.json()
+    assert data.get("ungrounded") is True
+    assert "violations" in data
 
 
 # ---------------------------------------------------------------------------
