@@ -493,13 +493,15 @@ createApp({
         body: JSON.stringify({ value: fact._editValue }),
       });
       await loadFacts();
+      await loadInferences();
     }
 
     async function deleteFact(fact) {
-      await fetch(`/api/characters/${currentCharacter.value.id}/facts/${fact.key}`, {
+      const r = await fetch(`/api/characters/${currentCharacter.value.id}/facts/${fact.key}`, {
         method: 'DELETE',
       });
       await loadFacts();
+      await loadInferences();
     }
 
     async function endSession() {
