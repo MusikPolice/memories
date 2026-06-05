@@ -216,6 +216,14 @@
     }
     .btn-end:hover { background: #fdd; }
     .btn-end:disabled { opacity: .5; cursor: default; }
+    .btn-new-session {
+      width: 100%; padding: 7px; background: #3b5bdb; color: #fff;
+      border: none; border-radius: 4px; cursor: pointer; font-size: 13px;
+    }
+    .btn-new-session:hover { background: #2f4cc0; }
+    .session-ended-label {
+      text-align: center; font-size: 12px; color: #888; margin-bottom: 6px;
+    }
 
     .error-msg { color: #c00; font-size: 12px; margin-top: 4px; }
   </style>
@@ -390,9 +398,13 @@
         </div>
       </div>
       <div class="facts-footer">
-        <button class="btn-end" :disabled="sessionEnded" @click="endSession">
-          {{ sessionEnded ? 'Session ended' : 'End Session' }}
+        <button class="btn-end" v-if="!sessionEnded" @click="endSession">
+          End Session
         </button>
+        <div v-else>
+          <p class="session-ended-label">Session ended</p>
+          <button class="btn-new-session" @click="newSession">New Session</button>
+        </div>
       </div>
     </div>
 
@@ -507,6 +519,24 @@ createApp({
     async function endSession() {
       await fetch(`/api/sessions/${sessionId.value}/end`, { method: 'POST' });
       sessionEnded.value = true;
+    }
+
+    async function newSession() {
+      messages.value = [];
+      facts.value = [];
+      inferences.value = [];
+      inputText.value = '';
+      sending.value = false;
+      generating.value = false;
+      statusText.value = '';
+      sessionEnded.value = false;
+      sessionId.value = null;
+      currentCharacter.value = null;
+      if (characters.value.length === 1) {
+        await pickCharacter(characters.value[0]);
+      } else {
+        showPicker.value = true;
+      }
     }
 
     // ── Notification actions ──
@@ -669,7 +699,7 @@ createApp({
       showPicker, characters, currentCharacter, sessionId,
       messages, facts, inferences, inputText, sending, generating, statusText, sessionEnded,
       thinkEnabled, newKey, newValue, factError, messagesEl, inputEl,
-      pickCharacter, addFact, saveFact, deleteFact, endSession, sendMessage,
+      pickCharacter, addFact, saveFact, deleteFact, endSession, newSession, sendMessage,
       acceptImplication, ignoreImplication, acceptInference, ignoreInference,
       dismissNotification,
     };
