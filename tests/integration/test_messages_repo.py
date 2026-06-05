@@ -10,7 +10,6 @@ from memories.database import (
     get_messages,
     replace_message_content,
     store_message,
-    tag_message_ungrounded,
 )
 from memories.exceptions import NotFoundError
 
@@ -110,71 +109,8 @@ async def test_messages_reference_segment(db: aiosqlite.Connection) -> None:
 
 
 # ---------------------------------------------------------------------------
-# tag_message_ungrounded / replace_message_content
+# replace_message_content
 # ---------------------------------------------------------------------------
-
-
-async def test_tag_message_ungrounded_sets_field(db: aiosqlite.Connection) -> None:
-    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
-    session = await create_session(db, character_id=char.id)
-    segment = await get_active_segment(db, session.id)
-    await store_message(
-        db,
-        session_id=session.id,
-        segment_id=segment.id,
-        character_id=char.id,
-        role="user",
-        content="Hi",
-        turn_id=1,
-    )
-    await store_message(
-        db,
-        session_id=session.id,
-        segment_id=segment.id,
-        character_id=char.id,
-        role="assistant",
-        content="Hello!",
-        turn_id=1,
-    )
-    violations = [
-        {"type": "implication", "description": "implied a sibling", "suggested_fact": None}
-    ]
-    await tag_message_ungrounded(db, session_id=session.id, turn_id=1, implications=violations)
-    msgs = await get_messages(db, session.id)
-    assistant = next(m for m in msgs if m.role == "assistant")
-    assert assistant.ungrounded_implications is not None
-
-
-async def test_tag_message_ungrounded_stores_violations_as_list(db: aiosqlite.Connection) -> None:
-    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
-    session = await create_session(db, character_id=char.id)
-    segment = await get_active_segment(db, session.id)
-    await store_message(
-        db,
-        session_id=session.id,
-        segment_id=segment.id,
-        character_id=char.id,
-        role="user",
-        content="Hi",
-        turn_id=1,
-    )
-    await store_message(
-        db,
-        session_id=session.id,
-        segment_id=segment.id,
-        character_id=char.id,
-        role="assistant",
-        content="Reply",
-        turn_id=1,
-    )
-    violations = [
-        {"type": "implication", "description": "test", "suggested_fact": {"key": "x", "value": "y"}}
-    ]
-    await tag_message_ungrounded(db, session_id=session.id, turn_id=1, implications=violations)
-    msgs = await get_messages(db, session.id)
-    assistant = next(m for m in msgs if m.role == "assistant")
-    assert isinstance(assistant.ungrounded_implications, list)
-    assert assistant.ungrounded_implications[0]["type"] == "implication"
 
 
 async def test_replace_message_content_updates_text(db: aiosqlite.Connection) -> None:

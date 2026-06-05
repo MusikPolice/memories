@@ -351,22 +351,6 @@ async def next_turn_id(db: aiosqlite.Connection, session_id: int) -> int:
     return (max_id or 0) + 1
 
 
-async def tag_message_ungrounded(
-    db: aiosqlite.Connection,
-    *,
-    session_id: int,
-    turn_id: int,
-    implications: list[dict[str, Any]],
-) -> None:
-    """Set ungrounded_implications on the assistant message for *turn_id*."""
-    await db.execute(
-        "UPDATE messages SET ungrounded_implications = ? "
-        "WHERE session_id = ? AND turn_id = ? AND role = 'assistant'",
-        (json.dumps(implications), session_id, turn_id),
-    )
-    await db.commit()
-
-
 async def replace_message_content(
     db: aiosqlite.Connection,
     *,
