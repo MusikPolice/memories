@@ -39,11 +39,14 @@ async def send_message(
 
     async def _stream() -> AsyncGenerator[str, None]:
         yield 'event: status\ndata: {"state": "generating"}\n\n'
+        yield 'event: status\ndata: {"state": "reviewing"}\n\n'
         content, thinking, turn_id, eval_result = await run_turn(
             db, session_id, body.content, ollama, think=body.think
         )
 
-        # Emit contradiction loop events (Option B: after run_turn returns)
+        # Emit contradiction loop events (Option B: after run_turn returns).
+        # Each notification represents one contradiction found during the loop;
+        # the regenerating+reviewing pair shows what happened on that retry.
         for notif in eval_result.contradiction_notifications:
             sc_data = json.dumps(
                 {

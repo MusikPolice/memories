@@ -520,10 +520,40 @@ async def test_send_message_status_event_order_for_pass(
             f"/api/sessions/{session.id}/messages", json={"content": "Hello"}
         )
     events = _parse_sse(response.text)
-    # generating → message → done
-    assert events[0].get("event") == "status"
-    assert json.loads(events[0]["data"])["state"] == "generating"
-    generating_idx = 0
+    # generating → reviewing → message → done
+    status_events = [e for e in events if e.get("event") == "status"]
+    states = [json.loads(e["data"])["state"] for e in status_events]
+    assert states[0] == "generating"
+    assert states[1] == "reviewing"
+    generating_idx = next(
+        i
+        for i, e in enumerate(events)
+        if e.get("event") == "status" and json.loads(e["data"])["state"] == "generating"
+    )
+    reviewing_idx = next(
+        i
+        for i, e in enumerate(events)
+        if e.get("event") == "status" and json.loads(e["data"])["state"] == "reviewing"
+    )
     message_idx = next(i for i, e in enumerate(events) if e.get("event") == "message")
     done_idx = next(i for i, e in enumerate(events) if e.get("event") == "done")
-    assert generating_idx < message_idx < done_idx
+    assert generating_idx < reviewing_idx < message_idx < done_idx
+
+
+async def test_send_message_reviewing_event_before_message_event(
+    client: AsyncClient, character: Character, session: Session
+) -> None:
+    """status(reviewing) must appear before event: message for every verdict."""
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages", json={"content": "Hello"}
+        )
+    events = _parse_sse(response.text)
+    reviewing_idx = next(
+        i
+        for i, e in enumerate(events)
+        if e.get("event") == "status" and json.loads(e["data"])["state"] == "reviewing"
+    )
+    message_idx = next(i for i, e in enumerate(events) if e.get("event") == "message")
+    assert reviewing_idx < message_idx
