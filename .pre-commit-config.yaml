@@ -25,3 +25,18 @@ repos:
         types: [python]
         args: [-c, pyproject.toml, -r, src/]
         pass_filenames: false
+
+      # ESLint: lint JS source and test files
+      - id: eslint
+        name: eslint
+        entry: npx eslint --max-warnings 0
+        language: system
+        files: ^(src/memories/frontend|tests/frontend)/.*\.js$
+
+      # Vitest: run tests + enforce 80% coverage threshold on chat.js
+      - id: vitest-coverage
+        name: vitest coverage
+        entry: npm run test:coverage
+        language: system
+        files: ^(src/memories/frontend|tests/frontend)/.*\.js$
+        pass_filenames: false

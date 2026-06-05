@@ -40,8 +40,14 @@ All commands use `uv run`. Install deps with `uv sync`.
 # Run frontend JS tests (Vitest)
 npm test
 
+# Run frontend tests with coverage (enforces 80% threshold on chat.js)
+npm run test:coverage
+
 # Frontend tests in watch mode
 npm run test:watch
+
+# Lint JS source and test files
+npm run lint
 ```
 
 Install JS dev deps once with `npm install` (creates `node_modules/`, not committed).
