@@ -371,6 +371,12 @@
         <p v-if="facts.length === 0" style="color:#aaa;font-size:13px">No facts yet.</p>
       </div>
 
+      <div class="add-fact-form">
+        <input v-model="newKey" placeholder="key" />
+        <input v-model="newValue" placeholder="value" @keyup.enter="addFact" />
+        <button @click="addFact">+ Add Fact</button>
+        <p v-if="factError" class="error-msg">{{ factError }}</p>
+      </div>
       <!-- Inferences section -->
       <div v-if="inferences.length > 0" class="inferences-section">
         <div class="inferences-header">Inferences</div>
@@ -382,12 +388,6 @@
           </p>
           <p class="inference-row-derivation">{{ inf.derivation }}</p>
         </div>
-      </div>
-      <div class="add-fact-form">
-        <input v-model="newKey" placeholder="key" />
-        <input v-model="newValue" placeholder="value" @keyup.enter="addFact" />
-        <button @click="addFact">+ Add Fact</button>
-        <p v-if="factError" class="error-msg">{{ factError }}</p>
       </div>
       <div class="facts-footer">
         <button class="btn-end" :disabled="sessionEnded" @click="endSession">
