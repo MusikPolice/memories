@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from memories.database import (
-    create_fact,
+    _parse_inference,
+    _row,
     delete_inference,
     get_character,
     get_facts,
@@ -18,7 +19,7 @@ from memories.database import (
 )
 from memories.deps import get_db, get_ollama
 from memories.exceptions import NotFoundError
-from memories.models import Inference
+from memories.models import Fact, Inference
 from memories.services.inference_service import InferenceParseError
 from memories.services.ollama_client import OllamaClient
 
@@ -149,37 +150,64 @@ async def promote_inference_endpoint(
     if not any(inf.id == inference_id for inf in inferences):
         raise HTTPException(status_code=404, detail="Inference not found")
 
-    try:
-        fact = await create_fact(
-            db,
-            character_id=character_id,
-            key=body.key,
-            value=body.value,
-            category=body.category,
-            mutability=body.mutability,
-        )
-    except aiosqlite.IntegrityError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail=f"A {body.category} Fact with key '{body.key}' already exists",
-        ) from exc
-
-    # BFS cascade: mark all transitively-downstream inferences as stale.
-    stale: list[Inference] = []
-    stale_ids: set[int] = {inference_id}
+    # Compute which inferences become stale (BFS) before opening the transaction.
+    stale_inf_ids: list[int] = []
+    visited: set[int] = {inference_id}
     queue: list[int] = [inference_id]
     while queue:
         current_id = queue.pop(0)
         for inf in inferences:
-            if inf.id in stale_ids:
+            if inf.id in visited:
                 continue
             if current_id in inf.source_inference_ids:
-                updated = await update_inference_status(db, inf.id, "stale")
-                stale.append(updated)
-                stale_ids.add(inf.id)
+                visited.add(inf.id)
+                stale_inf_ids.append(inf.id)
                 queue.append(inf.id)
 
-    await delete_inference(db, inference_id)
+    # All three writes (create fact, mark stale, delete inference) in one transaction.
+    await db.execute("BEGIN IMMEDIATE")
+    try:
+        sql = (
+            "INSERT INTO facts (character_id, key, value, category, mutability)"
+            " VALUES (?, ?, ?, ?, ?)"
+        )
+        cursor = await db.execute(
+            sql,
+            (character_id, body.key, body.value, body.category, body.mutability),
+        )
+        fact_id = cursor.lastrowid
+        assert fact_id is not None
+
+        for inf_id in stale_inf_ids:
+            await db.execute(
+                "UPDATE inferences SET status = 'stale' WHERE id = ?",
+                (inf_id,),
+            )
+
+        await db.execute("DELETE FROM inferences WHERE id = ?", (inference_id,))
+        await db.commit()
+    except aiosqlite.IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"A {body.category} Fact with key '{body.key}' already exists",
+        ) from exc
+    except Exception:
+        await db.rollback()
+        raise
+
+    # Fetch the written fact and stale inference records to return in the response.
+    fact_row = await (await db.execute("SELECT * FROM facts WHERE id = ?", (fact_id,))).fetchone()
+    assert fact_row is not None
+    fact = Fact.model_validate(_row(fact_row))
+
+    stale: list[Inference] = []
+    for inf_id in stale_inf_ids:
+        inf_row = await (
+            await db.execute("SELECT * FROM inferences WHERE id = ?", (inf_id,))
+        ).fetchone()
+        if inf_row is not None:
+            stale.append(_parse_inference(inf_row))
 
     return {
         "fact": fact.model_dump(),
