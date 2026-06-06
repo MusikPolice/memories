@@ -501,3 +501,89 @@ def test_evaluator_prompt_format_for_fact_with_all_fields() -> None:
     assert "mood: cheerful" in prompt
     assert "category: character" in prompt
     assert "mutability: high" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Regression: high-mutability fact domain must block new_inference_* verdicts
+# ---------------------------------------------------------------------------
+
+
+def test_evaluator_prompt_instructs_mandatory_high_mutability_scan() -> None:
+    """Prompt must direct the model to scan high-mutability facts BEFORE inferring."""
+    prompt = build_evaluator_prompt(_CHARACTER, _P4_FACTS, _USER_MSG, _CHAR_RESPONSE)
+    prompt_lower = prompt.lower()
+    # The prompt must contain language that makes the scan mandatory / first step
+    assert "mandatory" in prompt_lower or "first" in prompt_lower
+    assert "scan" in prompt_lower or "check each" in prompt_lower or "check every" in prompt_lower
+
+
+def test_evaluator_prompt_blocks_new_inference_when_high_mutability_fact_covers_domain() -> None:
+    """Prompt must explicitly state that new_inference_* is invalid when a high-mutability
+    Fact already covers the same domain."""
+    prompt = build_evaluator_prompt(_CHARACTER, _P4_FACTS, _USER_MSG, _CHAR_RESPONSE)
+    prompt_lower = prompt.lower()
+    # Must say new_inference is not appropriate / never valid for covered domains
+    assert "new_inference" in prompt_lower
+    assert (
+        "never" in prompt_lower
+        or "not valid" in prompt_lower
+        or "not appropriate" in prompt_lower
+        or "only" in prompt_lower
+    )
+
+
+def test_evaluator_prompt_gives_stress_level_as_high_mutability_implication_example() -> None:
+    """Prompt must include a concrete example showing a stress/mood change against an
+    existing high-mutability fact must return implication, not new_inference_probabilistic."""
+    facts = [
+        Fact(
+            id=6,
+            character_id=1,
+            key="stress_level",
+            value="low",
+            category="character",
+            mutability="high",
+            created_at=_P4_NOW,
+        )
+    ]
+    prompt = build_evaluator_prompt(
+        _CHARACTER,
+        facts,
+        "You scratched my car!",
+        "My stress level is shooting up just thinking about how much paint is gone.",
+    )
+    prompt_lower = prompt.lower()
+    # Prompt must mention that changes to high-mutability facts are implication not inference
+    assert "implication" in prompt_lower
+    # Prompt must contain either an explicit stress_level example or the domain-coverage rule
+    assert (
+        "stress" in prompt_lower
+        or "existing fact" in prompt_lower
+        or "no existing fact" in prompt_lower
+    )
+
+
+def test_evaluator_prompt_high_mutability_mood_change_must_not_use_new_inference() -> None:
+    """When a high-mutability mood fact exists, the prompt must not permit new_inference_*
+    to classify a mood shift — it must direct the model toward implication."""
+    facts = [
+        Fact(
+            id=2,
+            character_id=1,
+            key="mood",
+            value="happy",
+            category="character",
+            mutability="high",
+            created_at=_P4_NOW,
+        )
+    ]
+    prompt = build_evaluator_prompt(
+        _CHARACTER,
+        facts,
+        "Stop being so cheerful!",
+        "I feel really anxious and stressed right now.",
+    )
+    prompt_lower = prompt.lower()
+    # Must have guidance that high-mutability changes require implication
+    assert "implication" in prompt_lower
+    assert "high" in prompt_lower

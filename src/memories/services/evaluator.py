@@ -97,7 +97,13 @@ def build_evaluator_prompt(
     parts.append(
         """
 ## Mutability Rules
-These rules govern how you classify violations against established Facts:
+These rules govern how you classify violations against established Facts.
+
+MANDATORY FIRST STEP — before looking for new inferences, scan every Fact marked
+`mutability: high` or `mutability: low`. For each one, ask: "Does the character's
+response imply a value different from what this Fact currently states?" If yes for
+any Fact, the verdict must be `implication`. Only proceed to `new_inference_*`
+verdicts after completing this scan and finding no high/low-mutability Fact changes.
 
 - IMMUTABLE facts: any response that contradicts an immutable Fact is a `contradiction`
   regardless of context. Do not surface these as implications — the value cannot change.
@@ -110,11 +116,17 @@ These rules govern how you classify violations against established Facts:
   violation entry with the new implied value as `suggested_fact`.
 
 - HIGH-mutability facts: these can change fluidly within a session (mood, emotional state,
-  immediate desires). If the character's response reflects a different value for a
-  high-mutability Fact, return `implication` — the change is expected and natural.
+  immediate desires, stress level). If the character's response reflects a different value
+  for a high-mutability Fact, return `implication` — the change is expected and natural.
   Include a violation entry with the new implied value as `suggested_fact`. In the
   violation description, note that this is a high-mutability change: e.g.,
-  "Mood appears to have shifted from 'cheerful' to 'anxious' (high-mutability fact)".
+  "Stress level appears to have shifted from 'low' to 'high' (high-mutability fact)".
+
+  CRITICAL: `new_inference_*` verdicts are NEVER valid when an existing high-mutability
+  Fact already covers the same domain. If `stress_level: low (mutability: high)` exists
+  and the character says "my stress is through the roof", that is `implication`, NOT
+  `new_inference_probabilistic`. New inferences only apply to domains with no existing
+  Fact at all.
 
 When building a `suggested_fact`, always include a `category` field that reflects whose
 fact it is:
@@ -137,11 +149,21 @@ If the character INVENTED a specific detail — clothing, accessories, a hairsty
 a location, a relationship, a personal history item — that is an IMPLICATION,
 even if it seems plausible for this type of character.
 
+The `new_inference_*` verdicts apply ONLY when the observation concerns a domain with
+no existing Fact. If an existing Fact (any mutability) already covers that domain,
+use `implication` (high/low mutability) or `contradiction` (immutable) instead.
+
 The new_inference_logical / new_inference_probabilistic verdicts should only fire for
-conclusions that are NOT already in the Established Inferences list.
+conclusions that are NOT already in the Established Inferences list AND have no
+existing Fact covering the same domain.
 
 Examples:
-- Character says "I enjoy organising things" (occupation=PA) → new_inference_probabilistic
+- Fact `mood: happy (mutability: high)` + character expresses anxiety → implication
+  (NOT new_inference_probabilistic — the mood domain is already covered by a Fact)
+- Fact `stress_level: low (mutability: high)` + character says "stress is through the roof"
+  → implication (NOT new_inference_probabilistic)
+- Character says "I enjoy organising things" (occupation=PA, no mood/preference Fact)
+  → new_inference_probabilistic
 - Character describes wearing a specific outfit not in the facts → implication
 - Character states a birthplace not in the facts → implication
 - Character says their eye colour contradicts the eye colour fact → contradiction
