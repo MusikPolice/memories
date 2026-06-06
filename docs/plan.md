@@ -418,7 +418,7 @@ CREATE INDEX idx_messages_session_turn ON messages(session_id, turn_id);
 
 ## Development Phases
 
-### Phase 1 — Working skeleton
+### Phase 1 — Working skeleton ✅ Complete
 - FastAPI serving a single-page UI
 - Character LLM call with Facts injected into system prompt
 - Facts stored in SQLite, editable via the sidechannel
@@ -427,7 +427,7 @@ CREATE INDEX idx_messages_session_turn ON messages(session_id, turn_id);
 
 **Goal:** Have a working character chatbot with manually-managed facts before adding complexity.
 
-### Phase 2 — Evaluator pipeline
+### Phase 2 — Evaluator pipeline ✅ Complete
 - Second LLM call after each character response (buffered server-side)
 - Structured JSON output from evaluator
 - Sidechannel notifications for missing Facts
@@ -435,7 +435,7 @@ CREATE INDEX idx_messages_session_turn ON messages(session_id, turn_id);
 - Contradiction loop: re-evaluate until no contradictions remain, then deliver
 - Implication and new_inference flows with ungrounded badge
 
-### Phase 3 — Inference generation
+### Phase 3 — Inference generation ✅ Complete
 - Eager pass: trigger full inference derivation when a Fact is added or edited
 - Store inferences with derivation chain, `source_fact_ids`, `source_inference_ids`, type, and status
 - Inject active Inferences into character system prompt alongside Facts
@@ -443,7 +443,31 @@ CREATE INDEX idx_messages_session_turn ON messages(session_id, turn_id);
 - Cascade: Fact edit re-invokes evaluator per downstream Inference; marks stale those that no longer hold; Fact delete marks all downstream Inferences invalidated and surfaces to user
 - **Frontend tests:** update `chat.test.js` if any new SSE events or sidechannel types are introduced for stale/invalidated inference notifications
 
-### Phase 4 — Experiences and session memory
+### Phase 4 — Fact categories, mutability levels, and inference promotion
+
+**Goal:** Make the fact model expressive enough to handle the real diversity of things that can be known — and stop the evaluator from treating fluid things like mood as immutable law.
+
+**Schema changes** (added via `ALTER TABLE` — no full migration required):
+- `facts.category TEXT NOT NULL DEFAULT 'character'` — values: `user` (facts about the human), `character` (facts about the LLM-played character), `setting` (current environment or location)
+- `facts.mutability TEXT NOT NULL DEFAULT 'immutable'` — values: `immutable` (height, bone structure — fixed on any roleplay timescale), `low` (clothing, location — changes infrequently and with context), `high` (mood, emotional state — may change fluidly within a session)
+
+**Prompt changes:**
+- `build_system_prompt()`: section facts by category (`## User`, `## Character`, `## Setting`) so the LLM has clear context for whose facts are whose and avoids mixing them up
+- Evaluator prompt: include category and mutability labels alongside each fact; `high`-mutability facts that change mid-conversation are not contradictions — surface them as `implication` for user acceptance rather than triggering regeneration; `low`-mutability changes are also surfaced as `implication` with a note that the change is plausible but infrequent
+- Inter-fact constraint logic (e.g., "wouldn't change clothing while at work") is **not** in scope for this phase — see Proposed Future Work
+
+**Inference promotion:**
+- Add `POST /api/characters/{character_id}/inferences/{inference_id}/promote` endpoint
+- Request body: `{ "key": str, "value": str, "category": str, "mutability": str }`
+- Creates a Fact from the user-supplied values, then deletes the source Inference
+- UI: "Promote to Fact" button on inferences in the sidechannel
+
+**UI changes:**
+- Fact creation form: add `category` and `mutability` selectors with sensible defaults (`character` / `immutable`)
+- Sidechannel fact list: group facts visually by category; within each group, each row reads left-to-right as **[mutability icon] [key] [value]**. The mutability control is shown on every fact (not only non-default ones) so the column is always populated and text alignment is consistent. Clicking the icon opens a small inline dropdown showing all three options with icon + label: 🔒 Immutable / 📌 Settable / 💧 Fluid
+- **Frontend tests:** add `chat.test.js` coverage for any new sidechannel event types introduced by mutability-aware evaluator verdicts
+
+### Phase 5 — Experiences and session memory
 - End-of-session flow: single evaluator pass outputs closing journal + Experience proposals
 - Closing journal stored in `sessions.closing_journal`
 - User review UI in sidechannel: accept / edit / discard each Experience proposal
@@ -454,7 +478,7 @@ CREATE INDEX idx_messages_session_turn ON messages(session_id, turn_id);
 - Experience invalidation: delete contradicted Experiences immediately on `experience_update` verdict
 - **Frontend tests:** add `chat.test.js` coverage for the end-of-session sidechannel events (Experience proposals) and any new API helpers for accept/edit/discard
 
-### Phase 5a — Budget visibility and message annotation
+### Phase 6a — Budget visibility and message annotation
 - **Frontend tests:** add `chat.test.js` coverage for any new SSE status events (e.g. context pressure percentage) and the `sseStateToLabel` mapping if new states are added
 - Track token counts using Ollama response `prompt_eval_count` / `eval_count` after each call
 - Estimate pre-flight token cost of new prompts via `tiktoken` (cl100k_base)
@@ -465,19 +489,53 @@ CREATE INDEX idx_messages_session_turn ON messages(session_id, turn_id);
 
 **Goal:** Validate token accounting and annotation logic against real conversations before adding compression complexity.
 
-### Phase 5b — Compression
+### Phase 6b — Compression
 - Assign messages to segments; open new segment on each event boundary (Fact created, evaluator event, size cap)
 - Compression pass at 80% of available budget: drop fully-annotated segments, journal the rest
 - Journal entries token-capped at configurable max (default 200 tokens)
 - Journal entries stored in `segments` table, injected in place of raw messages
-- Uses `captured_by` annotations from Phase 5a
+- Uses `captured_by` annotations from Phase 6a
 
-### Phase 6 — Polish, media server migration, and stretch goals
+### Phase 7 — Polish, media server migration, and stretch goals
 - Responsive layout for phone
 - Auth if needed
 - Point Ollama URL to media server
 - Multiple character support (currently scoped to one at a time)
 - **Modelfile export (stretch):** bake Facts + Inferences into a new Modelfile via `ollama create` if the reserved zone grows too large for practical use. Experiences always stay in the DB and are never baked in.
+
+---
+
+## Proposed Future Work
+
+The items below were discussed and deliberately deferred — not forgotten, just not yet scoped into a specific phase.
+
+### Fact extraction from user messages
+
+The evaluator currently only checks the *character's* response against established Facts. A future enhancement would add a pre-turn pass analysing the *user's* message before invoking the character LLM — capturing explicit or implicit facts the user has stated (what they're wearing, where they are, how the room looks).
+
+Design notes:
+- User-stated facts are accepted as authoritative (the user is the author of the world), but contradictions with existing Facts are surfaced in the sidechannel as notifications rather than silently overwriting
+- Adds a third LLM call per turn; the SSE event sequence would need a new `status(extracting)` state before `status(generating)`
+- Whether to push back and confirm user-stated contradictions (rather than accepting them outright) is an open UX question — leaning toward surfacing for confirmation
+- Belongs in its own mini-phase, most naturally between Phase 5 and Phase 6a
+
+### Numerical ranges for facts
+
+Some facts are better expressed as positions on a continuum rather than discrete text values — Big 5 personality traits, D&D alignment axes, and similar characterisation dimensions. A ranged fact type would communicate to the LLM both the chosen value and its context within the possible range (e.g., `"openness: 7/10 — highly open to new experiences"`).
+
+Design notes:
+- Likely requires a `fact_types` system with pre-determined named range definitions (min label, max label, textual description of what each extreme implies) — not arbitrary user-defined ranges
+- UI would use sliders for supported range types
+- Schema would need new columns or a separate `fact_type_definitions` table
+- Defer until a concrete set of supported range types is agreed and a specific driving use case exists
+
+### Inter-fact constraint logic
+
+Phase 4 adds mutability levels but deliberately excludes rules about when a low-mutability fact *can* change given the values of other facts (e.g., "a character wouldn't change their clothing while at work, but might at home"). A future enhancement could encode these inter-fact dependencies so the evaluator can judge contextual plausibility rather than treating all low-mutability changes uniformly.
+
+Design notes:
+- Possibly encoded as constraint rules attached to facts or as a separate rule store
+- High complexity; evaluate whether the Phase 4 mutability model is sufficient in practice before committing to this
 
 ---
 
