@@ -419,28 +419,64 @@ async def test_accept_implication_unknown_turn_returns_404(
     assert response.status_code == 404
 
 
-async def test_accept_implication_on_clean_turn_returns_422(
+async def test_accept_second_implication_on_same_turn_succeeds(
     db: aiosqlite.Connection,
     client: AsyncClient,
     character: Character,
     session: Session,
 ) -> None:
-    """A turn with no ungrounded implications cannot be accepted."""
+    """Regression: accepting the second of two violations on the same turn must not return 422.
+
+    The first accept clears ungrounded_implications on the stored message; the second
+    accept was previously blocked by a guard that checked that field.
+    """
+    v1 = {
+        "type": "implication",
+        "description": "implied a sister",
+        "suggested_fact": {"key": "siblings", "value": "one sister"},
+    }
+    v2 = {
+        "type": "implication",
+        "description": "implied eye colour",
+        "suggested_fact": {"key": "eye_colour", "value": "brown"},
+    }
+
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(
             side_effect=[
-                httpx.Response(200, content=make_ollama_ndjson("Clean response.")),
-                httpx.Response(200, content=make_evaluator_ndjson()),
+                httpx.Response(200, content=make_ollama_ndjson("I have brown eyes and a sister.")),
+                httpx.Response(
+                    200,
+                    content=make_evaluator_ndjson("implication", violations=[v1, v2]),
+                ),
             ]
         )
-        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
+        await client.post(
+            f"/api/sessions/{session.id}/messages", json={"content": "Describe yourself."}
+        )
+
     msgs = await get_messages(db, session.id)
     turn_id = next(m for m in msgs if m.role == "assistant").turn_id
-    response = await client.post(
-        f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
-        json={"key": "x", "value": "y"},
-    )
-    assert response.status_code == 422
+
+    # First accept — succeeds and clears ungrounded_implications on the stored message
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_pass_turn("I have a sister."))
+        r1 = await client.post(
+            f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
+            json={"key": "siblings", "value": "one sister"},
+        )
+    assert r1.status_code == 200
+
+    # Second accept on the same turn — previously returned 422
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_pass_turn("I have brown eyes."))
+        r2 = await client.post(
+            f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
+            json={"key": "eye_colour", "value": "brown"},
+        )
+    assert r2.status_code == 200
+    facts = await get_facts(db, character.id)
+    assert any(f.key == "eye_colour" and f.value == "brown" for f in facts)
 
 
 # ---------------------------------------------------------------------------

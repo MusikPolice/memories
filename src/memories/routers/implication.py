@@ -68,8 +68,6 @@ async def accept_implication(
     )
     if assistant_msg is None:
         raise HTTPException(status_code=404, detail="Turn not found")
-    if assistant_msg.ungrounded_implications is None:
-        raise HTTPException(status_code=422, detail="Turn has no ungrounded implications")
 
     # Create the fact; update if the key already exists
     try:
