@@ -13,6 +13,10 @@ import {
   apiRevalidateInferences,
   apiDeleteInference,
   apiPatchInferenceStatus,
+  apiCreateFact,
+  apiPatchFactMutability,
+  apiPatchFactCategory,
+  apiPromoteInference,
 } from '../../src/memories/frontend/chat.js';
 
 // ---------------------------------------------------------------------------
@@ -389,5 +393,188 @@ describe('Phase 3 inference API helpers', () => {
     const [, opts] = fetch.mock.calls[0];
     const body = JSON.parse(opts.body);
     expect(body.status).toBe('stale');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4 — fact category/mutability and inference promotion API helpers
+// ---------------------------------------------------------------------------
+
+describe('Phase 4 fact API helpers', () => {
+  beforeEach(() => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true });
+  });
+
+  it('apiCreateFact_posts_to_correct_url', async () => {
+    await apiCreateFact(7, 'mood', 'cheerful');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/characters/7/facts',
+      expect.objectContaining({ method: 'POST' })
+    );
+  });
+
+  it('apiCreateFact_sends_key_value_category_mutability_in_body', async () => {
+    await apiCreateFact(7, 'mood', 'cheerful', 'character', 'high');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body).toHaveProperty('key', 'mood');
+    expect(body).toHaveProperty('value', 'cheerful');
+    expect(body).toHaveProperty('category');
+    expect(body).toHaveProperty('mutability');
+  });
+
+  it('apiCreateFact_uses_default_category_character', async () => {
+    await apiCreateFact(7, 'mood', 'cheerful');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.category).toBe('character');
+  });
+
+  it('apiCreateFact_uses_default_mutability_immutable', async () => {
+    await apiCreateFact(7, 'mood', 'cheerful');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.mutability).toBe('immutable');
+  });
+
+  it('apiCreateFact_accepts_custom_category', async () => {
+    await apiCreateFact(7, 'mood', 'cheerful', 'user', 'high');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.category).toBe('user');
+  });
+
+  it('apiCreateFact_accepts_custom_mutability', async () => {
+    await apiCreateFact(7, 'mood', 'cheerful', 'user', 'high');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.mutability).toBe('high');
+  });
+
+  it('apiPatchFactMutability_sends_patch_to_correct_url', async () => {
+    await apiPatchFactMutability(7, 'mood', 'high');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/characters/7/facts/mood',
+      expect.objectContaining({ method: 'PATCH' })
+    );
+  });
+
+  it('apiPatchFactMutability_sends_mutability_in_body', async () => {
+    await apiPatchFactMutability(7, 'mood', 'high');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.mutability).toBe('high');
+  });
+
+  it('apiPatchFactMutability_does_not_send_category_field', async () => {
+    await apiPatchFactMutability(7, 'mood', 'high');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body).not.toHaveProperty('category');
+  });
+
+  it('apiPatchFactCategory_sends_patch_to_correct_url', async () => {
+    await apiPatchFactCategory(7, 'mood', 'setting');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/characters/7/facts/mood',
+      expect.objectContaining({ method: 'PATCH' })
+    );
+  });
+
+  it('apiPatchFactCategory_sends_category_in_body', async () => {
+    await apiPatchFactCategory(7, 'mood', 'setting');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.category).toBe('setting');
+  });
+
+  it('apiPatchFactCategory_does_not_send_mutability_field', async () => {
+    await apiPatchFactCategory(7, 'mood', 'setting');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body).not.toHaveProperty('mutability');
+  });
+
+  it('apiPatchFactMutability_url_encodes_key_with_spaces', async () => {
+    await apiPatchFactMutability(7, 'home city', 'low');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/characters/7/facts/home%20city',
+      expect.anything()
+    );
+  });
+});
+
+describe('Phase 4 inference promotion API helper', () => {
+  beforeEach(() => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true });
+  });
+
+  it('apiPromoteInference_posts_to_correct_url', async () => {
+    await apiPromoteInference(7, 42, 'birth_year', '1993');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/characters/7/inferences/42/promote',
+      expect.objectContaining({ method: 'POST' })
+    );
+  });
+
+  it('apiPromoteInference_sends_key_value_category_mutability_in_body', async () => {
+    await apiPromoteInference(7, 42, 'birth_year', '1993', 'character', 'immutable');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body).toHaveProperty('key', 'birth_year');
+    expect(body).toHaveProperty('value', '1993');
+    expect(body).toHaveProperty('category');
+    expect(body).toHaveProperty('mutability');
+  });
+
+  it('apiPromoteInference_uses_default_category_character', async () => {
+    await apiPromoteInference(7, 42, 'birth_year', '1993');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.category).toBe('character');
+  });
+
+  it('apiPromoteInference_uses_default_mutability_immutable', async () => {
+    await apiPromoteInference(7, 42, 'birth_year', '1993');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.mutability).toBe('immutable');
+  });
+
+  it('apiPromoteInference_accepts_custom_category', async () => {
+    await apiPromoteInference(7, 42, 'location', 'Chicago', 'setting', 'low');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.category).toBe('setting');
+  });
+
+  it('apiPromoteInference_accepts_custom_mutability', async () => {
+    await apiPromoteInference(7, 42, 'location', 'Chicago', 'setting', 'low');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.mutability).toBe('low');
+  });
+});
+
+describe('Phase 4 buildNotificationFromSidechannel — mutability implication', () => {
+  it('buildNotificationFromSidechannel_still_handles_implication_for_mutability_change', () => {
+    const payload = {
+      type: 'implication',
+      turn_id: 5,
+      violations: [
+        {
+          type: 'implication',
+          description: "Mood appears to have shifted from 'cheerful' to 'anxious' (high-mutability fact)",
+          suggested_fact: { key: 'mood', value: 'anxious' },
+        },
+      ],
+      new_inferences: [],
+    };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif).not.toBeNull();
+    expect(notif.scType).toBe('implication');
+    expect(notif.turn_id).toBe(5);
+    expect(notif.violations[0]._editValue).toBe('anxious');
+    expect(notif._loading).toBe(false);
   });
 });

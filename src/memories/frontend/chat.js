@@ -238,3 +238,68 @@ export function apiPatchInferenceStatus(characterId, inferenceId, status) {
     body: JSON.stringify({ status }),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4 API helpers — fact categories, mutability, and inference promotion
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {number} characterId
+ * @param {string} key
+ * @param {string} value
+ * @param {string} [category='character']
+ * @param {string} [mutability='immutable']
+ * @returns {Promise<Response>}
+ */
+export function apiCreateFact(characterId, key, value, category = 'character', mutability = 'immutable') {
+  return fetch(`/api/characters/${characterId}/facts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, value, category, mutability }),
+  });
+}
+
+/**
+ * @param {number} characterId
+ * @param {string} key
+ * @param {string} mutability
+ * @returns {Promise<Response>}
+ */
+export function apiPatchFactMutability(characterId, key, mutability) {
+  return fetch(`/api/characters/${characterId}/facts/${encodeURIComponent(key)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mutability }),
+  });
+}
+
+/**
+ * @param {number} characterId
+ * @param {string} key
+ * @param {string} category
+ * @returns {Promise<Response>}
+ */
+export function apiPatchFactCategory(characterId, key, category) {
+  return fetch(`/api/characters/${characterId}/facts/${encodeURIComponent(key)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ category }),
+  });
+}
+
+/**
+ * @param {number} characterId
+ * @param {number} inferenceId
+ * @param {string} key
+ * @param {string} value
+ * @param {string} [category='character']
+ * @param {string} [mutability='immutable']
+ * @returns {Promise<Response>}
+ */
+export function apiPromoteInference(characterId, inferenceId, key, value, category = 'character', mutability = 'immutable') {
+  return fetch(`/api/characters/${characterId}/inferences/${inferenceId}/promote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, value, category, mutability }),
+  });
+}

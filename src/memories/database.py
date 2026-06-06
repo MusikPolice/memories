@@ -43,8 +43,10 @@ CREATE TABLE IF NOT EXISTS facts (
     character_id     INTEGER REFERENCES characters(id),
     key              TEXT NOT NULL,
     value            TEXT NOT NULL,
+    category         TEXT NOT NULL DEFAULT 'character',
+    mutability       TEXT NOT NULL DEFAULT 'immutable',
     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(character_id, key)
+    UNIQUE(character_id, category, key)
 );
 CREATE INDEX IF NOT EXISTS idx_facts_character ON facts(character_id);
 
@@ -182,10 +184,18 @@ async def list_characters(db: aiosqlite.Connection) -> list[Character]:
 # ---------------------------------------------------------------------------
 
 
-async def create_fact(db: aiosqlite.Connection, *, character_id: int, key: str, value: str) -> Fact:
+async def create_fact(
+    db: aiosqlite.Connection,
+    *,
+    character_id: int,
+    key: str,
+    value: str,
+    category: str = "character",
+    mutability: str = "immutable",
+) -> Fact:
     cursor = await db.execute(
-        "INSERT INTO facts (character_id, key, value) VALUES (?, ?, ?)",
-        (character_id, key, value),
+        "INSERT INTO facts (character_id, key, value, category, mutability) VALUES (?, ?, ?, ?, ?)",
+        (character_id, key, value, category, mutability),
     )
     await db.commit()
     assert cursor.lastrowid is not None
@@ -205,32 +215,121 @@ async def get_facts(db: aiosqlite.Connection, character_id: int) -> list[Fact]:
     return [Fact.model_validate(_row(r)) for r in rows]
 
 
-async def update_fact(db: aiosqlite.Connection, *, character_id: int, key: str, value: str) -> Fact:
-    cursor = await db.execute(
-        "UPDATE facts SET value = ? WHERE character_id = ? AND key = ?",
-        (value, character_id, key),
-    )
-    await db.commit()
-    if cursor.rowcount == 0:
-        raise NotFoundError(f"Fact '{key}' not found for character {character_id}")
-    row = await (
-        await db.execute(
-            "SELECT * FROM facts WHERE character_id = ? AND key = ?",
-            (character_id, key),
+async def update_fact(
+    db: aiosqlite.Connection,
+    *,
+    fact_id: int | None = None,
+    character_id: int | None = None,
+    key: str | None = None,
+    value: str,
+    category: str | None = None,
+    mutability: str | None = None,
+) -> Fact:
+    updates = ["value = ?"]
+    params: list[Any] = [value]
+    if category is not None:
+        updates.append("category = ?")
+        params.append(category)
+    if mutability is not None:
+        updates.append("mutability = ?")
+        params.append(mutability)
+
+    if fact_id is not None:
+        params.append(fact_id)
+        cursor = await db.execute(
+            f"UPDATE facts SET {', '.join(updates)} WHERE id = ?",  # nosec B608
+            tuple(params),
         )
-    ).fetchone()
+        await db.commit()
+        if cursor.rowcount == 0:
+            raise NotFoundError(f"Fact {fact_id} not found")
+        row = await (await db.execute("SELECT * FROM facts WHERE id = ?", (fact_id,))).fetchone()
+    else:
+        params.extend([character_id, key])
+        cursor = await db.execute(
+            f"UPDATE facts SET {', '.join(updates)} WHERE character_id = ? AND key = ?",  # nosec B608
+            tuple(params),
+        )
+        await db.commit()
+        if cursor.rowcount == 0:
+            raise NotFoundError(f"Fact '{key}' not found for character {character_id}")
+        row = await (
+            await db.execute(
+                "SELECT * FROM facts WHERE character_id = ? AND key = ?",
+                (character_id, key),
+            )
+        ).fetchone()
+
     assert row is not None
     return Fact.model_validate(_row(row))
 
 
-async def delete_fact(db: aiosqlite.Connection, *, character_id: int, key: str) -> None:
+async def delete_fact(
+    db: aiosqlite.Connection,
+    *,
+    fact_id: int | None = None,
+    character_id: int | None = None,
+    key: str | None = None,
+) -> None:
+    if fact_id is not None:
+        cursor = await db.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
+        await db.commit()
+        if cursor.rowcount == 0:
+            raise NotFoundError(f"Fact {fact_id} not found")
+    else:
+        cursor = await db.execute(
+            "DELETE FROM facts WHERE character_id = ? AND key = ?",
+            (character_id, key),
+        )
+        await db.commit()
+        if cursor.rowcount == 0:
+            raise NotFoundError(f"Fact '{key}' not found for character {character_id}")
+
+
+async def patch_fact(
+    db: aiosqlite.Connection,
+    *,
+    fact_id: int,
+    category: str | None = None,
+    mutability: str | None = None,
+) -> Fact:
+    if category is None and mutability is None:
+        raise ValueError("At least one of category or mutability must be provided")
+    updates: list[str] = []
+    params: list[Any] = []
+    if category is not None:
+        updates.append("category = ?")
+        params.append(category)
+    if mutability is not None:
+        updates.append("mutability = ?")
+        params.append(mutability)
+    params.append(fact_id)
     cursor = await db.execute(
-        "DELETE FROM facts WHERE character_id = ? AND key = ?",
-        (character_id, key),
+        f"UPDATE facts SET {', '.join(updates)} WHERE id = ?",  # nosec B608
+        tuple(params),
     )
     await db.commit()
     if cursor.rowcount == 0:
-        raise NotFoundError(f"Fact '{key}' not found for character {character_id}")
+        raise NotFoundError(f"Fact {fact_id} not found")
+    row = await (await db.execute("SELECT * FROM facts WHERE id = ?", (fact_id,))).fetchone()
+    assert row is not None
+    return Fact.model_validate(_row(row))
+
+
+async def get_fact_by_category_key(
+    db: aiosqlite.Connection,
+    *,
+    character_id: int,
+    category: str,
+    key: str,
+) -> Fact | None:
+    row = await (
+        await db.execute(
+            "SELECT * FROM facts WHERE character_id = ? AND category = ? AND key = ?",
+            (character_id, category, key),
+        )
+    ).fetchone()
+    return Fact.model_validate(_row(row)) if row else None
 
 
 # ---------------------------------------------------------------------------

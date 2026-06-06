@@ -216,3 +216,368 @@ async def test_delete_fact_no_dependents_returns_empty_list(
 
     response = await client.delete(f"/api/characters/{character.id}/facts/age")
     assert response.json()["invalidated_inferences"] == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 additions — category, mutability, and ID-based endpoints
+# ---------------------------------------------------------------------------
+
+
+async def test_create_fact_with_category_returns_201_with_category(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    response = await client.post(
+        f"/api/characters/{char_id}/facts",
+        json={"key": "name", "value": "Jon", "category": "user"},
+    )
+    assert response.status_code == 201
+    assert response.json()["category"] == "user"
+
+
+async def test_create_fact_with_mutability_returns_201_with_mutability(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    response = await client.post(
+        f"/api/characters/{char_id}/facts",
+        json={"key": "mood", "value": "cheerful", "mutability": "high"},
+    )
+    assert response.status_code == 201
+    assert response.json()["mutability"] == "high"
+
+
+async def test_create_fact_default_category_in_response(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    response = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "occupation", "value": "doctor"}
+    )
+    assert response.status_code == 201
+    assert response.json()["category"] == "character"
+
+
+async def test_create_fact_default_mutability_in_response(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    response = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "occupation", "value": "doctor"}
+    )
+    assert response.status_code == 201
+    assert response.json()["mutability"] == "immutable"
+
+
+async def test_create_fact_invalid_category_returns_422(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    response = await client.post(
+        f"/api/characters/{char_id}/facts",
+        json={"key": "x", "value": "y", "category": "invalid"},
+    )
+    assert response.status_code == 422
+
+
+async def test_create_fact_invalid_mutability_returns_422(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    response = await client.post(
+        f"/api/characters/{char_id}/facts",
+        json={"key": "x", "value": "y", "mutability": "invalid"},
+    )
+    assert response.status_code == 422
+
+
+async def test_list_facts_includes_category_field(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    await client.post(f"/api/characters/{char_id}/facts", json={"key": "age", "value": "30"})
+    response = await client.get(f"/api/characters/{char_id}/facts")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert "category" in data[0]
+
+
+async def test_list_facts_includes_mutability_field(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    await client.post(f"/api/characters/{char_id}/facts", json={"key": "age", "value": "30"})
+    response = await client.get(f"/api/characters/{char_id}/facts")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert "mutability" in data[0]
+
+
+async def test_update_fact_value_preserves_category(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/characters/{char_id}/facts",
+        json={"key": "name", "value": "Alice", "category": "user"},
+    )
+    fact_id = create_resp.json()["id"]
+    await client.put(f"/api/characters/{char_id}/facts/{fact_id}", json={"value": "Jon"})
+    facts = (await client.get(f"/api/characters/{char_id}/facts")).json()
+    assert facts[0]["category"] == "user"
+
+
+async def test_update_fact_value_preserves_mutability(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/characters/{char_id}/facts",
+        json={"key": "mood", "value": "cheerful", "mutability": "high"},
+    )
+    fact_id = create_resp.json()["id"]
+    await client.put(f"/api/characters/{char_id}/facts/{fact_id}", json={"value": "anxious"})
+    facts = (await client.get(f"/api/characters/{char_id}/facts")).json()
+    assert facts[0]["mutability"] == "high"
+
+
+async def test_update_fact_with_new_category_via_put(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "city", "value": "Chicago"}
+    )
+    fact_id = create_resp.json()["id"]
+    response = await client.put(
+        f"/api/characters/{char_id}/facts/{fact_id}",
+        json={"value": "Chicago", "category": "setting"},
+    )
+    assert response.status_code == 200
+    assert response.json()["category"] == "setting"
+
+
+async def test_update_fact_with_new_mutability_via_put(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "clothing", "value": "dark coat"}
+    )
+    fact_id = create_resp.json()["id"]
+    response = await client.put(
+        f"/api/characters/{char_id}/facts/{fact_id}",
+        json={"value": "dark coat", "mutability": "low"},
+    )
+    assert response.status_code == 200
+    assert response.json()["mutability"] == "low"
+
+
+async def test_patch_fact_mutability_returns_200(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "mood", "value": "cheerful"}
+    )
+    fact_id = create_resp.json()["id"]
+    response = await client.patch(
+        f"/api/characters/{char_id}/facts/{fact_id}", json={"mutability": "high"}
+    )
+    assert response.status_code == 200
+    assert response.json()["mutability"] == "high"
+
+
+async def test_patch_fact_mutability_updates_db(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "mood", "value": "cheerful"}
+    )
+    fact_id = create_resp.json()["id"]
+    await client.patch(f"/api/characters/{char_id}/facts/{fact_id}", json={"mutability": "high"})
+    facts = (await client.get(f"/api/characters/{char_id}/facts")).json()
+    assert facts[0]["mutability"] == "high"
+
+
+async def test_patch_fact_category_returns_200(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "city", "value": "Chicago"}
+    )
+    fact_id = create_resp.json()["id"]
+    response = await client.patch(
+        f"/api/characters/{char_id}/facts/{fact_id}", json={"category": "setting"}
+    )
+    assert response.status_code == 200
+    assert response.json()["category"] == "setting"
+
+
+async def test_patch_fact_category_updates_db(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "city", "value": "Chicago"}
+    )
+    fact_id = create_resp.json()["id"]
+    await client.patch(f"/api/characters/{char_id}/facts/{fact_id}", json={"category": "setting"})
+    facts = (await client.get(f"/api/characters/{char_id}/facts")).json()
+    assert facts[0]["category"] == "setting"
+
+
+async def test_patch_fact_value_not_changed_by_patch(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "mood", "value": "cheerful"}
+    )
+    fact_id = create_resp.json()["id"]
+    await client.patch(f"/api/characters/{char_id}/facts/{fact_id}", json={"mutability": "high"})
+    facts = (await client.get(f"/api/characters/{char_id}/facts")).json()
+    assert facts[0]["value"] == "cheerful"
+
+
+async def test_patch_fact_empty_body_returns_422(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "mood", "value": "cheerful"}
+    )
+    fact_id = create_resp.json()["id"]
+    response = await client.patch(f"/api/characters/{char_id}/facts/{fact_id}", json={})
+    assert response.status_code == 422
+
+
+async def test_patch_fact_unknown_id_returns_404(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    response = await client.patch(
+        f"/api/characters/{char_id}/facts/99999", json={"mutability": "high"}
+    )
+    assert response.status_code == 404
+
+
+async def test_patch_fact_invalid_mutability_returns_422(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "mood", "value": "cheerful"}
+    )
+    fact_id = create_resp.json()["id"]
+    response = await client.patch(
+        f"/api/characters/{char_id}/facts/{fact_id}", json={"mutability": "invalid"}
+    )
+    assert response.status_code == 422
+
+
+async def test_patch_fact_invalid_category_returns_422(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "mood", "value": "cheerful"}
+    )
+    fact_id = create_resp.json()["id"]
+    response = await client.patch(
+        f"/api/characters/{char_id}/facts/{fact_id}", json={"category": "invalid"}
+    )
+    assert response.status_code == 422
+
+
+async def test_create_two_facts_same_key_different_categories(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    resp1 = await client.post(
+        f"/api/characters/{char_id}/facts",
+        json={"key": "name", "value": "Jon", "category": "user"},
+    )
+    resp2 = await client.post(
+        f"/api/characters/{char_id}/facts",
+        json={"key": "name", "value": "Elara", "category": "character"},
+    )
+    assert resp1.status_code == 201
+    assert resp2.status_code == 201
+    facts = (await client.get(f"/api/characters/{char_id}/facts")).json()
+    name_facts = [f for f in facts if f["key"] == "name"]
+    assert len(name_facts) == 2
+
+
+async def test_create_two_facts_same_key_same_category_returns_409(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    await client.post(
+        f"/api/characters/{char_id}/facts",
+        json={"key": "name", "value": "Jon", "category": "user"},
+    )
+    resp2 = await client.post(
+        f"/api/characters/{char_id}/facts",
+        json={"key": "name", "value": "Bob", "category": "user"},
+    )
+    assert resp2.status_code == 409
+
+
+async def test_put_fact_wrong_character_returns_404(
+    client: AsyncClient, character: Character, db: aiosqlite.Connection
+) -> None:
+    # Create a second character and a fact for that character
+    char2_resp = await client.post(
+        "/api/characters/", json={"name": "Bob", "modelfile_base": "qwen3:7b"}
+    )
+    char2_id = char2_resp.json()["id"]
+    fact_resp = await client.post(
+        f"/api/characters/{char2_id}/facts", json={"key": "age", "value": "25"}
+    )
+    fact_id = fact_resp.json()["id"]
+    # Try to update via character 1 — the fact belongs to character 2
+    response = await client.put(
+        f"/api/characters/{character.id}/facts/{fact_id}", json={"value": "30"}
+    )
+    assert response.status_code == 404
+
+
+async def test_delete_fact_by_id_returns_200(client: AsyncClient) -> None:
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "age", "value": "30"}
+    )
+    fact_id = create_resp.json()["id"]
+    response = await client.delete(f"/api/characters/{char_id}/facts/{fact_id}")
+    assert response.status_code == 200

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,6 +12,7 @@ from memories.database import (
     create_fact,
     create_inference,
     get_character,
+    get_fact_by_category_key,
     get_facts,
     get_inferences,
     get_messages,
@@ -36,6 +37,7 @@ _Ollama = Annotated[OllamaClient, Depends(get_ollama)]
 class _AcceptImplicationBody(BaseModel):
     key: str
     value: str
+    category: Literal["user", "character", "setting"] = "character"
     regenerate: bool = True
 
 
@@ -69,11 +71,26 @@ async def accept_implication(
     if assistant_msg is None:
         raise HTTPException(status_code=404, detail="Turn not found")
 
-    # Create the fact; update if the key already exists
+    # Create the fact; update if the (category, key) tuple already exists.
     try:
-        await create_fact(db, character_id=session.character_id, key=body.key, value=body.value)
+        await create_fact(
+            db,
+            character_id=session.character_id,
+            key=body.key,
+            value=body.value,
+            category=body.category,
+        )
     except aiosqlite.IntegrityError:
-        await update_fact(db, character_id=session.character_id, key=body.key, value=body.value)
+        existing = await get_fact_by_category_key(
+            db,
+            character_id=session.character_id,
+            category=body.category,
+            key=body.key,
+        )
+        if existing is None:
+            raise
+        # Update value only — preserve existing category and mutability.
+        await update_fact(db, fact_id=existing.id, value=body.value)
 
     # When the user accepted the value exactly as suggested, no regeneration is needed —
     # the character's existing response already reflects the fact correctly.

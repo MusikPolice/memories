@@ -70,10 +70,12 @@ def build_evaluator_prompt(
     """Build the user-facing content for the evaluator Ollama call."""
     parts: list[str] = [f"Character: {character.name}"]
 
-    parts.append("\n## Established Facts (id: key: value)")
+    parts.append("\n## Established Facts (id: key: value  (category, mutability))")
     if facts:
         for f in facts:
-            parts.append(f"[{f.id}] {f.key}: {f.value}")
+            parts.append(
+                f"[{f.id}] {f.key}: {f.value}  (category: {f.category}, mutability: {f.mutability})"
+            )
     else:
         parts.append("(no facts established yet)")
 
@@ -94,6 +96,34 @@ def build_evaluator_prompt(
 
     parts.append(
         """
+## Mutability Rules
+These rules govern how you classify violations against established Facts:
+
+- IMMUTABLE facts: any response that contradicts an immutable Fact is a `contradiction`
+  regardless of context. Do not surface these as implications — the value cannot change.
+  Examples: height, birthdate, eye colour, bone structure.
+
+- LOW-mutability facts: these change infrequently and only with clear narrative context
+  (e.g., the character changed their clothes, moved to a new city). If the character's
+  response implies a different value for a low-mutability Fact, return `implication` (not
+  `contradiction`) — the change is plausible but needs user confirmation. Include a
+  violation entry with the new implied value as `suggested_fact`.
+
+- HIGH-mutability facts: these can change fluidly within a session (mood, emotional state,
+  immediate desires). If the character's response reflects a different value for a
+  high-mutability Fact, return `implication` — the change is expected and natural.
+  Include a violation entry with the new implied value as `suggested_fact`. In the
+  violation description, note that this is a high-mutability change: e.g.,
+  "Mood appears to have shifted from 'cheerful' to 'anxious' (high-mutability fact)".
+
+When building a `suggested_fact`, always include a `category` field that reflects whose
+fact it is:
+- `"character"` — something about the character themselves (their own clothing, mood, etc.)
+- `"user"` — something about the person they are talking with
+- `"setting"` — something about the current environment or situation
+
+If the category is unclear, default to `"character"`.
+
 ## Your Task
 Analyze the character's response. Every specific claim must be TRACEABLE to an
 established Fact or strictly derived from one.
@@ -141,11 +171,8 @@ Return a JSON object with this exact structure:
 }
 
 Verdict definitions (evaluate in this priority order):
-1. contradiction: response directly contradicts an established Fact — HIGHEST PRIORITY
-2. implication: response asserts a specific new detail not in the Facts and not
-   strictly derivable (clothing, accessories, locations, names, relationships,
-   precise measurements not in facts) — even if plausible, if it was invented,
-   it is an implication; add one violation entry per distinct implied fact
+1. contradiction: ONLY for immutable Fact violations — HIGHEST PRIORITY
+2. implication: for low- or high-mutability Fact changes, or invented specific details
 3. new_inference_logical: something strictly provable from Facts by pure logic
 4. new_inference_probabilistic: a broad behavioural/personality tendency likely
    given the Facts but not a specific new assertion

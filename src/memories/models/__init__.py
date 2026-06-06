@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -19,6 +19,8 @@ class Fact(BaseModel):
     character_id: int
     key: str
     value: str
+    category: Literal["user", "character", "setting"] = "character"
+    mutability: Literal["immutable", "low", "high"] = "immutable"
     created_at: datetime
 
 

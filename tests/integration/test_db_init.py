@@ -32,3 +32,53 @@ async def test_foreign_keys_enabled(db: aiosqlite.Connection) -> None:
     row = await cursor.fetchone()
     assert row is not None
     assert row[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 additions — category and mutability columns on facts table
+# ---------------------------------------------------------------------------
+
+
+async def test_facts_table_has_category_column(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute("PRAGMA table_info(facts)")
+    rows = await cursor.fetchall()
+    col_names = [row[1] for row in rows]
+    assert "category" in col_names
+
+
+async def test_facts_table_has_mutability_column(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute("PRAGMA table_info(facts)")
+    rows = await cursor.fetchall()
+    col_names = [row[1] for row in rows]
+    assert "mutability" in col_names
+
+
+async def test_category_column_default_is_character(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute("PRAGMA table_info(facts)")
+    rows = await cursor.fetchall()
+    # PRAGMA table_info columns: cid(0), name(1), type(2), notnull(3), dflt_value(4), pk(5)
+    category_row = next((r for r in rows if r[1] == "category"), None)
+    assert category_row is not None, "category column not found"
+    dflt_value = category_row[4]
+    assert dflt_value is not None, "category column has no default"
+    assert "character" in dflt_value
+
+
+async def test_mutability_column_default_is_immutable(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute("PRAGMA table_info(facts)")
+    rows = await cursor.fetchall()
+    mutability_row = next((r for r in rows if r[1] == "mutability"), None)
+    assert mutability_row is not None, "mutability column not found"
+    dflt_value = mutability_row[4]
+    assert dflt_value is not None, "mutability column has no default"
+    assert "immutable" in dflt_value
+
+
+async def test_facts_uniqueness_constraint_is_category_scoped(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='facts'")
+    row = await cursor.fetchone()
+    assert row is not None
+    table_sql: str = row[0]
+    # The unique constraint must reference the category column
+    assert "category" in table_sql, "Expected 'category' in facts table DDL unique constraint"
+    assert "UNIQUE" in table_sql.upper(), "Expected UNIQUE constraint in facts table DDL"

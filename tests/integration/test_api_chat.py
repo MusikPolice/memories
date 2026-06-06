@@ -13,6 +13,7 @@ from memories.database import (
     create_fact,
     create_inference,
     get_decisions,
+    get_facts,
     get_inferences,
     get_messages,
 )
@@ -768,3 +769,133 @@ async def test_send_message_lazy_batch_second_inference_sees_first_in_depth_snap
     assert inf_a.depth == 2
     # Without the snapshot refresh, B's compute_depth would not find A and return 1
     assert inf_b.depth == 3
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 additions — category sections and mutability annotations in prompts
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_system_prompt_groups_user_and_character_facts(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    await create_fact(db, character_id=character.id, key="user_name", value="Jon", category="user")
+    await create_fact(
+        db, character_id=character.id, key="occupation", value="surgeon", category="character"
+    )
+
+    with respx.mock:
+        route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
+        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
+
+    char_call_body = json.loads(route.calls[0].request.content)
+    system_prompt = char_call_body["messages"][0]["content"]
+    assert "User" in system_prompt
+    assert "Character" in system_prompt
+
+
+async def test_chat_system_prompt_omits_empty_setting_section(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    await create_fact(
+        db, character_id=character.id, key="occupation", value="surgeon", category="character"
+    )
+    # No setting facts
+
+    with respx.mock:
+        route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
+        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
+
+    char_call_body = json.loads(route.calls[0].request.content)
+    system_prompt = char_call_body["messages"][0]["content"]
+    lines = system_prompt.split("\n")
+    setting_headers = [ln for ln in lines if ln.startswith("##") and "Setting" in ln]
+    assert len(setting_headers) == 0
+
+
+async def test_chat_system_prompt_annotates_high_mutability_fact(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    await create_fact(
+        db, character_id=character.id, key="mood", value="cheerful", mutability="high"
+    )
+
+    with respx.mock:
+        route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
+        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
+
+    char_call_body = json.loads(route.calls[0].request.content)
+    system_prompt = char_call_body["messages"][0]["content"]
+    assert "[fluid" in system_prompt
+
+
+async def test_chat_system_prompt_annotates_low_mutability_fact(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    await create_fact(
+        db, character_id=character.id, key="clothing", value="dark coat", mutability="low"
+    )
+
+    with respx.mock:
+        route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
+        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
+
+    char_call_body = json.loads(route.calls[0].request.content)
+    system_prompt = char_call_body["messages"][0]["content"]
+    assert "[low-mutability" in system_prompt
+
+
+async def test_accept_implication_on_high_mutability_fact_preserves_mutability(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    # Create a high-mutability fact
+    await create_fact(
+        db, character_id=character.id, key="mood", value="cheerful", mutability="high"
+    )
+
+    _VIOLATION = {
+        "type": "implication",
+        "description": (
+            "Mood appears to have shifted from 'cheerful' to 'anxious' (high-mutability fact)"
+        ),
+        "suggested_fact": {"key": "mood", "value": "anxious"},
+    }
+
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=[
+                httpx.Response(200, content=make_ollama_ndjson("I feel anxious today.")),
+                httpx.Response(
+                    200, content=make_evaluator_ndjson("implication", violations=[_VIOLATION])
+                ),
+            ]
+        )
+        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "How are you?"})
+
+    # Accept the implication (value changes, but we expect mutability to be preserved)
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn("I feel anxious today."))
+        await client.post(
+            f"/api/sessions/{session.id}/turns/1/accept-implication",
+            json={"key": "mood", "value": "anxious", "regenerate": False},
+        )
+
+    facts = await get_facts(db, character.id)
+    mood_fact = next((f for f in facts if f.key == "mood"), None)
+    assert mood_fact is not None
+    assert mood_fact.mutability == "high"

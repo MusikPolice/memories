@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from memories.database import (
+    create_fact,
     delete_inference,
     get_character,
     get_facts,
@@ -33,6 +34,13 @@ class _RevalidateBody(BaseModel):
 
 class _PatchBody(BaseModel):
     status: str
+
+
+class _PromoteBody(BaseModel):
+    key: str
+    value: str
+    category: Literal["user", "character", "setting"] = "character"
+    mutability: Literal["immutable", "low", "high"] = "immutable"
 
 
 async def _fact_exists(db: aiosqlite.Connection, fact_id: int) -> bool:
@@ -124,3 +132,50 @@ async def patch_inference_endpoint(
         return await update_inference_status(db, inference_id, body.status)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail="Inference not found") from exc
+
+
+@router.post("/{character_id}/inferences/{inference_id}/promote", status_code=201)
+async def promote_inference_endpoint(
+    character_id: int,
+    inference_id: int,
+    body: _PromoteBody,
+    db: _DB,
+) -> dict[str, object]:
+    character = await get_character(db, character_id)
+    if character is None:
+        raise HTTPException(status_code=404, detail="Character not found")
+
+    inferences = await get_inferences(db, character_id, status="all")
+    if not any(inf.id == inference_id for inf in inferences):
+        raise HTTPException(status_code=404, detail="Inference not found")
+
+    try:
+        fact = await create_fact(
+            db,
+            character_id=character_id,
+            key=body.key,
+            value=body.value,
+            category=body.category,
+            mutability=body.mutability,
+        )
+    except aiosqlite.IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A {body.category} Fact with key '{body.key}' already exists",
+        ) from exc
+
+    # Mark downstream inferences (those that cite this inference) as stale.
+    stale: list[Inference] = []
+    for inf in inferences:
+        if inf.id == inference_id:
+            continue
+        if inference_id in inf.source_inference_ids:
+            updated = await update_inference_status(db, inf.id, "stale")
+            stale.append(updated)
+
+    await delete_inference(db, inference_id)
+
+    return {
+        "fact": fact.model_dump(),
+        "stale_inferences": [i.model_dump() for i in stale],
+    }

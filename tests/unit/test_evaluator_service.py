@@ -377,3 +377,127 @@ async def test_evaluator_accepts_inferences_parameter(ollama: OllamaClient) -> N
         inferences=[_ESTABLISHED_INFERENCE],
     )
     assert isinstance(result, EvaluatorResult)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 additions — category/mutability labels in evaluator prompt
+# ---------------------------------------------------------------------------
+
+_P4_NOW = datetime(2026, 1, 1)
+
+_P4_FACTS = [
+    Fact(
+        id=1,
+        character_id=1,
+        key="occupation",
+        value="surgeon",
+        category="character",
+        mutability="immutable",
+        created_at=_P4_NOW,
+    ),
+    Fact(
+        id=2,
+        character_id=1,
+        key="mood",
+        value="cheerful",
+        category="character",
+        mutability="high",
+        created_at=_P4_NOW,
+    ),
+    Fact(
+        id=3,
+        character_id=1,
+        key="location",
+        value="Chicago",
+        category="setting",
+        mutability="low",
+        created_at=_P4_NOW,
+    ),
+]
+
+
+def test_evaluator_prompt_includes_category_for_each_fact() -> None:
+    prompt = build_evaluator_prompt(_CHARACTER, _P4_FACTS, _USER_MSG, _CHAR_RESPONSE)
+    assert "category: character" in prompt
+    assert "category: setting" in prompt
+
+
+def test_evaluator_prompt_includes_mutability_for_each_fact() -> None:
+    prompt = build_evaluator_prompt(_CHARACTER, _P4_FACTS, _USER_MSG, _CHAR_RESPONSE)
+    assert "mutability: immutable" in prompt
+    assert "mutability: high" in prompt
+    assert "mutability: low" in prompt
+
+
+def test_evaluator_prompt_labels_user_category_facts() -> None:
+    facts = [
+        Fact(
+            id=1,
+            character_id=1,
+            key="user_name",
+            value="Jon",
+            category="user",
+            mutability="immutable",
+            created_at=_P4_NOW,
+        )
+    ]
+    prompt = build_evaluator_prompt(_CHARACTER, facts, _USER_MSG, _CHAR_RESPONSE)
+    assert "category: user" in prompt
+
+
+def test_evaluator_prompt_labels_setting_category_facts() -> None:
+    facts = [
+        Fact(
+            id=1,
+            character_id=1,
+            key="city",
+            value="Chicago",
+            category="setting",
+            mutability="low",
+            created_at=_P4_NOW,
+        )
+    ]
+    prompt = build_evaluator_prompt(_CHARACTER, facts, _USER_MSG, _CHAR_RESPONSE)
+    assert "category: setting" in prompt
+
+
+def test_evaluator_prompt_contains_immutable_contradiction_instruction() -> None:
+    prompt = build_evaluator_prompt(_CHARACTER, _P4_FACTS, _USER_MSG, _CHAR_RESPONSE)
+    prompt_lower = prompt.lower()
+    assert "immutable" in prompt_lower
+    assert "contradiction" in prompt_lower
+
+
+def test_evaluator_prompt_contains_high_mutability_implication_instruction() -> None:
+    prompt = build_evaluator_prompt(_CHARACTER, _P4_FACTS, _USER_MSG, _CHAR_RESPONSE)
+    prompt_lower = prompt.lower()
+    # The prompt must explain that high-mutability changes return implication
+    assert "high" in prompt_lower
+    assert "implication" in prompt_lower
+
+
+def test_evaluator_prompt_contains_low_mutability_implication_instruction() -> None:
+    prompt = build_evaluator_prompt(_CHARACTER, _P4_FACTS, _USER_MSG, _CHAR_RESPONSE)
+    prompt_lower = prompt.lower()
+    assert "low" in prompt_lower
+    assert "implication" in prompt_lower
+
+
+def test_evaluator_prompt_format_for_fact_with_all_fields() -> None:
+    facts = [
+        Fact(
+            id=5,
+            character_id=1,
+            key="mood",
+            value="cheerful",
+            category="character",
+            mutability="high",
+            created_at=_P4_NOW,
+        )
+    ]
+    prompt = build_evaluator_prompt(_CHARACTER, facts, _USER_MSG, _CHAR_RESPONSE)
+    # Each fact line should include: [id] key: value (category: X, mutability: Y)
+    assert "[5]" in prompt
+    assert "mood: cheerful" in prompt
+    assert "category: character" in prompt
+    assert "mutability: high" in prompt

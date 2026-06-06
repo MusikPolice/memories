@@ -165,31 +165,71 @@
     .facts-header {
       padding: 12px 16px; font-weight: 600; border-bottom: 1px solid #ddd;
     }
-    .facts-list { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px; }
-    .fact-row {
-      display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
+    .facts-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 16px; }
+
+    /* Category group header */
+    .category-header {
+      font-size: 10px; font-weight: 700; color: #aaa;
+      letter-spacing: 0.1em; text-transform: uppercase;
+      padding: 8px 0 3px; margin-top: 4px;
+      border-bottom: 1px solid #f0f0f0;
     }
-    .fact-row .fact-key { font-weight: 500; min-width: 80px; font-size: 13px; }
+    .category-header:first-child { margin-top: 0; }
+
+    .fact-row {
+      display: flex; align-items: center; gap: 6px; margin-bottom: 6px; margin-top: 4px;
+    }
+    .fact-row .fact-key { font-weight: 500; min-width: 72px; font-size: 13px; word-break: break-all; }
     .fact-row input {
       flex: 1; padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;
     }
     .fact-row input:focus { outline: none; border-color: #3b5bdb; }
     .fact-row .btn-del {
       padding: 3px 8px; background: #fff; border: 1px solid #faa; color: #c00;
-      border-radius: 4px; cursor: pointer; font-size: 12px;
+      border-radius: 4px; cursor: pointer; font-size: 12px; flex-shrink: 0;
     }
     .fact-row .btn-del:hover { background: #fdd; }
     .fact-row .btn-save {
       padding: 3px 8px; background: #fff; border: 1px solid #adf; color: #06c;
-      border-radius: 4px; cursor: pointer; font-size: 12px;
+      border-radius: 4px; cursor: pointer; font-size: 12px; flex-shrink: 0;
     }
 
+    /* Mutability icon + dropdown */
+    .mutability-wrap { position: relative; flex-shrink: 0; }
+    .mutability-icon {
+      background: none; border: none; cursor: pointer;
+      font-size: 13px; padding: 2px; line-height: 1; border-radius: 3px;
+    }
+    .mutability-icon:hover { background: #f0f4ff; }
+    .mutability-dropdown {
+      position: absolute; left: 0; top: 100%; margin-top: 2px;
+      background: #fff; border: 1px solid #ddd; border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0,0,0,.15);
+      z-index: 50; min-width: 130px;
+      font-size: 12px;
+    }
+    .mutability-dropdown > div {
+      padding: 6px 10px; cursor: pointer;
+    }
+    .mutability-dropdown > div:hover { background: #f0f4ff; }
+    .mutability-dropdown > div.active { font-weight: 600; color: #3b5bdb; background: #f0f4ff; }
+
     /* ── Inferences section ── */
-    .inferences-section { max-height: 220px; overflow-y: auto; padding: 12px 16px; border-top: 1px solid #ddd; }
-    .inferences-header { font-weight: 600; font-size: 13px; margin-bottom: 8px; color: #555; }
-    .inference-row { margin-bottom: 10px; }
-    .inference-row-statement { font-size: 13px; margin-bottom: 2px; }
-    .inference-row-derivation { font-size: 12px; color: #888; font-style: italic; }
+    .inferences-section { max-height: 280px; overflow-y: auto; padding: 8px 16px; border-top: 1px solid #ddd; }
+    .inferences-header { font-weight: 600; font-size: 13px; margin-bottom: 6px; color: #555; }
+    .inference-row { margin-bottom: 8px; }
+    .inference-row-top { display: flex; align-items: flex-start; gap: 4px; }
+    .promote-btn {
+      background: none; border: none; cursor: pointer;
+      font-size: 13px; padding: 1px 3px; flex-shrink: 0;
+      color: #3b5bdb; line-height: 1.4;
+    }
+    .promote-btn:hover { color: #2f4cc0; }
+    .inference-row-statement {
+      flex: 1; font-size: 13px; cursor: pointer; line-height: 1.4;
+    }
+    .inference-row-statement:hover { color: #3b5bdb; }
+    .inference-row-derivation { font-size: 12px; color: #888; font-style: italic; margin: 3px 0 0 24px; }
     .inference-type-badge {
       font-size: 11px; padding: 1px 5px; border-radius: 3px;
       font-weight: 600; margin-right: 4px;
@@ -197,15 +237,36 @@
     .inference-type-badge.logical { background: #e8f4fd; color: #0066cc; }
     .inference-type-badge.probabilistic { background: #eefff8; color: #006040; }
 
-    .add-fact-form { padding: 12px 16px; border-top: 1px solid #ddd; }
+    /* Promote to Fact inline form */
+    .promote-form {
+      margin: 6px 0 4px 20px; padding: 8px 10px;
+      background: #f8f9ff; border: 1px solid #dde; border-radius: 6px;
+    }
+    .promote-form input {
+      width: 100%; padding: 4px 8px; margin-bottom: 5px;
+      border: 1px solid #ddd; border-radius: 4px; font-size: 12px;
+    }
+    .promote-form input:focus { outline: none; border-color: #3b5bdb; }
+
+    /* Shared form row for selects */
+    .form-row { display: flex; gap: 6px; margin-bottom: 5px; }
+    .form-row select {
+      flex: 1; padding: 4px 6px; border: 1px solid #ddd;
+      border-radius: 4px; font-size: 12px; background: #fff;
+    }
+    .promote-form-actions { display: flex; gap: 6px; margin-top: 2px; }
+
+    .add-fact-form { padding: 10px 16px; border-top: 1px solid #ddd; }
     .add-fact-form input {
-      width: 100%; padding: 6px 10px; margin-bottom: 6px;
+      width: 100%; padding: 6px 10px; margin-bottom: 5px;
       border: 1px solid #ddd; border-radius: 4px; font-size: 13px;
     }
     .add-fact-form input:focus { outline: none; border-color: #3b5bdb; }
+    .add-fact-form .form-row select { font-size: 12px; }
     .add-fact-form button {
       width: 100%; padding: 7px; background: #3b5bdb; color: #fff;
       border: none; border-radius: 4px; cursor: pointer; font-size: 13px;
+      margin-top: 2px;
     }
     .add-fact-form button:hover { background: #2f4cc0; }
 
@@ -366,37 +427,142 @@
     <div class="facts-panel">
       <div class="facts-header">Facts</div>
       <div class="facts-list">
-        <div v-for="fact in facts" :key="fact.id" class="fact-row">
-          <span class="fact-key">{{ fact.key }}</span>
-          <input
-            v-model="fact._editValue"
-            @keyup.enter="saveFact(fact)"
-            :title="fact.key"
-          />
-          <button class="btn-save" @click="saveFact(fact)" title="Save">✓</button>
-          <button class="btn-del" @click="deleteFact(fact)" title="Delete">✕</button>
-        </div>
+
+        <!-- USER facts -->
+        <template v-if="factsByCategory.user.length > 0">
+          <div class="category-header">User</div>
+          <div v-for="fact in factsByCategory.user" :key="fact.id" class="fact-row">
+            <div class="mutability-wrap">
+              <button class="mutability-icon" @click.stop="toggleMutability(fact)"
+                      :title="'Mutability: ' + fact.mutability">
+                {{ mutabilityIcon(fact.mutability) }}
+              </button>
+              <div v-if="fact._mutOpen" class="mutability-dropdown" @click.stop>
+                <div @click="patchMutability(fact, 'immutable')"
+                     :class="{ active: fact.mutability === 'immutable' }">🔒 Immutable</div>
+                <div @click="patchMutability(fact, 'low')"
+                     :class="{ active: fact.mutability === 'low' }">📌 Settable</div>
+                <div @click="patchMutability(fact, 'high')"
+                     :class="{ active: fact.mutability === 'high' }">💧 Fluid</div>
+              </div>
+            </div>
+            <span class="fact-key">{{ fact.key }}</span>
+            <input v-model="fact._editValue" @keyup.enter="saveFact(fact)" :title="fact.key" />
+            <button class="btn-save" @click="saveFact(fact)" title="Save">✓</button>
+            <button class="btn-del" @click="deleteFact(fact)" title="Delete">✕</button>
+          </div>
+        </template>
+
+        <!-- CHARACTER facts -->
+        <template v-if="factsByCategory.character.length > 0">
+          <div class="category-header">Character</div>
+          <div v-for="fact in factsByCategory.character" :key="fact.id" class="fact-row">
+            <div class="mutability-wrap">
+              <button class="mutability-icon" @click.stop="toggleMutability(fact)"
+                      :title="'Mutability: ' + fact.mutability">
+                {{ mutabilityIcon(fact.mutability) }}
+              </button>
+              <div v-if="fact._mutOpen" class="mutability-dropdown" @click.stop>
+                <div @click="patchMutability(fact, 'immutable')"
+                     :class="{ active: fact.mutability === 'immutable' }">🔒 Immutable</div>
+                <div @click="patchMutability(fact, 'low')"
+                     :class="{ active: fact.mutability === 'low' }">📌 Settable</div>
+                <div @click="patchMutability(fact, 'high')"
+                     :class="{ active: fact.mutability === 'high' }">💧 Fluid</div>
+              </div>
+            </div>
+            <span class="fact-key">{{ fact.key }}</span>
+            <input v-model="fact._editValue" @keyup.enter="saveFact(fact)" :title="fact.key" />
+            <button class="btn-save" @click="saveFact(fact)" title="Save">✓</button>
+            <button class="btn-del" @click="deleteFact(fact)" title="Delete">✕</button>
+          </div>
+        </template>
+
+        <!-- SETTING facts -->
+        <template v-if="factsByCategory.setting.length > 0">
+          <div class="category-header">Setting</div>
+          <div v-for="fact in factsByCategory.setting" :key="fact.id" class="fact-row">
+            <div class="mutability-wrap">
+              <button class="mutability-icon" @click.stop="toggleMutability(fact)"
+                      :title="'Mutability: ' + fact.mutability">
+                {{ mutabilityIcon(fact.mutability) }}
+              </button>
+              <div v-if="fact._mutOpen" class="mutability-dropdown" @click.stop>
+                <div @click="patchMutability(fact, 'immutable')"
+                     :class="{ active: fact.mutability === 'immutable' }">🔒 Immutable</div>
+                <div @click="patchMutability(fact, 'low')"
+                     :class="{ active: fact.mutability === 'low' }">📌 Settable</div>
+                <div @click="patchMutability(fact, 'high')"
+                     :class="{ active: fact.mutability === 'high' }">💧 Fluid</div>
+              </div>
+            </div>
+            <span class="fact-key">{{ fact.key }}</span>
+            <input v-model="fact._editValue" @keyup.enter="saveFact(fact)" :title="fact.key" />
+            <button class="btn-save" @click="saveFact(fact)" title="Save">✓</button>
+            <button class="btn-del" @click="deleteFact(fact)" title="Delete">✕</button>
+          </div>
+        </template>
+
         <p v-if="facts.length === 0" style="color:#aaa;font-size:13px">No facts yet.</p>
       </div>
 
       <div class="add-fact-form">
         <input v-model="newKey" placeholder="key" />
         <input v-model="newValue" placeholder="value" @keyup.enter="addFact" />
+        <div class="form-row">
+          <select v-model="newCategory" title="Category">
+            <option value="user">User</option>
+            <option value="character">Character</option>
+            <option value="setting">Setting</option>
+          </select>
+          <select v-model="newMutability" title="Mutability">
+            <option value="immutable">🔒 Immutable</option>
+            <option value="low">📌 Settable</option>
+            <option value="high">💧 Fluid</option>
+          </select>
+        </div>
         <button @click="addFact">+ Add Fact</button>
         <p v-if="factError" class="error-msg">{{ factError }}</p>
       </div>
+
       <!-- Inferences section -->
       <div v-if="inferences.length > 0" class="inferences-section">
         <div class="inferences-header">Inferences</div>
         <div v-for="inf in inferences" :key="inf.id" class="inference-row">
-          <p class="inference-row-statement">
-            <span class="inference-type-badge" :class="inf.inference_type">
-              {{ inf.inference_type }}
-            </span>{{ inf.statement }}
-          </p>
-          <p class="inference-row-derivation">{{ inf.derivation }}</p>
+          <div class="inference-row-top">
+            <button class="promote-btn" @click.stop="togglePromote(inf)" title="Promote to Fact">⬆</button>
+            <span class="inference-row-statement" @click="inf._expanded = !inf._expanded">
+              <span class="inference-type-badge" :class="inf.inference_type">{{ inf.inference_type }}</span>{{ inf.statement }}
+            </span>
+          </div>
+          <div v-if="inf._expanded" class="inference-row-derivation">{{ inf.derivation }}</div>
+          <div v-if="inf._promoteOpen" class="promote-form" @click.stop>
+            <input v-model="inf._promoteKey" placeholder="fact key" />
+            <input v-model="inf._promoteValue" placeholder="fact value" />
+            <div class="form-row">
+              <select v-model="inf._promoteCategory">
+                <option value="user">User</option>
+                <option value="character">Character</option>
+                <option value="setting">Setting</option>
+              </select>
+              <select v-model="inf._promoteMutability">
+                <option value="immutable">🔒 Immutable</option>
+                <option value="low">📌 Settable</option>
+                <option value="high">💧 Fluid</option>
+              </select>
+            </div>
+            <p v-if="inf._promoteError" class="error-msg">{{ inf._promoteError }}</p>
+            <div class="promote-form-actions">
+              <button class="btn-accept" :disabled="inf._promoteLoading || !inf._promoteKey?.trim()"
+                      @click="promoteInference(inf)">
+                {{ inf._promoteLoading ? 'Promoting…' : 'Promote' }}
+              </button>
+              <button class="btn-ignore" @click="inf._promoteOpen = false">Cancel</button>
+            </div>
+          </div>
         </div>
       </div>
+
       <div class="facts-footer">
         <button class="btn-end" v-if="!sessionEnded" @click="endSession">
           End Session
@@ -421,9 +587,12 @@ import {
   apiIgnoreImplication,
   apiAcceptInference,
   apiIgnoreInference,
+  apiCreateFact,
+  apiPatchFactMutability,
+  apiPromoteInference,
 } from './chat.js';
 
-const { createApp, ref, nextTick } = Vue;
+const { createApp, ref, computed, nextTick, onMounted, onUnmounted } = Vue;
 
 createApp({
   setup() {
@@ -442,9 +611,47 @@ createApp({
     const thinkEnabled = ref(false);
     const newKey = ref('');
     const newValue = ref('');
+    const newCategory = ref('character');
+    const newMutability = ref('immutable');
     const factError = ref('');
     const messagesEl = ref(null);
     const inputEl = ref(null);
+
+    // ── Fact helpers ──
+
+    function mutabilityIcon(m) {
+      return m === 'low' ? '📌' : m === 'high' ? '💧' : '🔒';
+    }
+
+    const factsByCategory = computed(() => ({
+      user: facts.value.filter(f => f.category === 'user'),
+      character: facts.value.filter(f => f.category === 'character'),
+      setting: facts.value.filter(f => f.category === 'setting'),
+    }));
+
+    function closeAllMutDropdowns() {
+      facts.value.forEach(f => { if (f._mutOpen) f._mutOpen = false; });
+    }
+
+    onMounted(() => document.addEventListener('click', closeAllMutDropdowns));
+    onUnmounted(() => document.removeEventListener('click', closeAllMutDropdowns));
+
+    function toggleMutability(fact) {
+      const wasOpen = fact._mutOpen;
+      closeAllMutDropdowns();
+      fact._mutOpen = !wasOpen;
+    }
+
+    async function patchMutability(fact, newMut) {
+      fact._mutOpen = false;
+      if (newMut === fact.mutability) return;
+      const r = await apiPatchFactMutability(currentCharacter.value.id, fact.id, newMut);
+      if (r.ok) {
+        fact.mutability = newMut;
+      }
+    }
+
+    // ── Characters / sessions ──
 
     async function loadCharacters() {
       const r = await fetch('/api/characters/');
@@ -472,34 +679,49 @@ createApp({
       if (!currentCharacter.value) return;
       const r = await fetch(`/api/characters/${currentCharacter.value.id}/facts`);
       const raw = await r.json();
-      facts.value = raw.map(f => ({ ...f, _editValue: f.value }));
+      facts.value = raw.map(f => ({ ...f, _editValue: f.value, _mutOpen: false }));
     }
 
     async function loadInferences() {
       if (!currentCharacter.value) return;
       const r = await fetch(`/api/characters/${currentCharacter.value.id}/inferences`);
-      inferences.value = await r.json();
+      const raw = await r.json();
+      inferences.value = raw.map(inf => ({
+        ...inf,
+        _expanded: false,
+        _promoteOpen: false,
+        _promoteKey: '',
+        _promoteValue: inf.statement,
+        _promoteCategory: 'character',
+        _promoteMutability: 'immutable',
+        _promoteError: '',
+        _promoteLoading: false,
+      }));
     }
 
     async function addFact() {
       factError.value = '';
       if (!newKey.value.trim() || !newValue.value.trim()) return;
-      const r = await fetch(`/api/characters/${currentCharacter.value.id}/facts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: newKey.value.trim(), value: newValue.value.trim() }),
-      });
+      const r = await apiCreateFact(
+        currentCharacter.value.id,
+        newKey.value.trim(),
+        newValue.value.trim(),
+        newCategory.value,
+        newMutability.value,
+      );
       if (r.status === 409) {
-        factError.value = `Fact '${newKey.value}' already exists.`;
+        factError.value = `A ${newCategory.value} fact '${newKey.value}' already exists.`;
         return;
       }
       newKey.value = '';
       newValue.value = '';
+      newCategory.value = 'character';
+      newMutability.value = 'immutable';
       await loadFacts();
     }
 
     async function saveFact(fact) {
-      await fetch(`/api/characters/${currentCharacter.value.id}/facts/${fact.key}`, {
+      await fetch(`/api/characters/${currentCharacter.value.id}/facts/${fact.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ value: fact._editValue }),
@@ -509,11 +731,52 @@ createApp({
     }
 
     async function deleteFact(fact) {
-      const r = await fetch(`/api/characters/${currentCharacter.value.id}/facts/${fact.key}`, {
+      await fetch(`/api/characters/${currentCharacter.value.id}/facts/${fact.id}`, {
         method: 'DELETE',
       });
       await loadFacts();
       await loadInferences();
+    }
+
+    // ── Inference promote ──
+
+    function togglePromote(inf) {
+      if (!inf._promoteOpen) {
+        inf._promoteKey = '';
+        inf._promoteValue = inf.statement;
+        inf._promoteCategory = 'character';
+        inf._promoteMutability = 'immutable';
+        inf._promoteError = '';
+        inf._promoteLoading = false;
+      }
+      inf._promoteOpen = !inf._promoteOpen;
+    }
+
+    async function promoteInference(inf) {
+      if (!inf._promoteKey?.trim()) return;
+      inf._promoteLoading = true;
+      inf._promoteError = '';
+      try {
+        const r = await apiPromoteInference(
+          currentCharacter.value.id,
+          inf.id,
+          inf._promoteKey.trim(),
+          inf._promoteValue,
+          inf._promoteCategory,
+          inf._promoteMutability,
+        );
+        if (r.status === 201) {
+          const data = await r.json();
+          const idx = inferences.value.indexOf(inf);
+          if (idx !== -1) inferences.value.splice(idx, 1);
+          const newFact = { ...data.fact, _editValue: data.fact.value, _mutOpen: false };
+          facts.value.push(newFact);
+        } else if (r.status === 409) {
+          inf._promoteError = 'A fact with this key already exists in that category.';
+        }
+      } finally {
+        inf._promoteLoading = false;
+      }
     }
 
     async function endSession() {
@@ -697,9 +960,15 @@ createApp({
 
     return {
       showPicker, characters, currentCharacter, sessionId,
-      messages, facts, inferences, inputText, sending, generating, statusText, sessionEnded,
-      thinkEnabled, newKey, newValue, factError, messagesEl, inputEl,
-      pickCharacter, addFact, saveFact, deleteFact, endSession, newSession, sendMessage,
+      messages, facts, inferences, factsByCategory,
+      inputText, sending, generating, statusText, sessionEnded,
+      thinkEnabled, newKey, newValue, newCategory, newMutability,
+      factError, messagesEl, inputEl,
+      mutabilityIcon,
+      pickCharacter, addFact, saveFact, deleteFact,
+      toggleMutability, patchMutability,
+      togglePromote, promoteInference,
+      endSession, newSession, sendMessage,
       acceptImplication, ignoreImplication, acceptInference, ignoreInference,
       dismissNotification,
     };
