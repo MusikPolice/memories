@@ -43,30 +43,28 @@ async def test_get_facts_returns_only_own_character(db: aiosqlite.Connection) ->
 
 async def test_update_fact_changes_value(db: aiosqlite.Connection) -> None:
     char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
-    await create_fact(db, character_id=char.id, key="occupation", value="doctor")
-    await update_fact(db, character_id=char.id, key="occupation", value="surgeon")
+    fact = await create_fact(db, character_id=char.id, key="occupation", value="doctor")
+    await update_fact(db, fact_id=fact.id, value="surgeon")
     facts = await get_facts(db, char.id)
     assert facts[0].value == "surgeon"
 
 
 async def test_update_nonexistent_fact_raises(db: aiosqlite.Connection) -> None:
-    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
     with pytest.raises(NotFoundError):
-        await update_fact(db, character_id=char.id, key="nonexistent", value="x")
+        await update_fact(db, fact_id=99999, value="x")
 
 
 async def test_delete_fact_removes_it(db: aiosqlite.Connection) -> None:
     char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
-    await create_fact(db, character_id=char.id, key="occupation", value="doctor")
-    await delete_fact(db, character_id=char.id, key="occupation")
+    fact = await create_fact(db, character_id=char.id, key="occupation", value="doctor")
+    await delete_fact(db, fact_id=fact.id)
     facts = await get_facts(db, char.id)
     assert facts == []
 
 
 async def test_delete_nonexistent_fact_raises(db: aiosqlite.Connection) -> None:
-    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
     with pytest.raises(NotFoundError):
-        await delete_fact(db, character_id=char.id, key="nonexistent")
+        await delete_fact(db, fact_id=99999)
 
 
 # ---------------------------------------------------------------------------

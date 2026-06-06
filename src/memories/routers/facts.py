@@ -83,35 +83,23 @@ async def create_fact_endpoint(character_id: int, body: _CreateBody, db: _DB) ->
         raise HTTPException(status_code=409, detail=f"Fact '{body.key}' already exists") from exc
 
 
-@router.put("/{character_id}/facts/{key_or_id}", response_model=Fact)
-async def update_fact_endpoint(
-    character_id: int, key_or_id: str, body: _UpdateBody, db: _DB
-) -> Fact:
-    # If path segment is an integer, use id-based lookup with character ownership check.
-    try:
-        fact_id = int(key_or_id)
-        row = await (
-            await db.execute(
-                "SELECT id FROM facts WHERE id = ? AND character_id = ?",
-                (fact_id, character_id),
-            )
-        ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Fact not found")
-        return await update_fact(
-            db,
-            fact_id=fact_id,
-            value=body.value,
-            category=body.category,
-            mutability=body.mutability,
+@router.put("/{character_id}/facts/{fact_id}", response_model=Fact)
+async def update_fact_endpoint(character_id: int, fact_id: int, body: _UpdateBody, db: _DB) -> Fact:
+    row = await (
+        await db.execute(
+            "SELECT id FROM facts WHERE id = ? AND character_id = ?",
+            (fact_id, character_id),
         )
-    except ValueError:
-        # Legacy key-based lookup
-        key = key_or_id
-        try:
-            return await update_fact(db, character_id=character_id, key=key, value=body.value)
-        except NotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"Fact '{key}' not found") from exc
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Fact not found")
+    return await update_fact(
+        db,
+        fact_id=fact_id,
+        value=body.value,
+        category=body.category,
+        mutability=body.mutability,
+    )
 
 
 @router.patch("/{character_id}/facts/{fact_id}", response_model=Fact)
@@ -137,38 +125,19 @@ async def patch_fact_endpoint(character_id: int, fact_id: int, body: _PatchBody,
         raise HTTPException(status_code=404, detail="Fact not found") from exc
 
 
-@router.delete("/{character_id}/facts/{key_or_id}")
-async def delete_fact_endpoint(character_id: int, key_or_id: str, db: _DB) -> dict[str, object]:
+@router.delete("/{character_id}/facts/{fact_id}")
+async def delete_fact_endpoint(character_id: int, fact_id: int, db: _DB) -> dict[str, object]:
     from memories.services.inference_service import cascade_on_fact_delete
 
-    # If path segment is an integer, delete by fact_id with ownership check.
-    try:
-        fact_id = int(key_or_id)
-        row = await (
-            await db.execute(
-                "SELECT id FROM facts WHERE id = ? AND character_id = ?",
-                (fact_id, character_id),
-            )
-        ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail=f"Fact {fact_id} not found")
-        await delete_fact(db, fact_id=fact_id)
-    except ValueError:
-        # Legacy key-based deletion
-        key = key_or_id
-        row = await (
-            await db.execute(
-                "SELECT id FROM facts WHERE character_id = ? AND key = ?",
-                (character_id, key),
-            )
-        ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail=f"Fact '{key}' not found") from None
-        fact_id = row[0]
-        try:
-            await delete_fact(db, character_id=character_id, key=key)
-        except NotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"Fact '{key}' not found") from exc
+    row = await (
+        await db.execute(
+            "SELECT id FROM facts WHERE id = ? AND character_id = ?",
+            (fact_id, character_id),
+        )
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Fact {fact_id} not found")
+    await delete_fact(db, fact_id=fact_id)
 
     invalidated = await cascade_on_fact_delete(db, character_id, fact_id)
     return {"invalidated_inferences": [inf.model_dump() for inf in invalidated]}

@@ -218,9 +218,7 @@ async def get_facts(db: aiosqlite.Connection, character_id: int) -> list[Fact]:
 async def update_fact(
     db: aiosqlite.Connection,
     *,
-    fact_id: int | None = None,
-    character_id: int | None = None,
-    key: str | None = None,
+    fact_id: int,
     value: str,
     category: str | None = None,
     mutability: str | None = None,
@@ -234,32 +232,15 @@ async def update_fact(
         updates.append("mutability = ?")
         params.append(mutability)
 
-    if fact_id is not None:
-        params.append(fact_id)
-        cursor = await db.execute(
-            f"UPDATE facts SET {', '.join(updates)} WHERE id = ?",  # nosec B608
-            tuple(params),
-        )
-        await db.commit()
-        if cursor.rowcount == 0:
-            raise NotFoundError(f"Fact {fact_id} not found")
-        row = await (await db.execute("SELECT * FROM facts WHERE id = ?", (fact_id,))).fetchone()
-    else:
-        params.extend([character_id, key])
-        cursor = await db.execute(
-            f"UPDATE facts SET {', '.join(updates)} WHERE character_id = ? AND key = ?",  # nosec B608
-            tuple(params),
-        )
-        await db.commit()
-        if cursor.rowcount == 0:
-            raise NotFoundError(f"Fact '{key}' not found for character {character_id}")
-        row = await (
-            await db.execute(
-                "SELECT * FROM facts WHERE character_id = ? AND key = ?",
-                (character_id, key),
-            )
-        ).fetchone()
-
+    params.append(fact_id)
+    cursor = await db.execute(
+        f"UPDATE facts SET {', '.join(updates)} WHERE id = ?",  # nosec B608
+        tuple(params),
+    )
+    await db.commit()
+    if cursor.rowcount == 0:
+        raise NotFoundError(f"Fact {fact_id} not found")
+    row = await (await db.execute("SELECT * FROM facts WHERE id = ?", (fact_id,))).fetchone()
     assert row is not None
     return Fact.model_validate(_row(row))
 
@@ -267,23 +248,12 @@ async def update_fact(
 async def delete_fact(
     db: aiosqlite.Connection,
     *,
-    fact_id: int | None = None,
-    character_id: int | None = None,
-    key: str | None = None,
+    fact_id: int,
 ) -> None:
-    if fact_id is not None:
-        cursor = await db.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
-        await db.commit()
-        if cursor.rowcount == 0:
-            raise NotFoundError(f"Fact {fact_id} not found")
-    else:
-        cursor = await db.execute(
-            "DELETE FROM facts WHERE character_id = ? AND key = ?",
-            (character_id, key),
-        )
-        await db.commit()
-        if cursor.rowcount == 0:
-            raise NotFoundError(f"Fact '{key}' not found for character {character_id}")
+    cursor = await db.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
+    await db.commit()
+    if cursor.rowcount == 0:
+        raise NotFoundError(f"Fact {fact_id} not found")
 
 
 async def patch_fact(

@@ -49,8 +49,11 @@ async def test_update_fact_200(client: AsyncClient) -> None:
         "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
     )
     char_id = char_resp.json()["id"]
-    await client.post(f"/api/characters/{char_id}/facts", json={"key": "age", "value": "30"})
-    response = await client.put(f"/api/characters/{char_id}/facts/age", json={"value": "31"})
+    fact_resp = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "age", "value": "30"}
+    )
+    fact_id = fact_resp.json()["id"]
+    response = await client.put(f"/api/characters/{char_id}/facts/{fact_id}", json={"value": "31"})
     assert response.status_code == 200
     assert response.json()["value"] == "31"
 
@@ -60,7 +63,7 @@ async def test_update_nonexistent_fact_404(client: AsyncClient) -> None:
         "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
     )
     char_id = char_resp.json()["id"]
-    response = await client.put(f"/api/characters/{char_id}/facts/nonexistent", json={"value": "x"})
+    response = await client.put(f"/api/characters/{char_id}/facts/99999", json={"value": "x"})
     assert response.status_code == 404
 
 
@@ -69,8 +72,11 @@ async def test_delete_fact_returns_200(client: AsyncClient) -> None:
         "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
     )
     char_id = char_resp.json()["id"]
-    await client.post(f"/api/characters/{char_id}/facts", json={"key": "age", "value": "30"})
-    response = await client.delete(f"/api/characters/{char_id}/facts/age")
+    fact_resp = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "age", "value": "30"}
+    )
+    fact_id = fact_resp.json()["id"]
+    response = await client.delete(f"/api/characters/{char_id}/facts/{fact_id}")
     assert response.status_code == 200
 
 
@@ -79,7 +85,7 @@ async def test_delete_nonexistent_fact_404(client: AsyncClient) -> None:
         "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
     )
     char_id = char_resp.json()["id"]
-    response = await client.delete(f"/api/characters/{char_id}/facts/nonexistent")
+    response = await client.delete(f"/api/characters/{char_id}/facts/99999")
     assert response.status_code == 404
 
 
@@ -146,8 +152,11 @@ async def test_delete_fact_response_has_invalidated_inferences_key(
         "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
     )
     char_id = char_resp.json()["id"]
-    await client.post(f"/api/characters/{char_id}/facts", json={"key": "age", "value": "30"})
-    response = await client.delete(f"/api/characters/{char_id}/facts/age")
+    fact_resp = await client.post(
+        f"/api/characters/{char_id}/facts", json={"key": "age", "value": "30"}
+    )
+    fact_id = fact_resp.json()["id"]
+    response = await client.delete(f"/api/characters/{char_id}/facts/{fact_id}")
     assert "invalidated_inferences" in response.json()
     assert isinstance(response.json()["invalidated_inferences"], list)
 
@@ -170,7 +179,7 @@ async def test_delete_fact_cascade_marks_dependent_inference_invalidated(
         source_fact_ids=[fact_id],
     )
 
-    response = await client.delete(f"/api/characters/{character.id}/facts/age")
+    response = await client.delete(f"/api/characters/{character.id}/facts/{fact_id}")
     data = response.json()
 
     assert any(i["id"] == inf.id for i in data["invalidated_inferences"])
@@ -184,7 +193,10 @@ async def test_delete_fact_cascade_leaves_unrelated_inference_active(
     db: aiosqlite.Connection,
 ) -> None:
     # Create a fact to delete, and an inference that references a DIFFERENT fact
-    await client.post(f"/api/characters/{character.id}/facts", json={"key": "age", "value": "33"})
+    fact_resp = await client.post(
+        f"/api/characters/{character.id}/facts", json={"key": "age", "value": "33"}
+    )
+    fact_id = fact_resp.json()["id"]
     unrelated = await create_inference(
         db,
         character_id=character.id,
@@ -193,7 +205,7 @@ async def test_delete_fact_cascade_leaves_unrelated_inference_active(
         source_fact_ids=[999],  # different fact id
     )
 
-    await client.delete(f"/api/characters/{character.id}/facts/age")
+    await client.delete(f"/api/characters/{character.id}/facts/{fact_id}")
 
     active = await get_inferences(db, character.id, status="active")
     assert any(a.id == unrelated.id for a in active)
@@ -204,7 +216,10 @@ async def test_delete_fact_no_dependents_returns_empty_list(
     character: Character,
     db: aiosqlite.Connection,
 ) -> None:
-    await client.post(f"/api/characters/{character.id}/facts", json={"key": "age", "value": "33"})
+    fact_resp = await client.post(
+        f"/api/characters/{character.id}/facts", json={"key": "age", "value": "33"}
+    )
+    fact_id = fact_resp.json()["id"]
     # Create an inference that does NOT depend on this fact
     await create_inference(
         db,
@@ -214,7 +229,7 @@ async def test_delete_fact_no_dependents_returns_empty_list(
         source_fact_ids=[999],
     )
 
-    response = await client.delete(f"/api/characters/{character.id}/facts/age")
+    response = await client.delete(f"/api/characters/{character.id}/facts/{fact_id}")
     assert response.json()["invalidated_inferences"] == []
 
 
