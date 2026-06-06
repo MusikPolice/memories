@@ -7,7 +7,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import aiosqlite
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import HTTPException
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from memories import deps
@@ -46,6 +49,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(title="Memories", lifespan=lifespan)
+
+
+@app.exception_handler(HTTPException)
+async def _logged_http_exception(request: Request, exc: HTTPException) -> Response:
+    _log.warning("%s %s → %d — %s", request.method, request.url.path, exc.status_code, exc.detail)
+    return await http_exception_handler(request, exc)
+
 
 app.include_router(characters.router, prefix="/api/characters", tags=["characters"])
 app.include_router(facts.router, prefix="/api/characters", tags=["facts"])

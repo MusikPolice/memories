@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -30,6 +31,8 @@ from memories.services.evaluator import (
 from memories.services.inference_service import MAX_INFERENCE_DEPTH, compute_depth
 from memories.services.ollama_client import OllamaClient
 from memories.services.prompt_builder import build_system_prompt
+
+_log = logging.getLogger(__name__)
 
 MAX_CONTRADICTION_RETRIES: int = int(os.getenv("MAX_CONTRADICTION_RETRIES", "3"))
 
@@ -83,6 +86,9 @@ async def run_contradiction_loop(
                 inferences=inferences or None,
             )
         except EvaluatorParseError:
+            _log.warning(
+                "evaluator parse error on attempt %d — delivering response unverified", attempt + 1
+            )
             ev = EvaluatorResult(
                 verdict="pass",
                 decision_log="(evaluator parse error — response delivered unverified)",
@@ -94,6 +100,7 @@ async def run_contradiction_loop(
 
         for v in ev.violations:
             if v.type == "contradiction":
+                _log.info("contradiction on attempt %d: %s", attempt + 1, v.description)
                 contradiction_notifications.append(
                     ContradictionNotification(iteration=attempt + 1, description=v.description)
                 )
@@ -216,4 +223,17 @@ async def run_turn(
         violations=violations_for_log,
     )
 
+    if eval_result.max_retries_exceeded:
+        _log.warning(
+            "session=%d turn=%d contradiction retries exhausted — delivering response unverified",
+            session_id,
+            turn_id,
+        )
+    _log.info(
+        "session=%d turn=%d verdict=%s violations=%d",
+        session_id,
+        turn_id,
+        eval_result.verdict,
+        len(eval_result.violations),
+    )
     return char_content, char_thinking, turn_id, eval_result
