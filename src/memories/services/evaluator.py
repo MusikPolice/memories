@@ -251,7 +251,7 @@ async def run_evaluator(
 
     verdict = data.get("verdict")
 
-    # experience_update is Phase 4; coerce to pass now
+    # experience_update is Phase 5; coerce to pass now
     if verdict == "experience_update":
         data["verdict"] = "pass"
         verdict = "pass"
