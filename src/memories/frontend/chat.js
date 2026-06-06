@@ -139,13 +139,15 @@ export function removeViolation(notif, violation) {
  * @param {string} value
  * @param {boolean} [regenerate=true]  Pass false when the value is unchanged from the suggestion;
  *                                     the backend will save the fact without re-running the LLM.
+ * @param {string} [category='character']  Fact category ('user', 'character', or 'setting').
+ *                                         Should come from the evaluator's suggested_fact.category.
  * @returns {Promise<Response>}
  */
-export function apiAcceptImplication(sessionId, turnId, key, value, regenerate = true) {
+export function apiAcceptImplication(sessionId, turnId, key, value, regenerate = true, category = 'character') {
   return fetch(`/api/sessions/${sessionId}/turns/${turnId}/accept-implication`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key, value, regenerate }),
+    body: JSON.stringify({ key, value, regenerate, category }),
   });
 }
 

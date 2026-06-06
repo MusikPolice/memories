@@ -811,7 +811,8 @@ createApp({
       const regenerate = value !== violation.suggested_fact.value;
       try {
         const r = await apiAcceptImplication(
-          sessionId.value, notif.turn_id, violation.suggested_fact.key, value, regenerate
+          sessionId.value, notif.turn_id, violation.suggested_fact.key, value, regenerate,
+          violation.suggested_fact?.category ?? 'character'
         );
         if (r.ok) {
           const data = await r.json();

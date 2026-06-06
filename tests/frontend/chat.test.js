@@ -266,13 +266,13 @@ describe('API helpers', () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: true });
   });
 
-  it('apiAcceptImplication POSTs to the correct URL with key, value, and regenerate=true', async () => {
+  it('apiAcceptImplication POSTs to the correct URL with key, value, regenerate=true, and default category', async () => {
     await apiAcceptImplication(5, 3, 'siblings', 'one sister');
     expect(fetch).toHaveBeenCalledWith(
       '/api/sessions/5/turns/3/accept-implication',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ key: 'siblings', value: 'one sister', regenerate: true }),
+        body: JSON.stringify({ key: 'siblings', value: 'one sister', regenerate: true, category: 'character' }),
       })
     );
   });
@@ -283,9 +283,16 @@ describe('API helpers', () => {
       '/api/sessions/5/turns/3/accept-implication',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ key: 'siblings', value: 'one sister', regenerate: false }),
+        body: JSON.stringify({ key: 'siblings', value: 'one sister', regenerate: false, category: 'character' }),
       })
     );
+  });
+
+  it('apiAcceptImplication forwards the supplied category to the backend', async () => {
+    await apiAcceptImplication(5, 3, 'jacket_colour', 'blue', true, 'user');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.category).toBe('user');
   });
 
   it('apiIgnoreImplication POSTs to the correct URL', async () => {
