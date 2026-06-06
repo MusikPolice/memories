@@ -452,53 +452,53 @@ describe('Phase 4 fact API helpers', () => {
   });
 
   it('apiPatchFactMutability_sends_patch_to_correct_url', async () => {
-    await apiPatchFactMutability(7, 'mood', 'high');
+    await apiPatchFactMutability(7, 42, 'high');
     expect(fetch).toHaveBeenCalledWith(
-      '/api/characters/7/facts/mood',
+      '/api/characters/7/facts/42',
       expect.objectContaining({ method: 'PATCH' })
     );
   });
 
   it('apiPatchFactMutability_sends_mutability_in_body', async () => {
-    await apiPatchFactMutability(7, 'mood', 'high');
+    await apiPatchFactMutability(7, 42, 'high');
     const [, opts] = fetch.mock.calls[0];
     const body = JSON.parse(opts.body);
     expect(body.mutability).toBe('high');
   });
 
   it('apiPatchFactMutability_does_not_send_category_field', async () => {
-    await apiPatchFactMutability(7, 'mood', 'high');
+    await apiPatchFactMutability(7, 42, 'high');
     const [, opts] = fetch.mock.calls[0];
     const body = JSON.parse(opts.body);
     expect(body).not.toHaveProperty('category');
   });
 
   it('apiPatchFactCategory_sends_patch_to_correct_url', async () => {
-    await apiPatchFactCategory(7, 'mood', 'setting');
+    await apiPatchFactCategory(7, 42, 'setting');
     expect(fetch).toHaveBeenCalledWith(
-      '/api/characters/7/facts/mood',
+      '/api/characters/7/facts/42',
       expect.objectContaining({ method: 'PATCH' })
     );
   });
 
   it('apiPatchFactCategory_sends_category_in_body', async () => {
-    await apiPatchFactCategory(7, 'mood', 'setting');
+    await apiPatchFactCategory(7, 42, 'setting');
     const [, opts] = fetch.mock.calls[0];
     const body = JSON.parse(opts.body);
     expect(body.category).toBe('setting');
   });
 
   it('apiPatchFactCategory_does_not_send_mutability_field', async () => {
-    await apiPatchFactCategory(7, 'mood', 'setting');
+    await apiPatchFactCategory(7, 42, 'setting');
     const [, opts] = fetch.mock.calls[0];
     const body = JSON.parse(opts.body);
     expect(body).not.toHaveProperty('mutability');
   });
 
-  it('apiPatchFactMutability_url_encodes_key_with_spaces', async () => {
-    await apiPatchFactMutability(7, 'home city', 'low');
+  it('apiPatchFactMutability_uses_integer_fact_id_in_url', async () => {
+    await apiPatchFactMutability(7, 99, 'low');
     expect(fetch).toHaveBeenCalledWith(
-      '/api/characters/7/facts/home%20city',
+      '/api/characters/7/facts/99',
       expect.anything()
     );
   });

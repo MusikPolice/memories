@@ -261,12 +261,12 @@ export function apiCreateFact(characterId, key, value, category = 'character', m
 
 /**
  * @param {number} characterId
- * @param {string} key
+ * @param {number} factId
  * @param {string} mutability
  * @returns {Promise<Response>}
  */
-export function apiPatchFactMutability(characterId, key, mutability) {
-  return fetch(`/api/characters/${characterId}/facts/${encodeURIComponent(key)}`, {
+export function apiPatchFactMutability(characterId, factId, mutability) {
+  return fetch(`/api/characters/${characterId}/facts/${factId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mutability }),
@@ -275,12 +275,12 @@ export function apiPatchFactMutability(characterId, key, mutability) {
 
 /**
  * @param {number} characterId
- * @param {string} key
+ * @param {number} factId
  * @param {string} category
  * @returns {Promise<Response>}
  */
-export function apiPatchFactCategory(characterId, key, category) {
-  return fetch(`/api/characters/${characterId}/facts/${encodeURIComponent(key)}`, {
+export function apiPatchFactCategory(characterId, factId, category) {
+  return fetch(`/api/characters/${characterId}/facts/${factId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ category }),
