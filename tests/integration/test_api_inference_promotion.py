@@ -203,6 +203,41 @@ async def test_promote_inference_marks_downstream_inference_stale(
     assert any(i.id == downstream_inference.id for i in stale_in_db)
 
 
+async def test_promote_inference_marks_transitive_downstream_stale(
+    client: AsyncClient,
+    character: Character,
+    inference: Inference,
+    downstream_inference: Inference,
+    db: aiosqlite.Connection,
+) -> None:
+    """Grandchild inference (A→B→C) must be marked stale when A is promoted."""
+    grandchild = await create_inference(
+        db,
+        character_id=character.id,
+        statement="Elara missed the Columbine shooting by two years",
+        derivation="was a teenager during 9/11 (inference:2)",
+        source_fact_ids=[],
+        source_inference_ids=[downstream_inference.id],
+        inference_type="logical",
+        depth=3,
+    )
+
+    response = await client.post(
+        _promote_url(character.id, inference.id),
+        json={"key": "birth_year", "value": "1993"},
+    )
+    assert response.status_code == 201
+
+    stale_ids = [i["id"] for i in response.json()["stale_inferences"]]
+    assert downstream_inference.id in stale_ids, "direct child should be stale"
+    assert grandchild.id in stale_ids, "grandchild should also be stale (transitive cascade)"
+
+    stale_in_db = await get_inferences(db, character.id, status="stale")
+    stale_db_ids = {i.id for i in stale_in_db}
+    assert downstream_inference.id in stale_db_ids
+    assert grandchild.id in stale_db_ids
+
+
 async def test_promote_inference_non_downstream_inference_stays_active(
     client: AsyncClient,
     character: Character,

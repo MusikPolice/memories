@@ -164,14 +164,20 @@ async def promote_inference_endpoint(
             detail=f"A {body.category} Fact with key '{body.key}' already exists",
         ) from exc
 
-    # Mark downstream inferences (those that cite this inference) as stale.
+    # BFS cascade: mark all transitively-downstream inferences as stale.
     stale: list[Inference] = []
-    for inf in inferences:
-        if inf.id == inference_id:
-            continue
-        if inference_id in inf.source_inference_ids:
-            updated = await update_inference_status(db, inf.id, "stale")
-            stale.append(updated)
+    stale_ids: set[int] = {inference_id}
+    queue: list[int] = [inference_id]
+    while queue:
+        current_id = queue.pop(0)
+        for inf in inferences:
+            if inf.id in stale_ids:
+                continue
+            if current_id in inf.source_inference_ids:
+                updated = await update_inference_status(db, inf.id, "stale")
+                stale.append(updated)
+                stale_ids.add(inf.id)
+                queue.append(inf.id)
 
     await delete_inference(db, inference_id)
 
