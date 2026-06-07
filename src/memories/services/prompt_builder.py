@@ -6,8 +6,8 @@ _CATEGORY_ORDER = ["user", "character", "setting"]
 
 _HEADERS = {
     "user": "## Facts About The User",
-    "character": "## Your Facts (Character)",
-    "setting": "## Setting Facts",
+    "character": "## Facts About You (Character)",
+    "setting": "## Setting",
 }
 
 _DESCRIPTIONS = {

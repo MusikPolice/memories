@@ -57,10 +57,12 @@ def test_no_facts_yields_no_invention_instruction() -> None:
 
 
 def test_facts_section_header_present_regardless_of_fact_count() -> None:
-    """The '## Your Facts' header appears whether or not facts exist."""
+    """A facts header always appears; the no-facts path uses the fallback header."""
     with_facts = build_system_prompt(_CHARACTER, _FACTS)
     without_facts = build_system_prompt(_CHARACTER, [])
-    assert "## Your Facts" in with_facts
+    # With facts: the character-category section header is present
+    assert "## Facts About You (Character)" in with_facts
+    # Without facts: the generic fallback header is present
     assert "## Your Facts" in without_facts
 
 
