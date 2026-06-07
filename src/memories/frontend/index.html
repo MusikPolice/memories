@@ -214,6 +214,23 @@
     .mutability-dropdown > div:hover { background: #f0f4ff; }
     .mutability-dropdown > div.active { font-weight: 600; color: #3b5bdb; background: #f0f4ff; }
 
+    .category-wrap { position: relative; }
+    .category-badge {
+      background: none; border: none; cursor: pointer;
+      font-size: 11px; padding: 2px 4px; line-height: 1; border-radius: 3px;
+      color: #777; font-weight: 700;
+    }
+    .category-badge:hover { background: #f0f4ff; }
+    .category-dropdown {
+      position: absolute; left: 0; top: 100%; margin-top: 2px;
+      background: #fff; border: 1px solid #ddd; border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0,0,0,.15);
+      z-index: 50; min-width: 110px; font-size: 12px;
+    }
+    .category-dropdown > div { padding: 6px 10px; cursor: pointer; }
+    .category-dropdown > div:hover { background: #f0f4ff; }
+    .category-dropdown > div.active { font-weight: 600; color: #3b5bdb; background: #f0f4ff; }
+
     /* ── Inferences section ── */
     .inferences-section { max-height: 280px; overflow-y: auto; padding: 8px 16px; border-top: 1px solid #ddd; }
     .inferences-header { font-weight: 600; font-size: 13px; margin-bottom: 6px; color: #555; }
@@ -446,10 +463,25 @@
                      :class="{ active: fact.mutability === 'high' }">💧 Fluid</div>
               </div>
             </div>
+            <div class="category-wrap">
+              <button class="category-badge" @click.stop="toggleCategory(fact)"
+                      :title="'Category: ' + fact.category + ' — click to change'">
+                {{ fact.category[0].toUpperCase() }}
+              </button>
+              <div v-if="fact._catOpen" class="category-dropdown" @click.stop>
+                <div @click="patchCategory(fact, 'user')"
+                     :class="{ active: fact.category === 'user' }">User</div>
+                <div @click="patchCategory(fact, 'character')"
+                     :class="{ active: fact.category === 'character' }">Character</div>
+                <div @click="patchCategory(fact, 'setting')"
+                     :class="{ active: fact.category === 'setting' }">Setting</div>
+              </div>
+            </div>
             <span class="fact-key">{{ fact.key }}</span>
             <input v-model="fact._editValue" @keyup.enter="saveFact(fact)" :title="fact.key" />
             <button class="btn-save" @click="saveFact(fact)" title="Save">✓</button>
             <button class="btn-del" @click="deleteFact(fact)" title="Delete">✕</button>
+            <span v-if="fact._catError" class="error-msg" style="font-size:11px">{{ fact._catError }}</span>
           </div>
         </template>
 
@@ -471,10 +503,25 @@
                      :class="{ active: fact.mutability === 'high' }">💧 Fluid</div>
               </div>
             </div>
+            <div class="category-wrap">
+              <button class="category-badge" @click.stop="toggleCategory(fact)"
+                      :title="'Category: ' + fact.category + ' — click to change'">
+                {{ fact.category[0].toUpperCase() }}
+              </button>
+              <div v-if="fact._catOpen" class="category-dropdown" @click.stop>
+                <div @click="patchCategory(fact, 'user')"
+                     :class="{ active: fact.category === 'user' }">User</div>
+                <div @click="patchCategory(fact, 'character')"
+                     :class="{ active: fact.category === 'character' }">Character</div>
+                <div @click="patchCategory(fact, 'setting')"
+                     :class="{ active: fact.category === 'setting' }">Setting</div>
+              </div>
+            </div>
             <span class="fact-key">{{ fact.key }}</span>
             <input v-model="fact._editValue" @keyup.enter="saveFact(fact)" :title="fact.key" />
             <button class="btn-save" @click="saveFact(fact)" title="Save">✓</button>
             <button class="btn-del" @click="deleteFact(fact)" title="Delete">✕</button>
+            <span v-if="fact._catError" class="error-msg" style="font-size:11px">{{ fact._catError }}</span>
           </div>
         </template>
 
@@ -496,10 +543,25 @@
                      :class="{ active: fact.mutability === 'high' }">💧 Fluid</div>
               </div>
             </div>
+            <div class="category-wrap">
+              <button class="category-badge" @click.stop="toggleCategory(fact)"
+                      :title="'Category: ' + fact.category + ' — click to change'">
+                {{ fact.category[0].toUpperCase() }}
+              </button>
+              <div v-if="fact._catOpen" class="category-dropdown" @click.stop>
+                <div @click="patchCategory(fact, 'user')"
+                     :class="{ active: fact.category === 'user' }">User</div>
+                <div @click="patchCategory(fact, 'character')"
+                     :class="{ active: fact.category === 'character' }">Character</div>
+                <div @click="patchCategory(fact, 'setting')"
+                     :class="{ active: fact.category === 'setting' }">Setting</div>
+              </div>
+            </div>
             <span class="fact-key">{{ fact.key }}</span>
             <input v-model="fact._editValue" @keyup.enter="saveFact(fact)" :title="fact.key" />
             <button class="btn-save" @click="saveFact(fact)" title="Save">✓</button>
             <button class="btn-del" @click="deleteFact(fact)" title="Delete">✕</button>
+            <span v-if="fact._catError" class="error-msg" style="font-size:11px">{{ fact._catError }}</span>
           </div>
         </template>
 
@@ -589,6 +651,7 @@ import {
   apiIgnoreInference,
   apiCreateFact,
   apiPatchFactMutability,
+  apiPatchFactCategory,
   apiPromoteInference,
 } from './chat.js';
 
@@ -633,13 +696,41 @@ createApp({
       facts.value.forEach(f => { if (f._mutOpen) f._mutOpen = false; });
     }
 
-    onMounted(() => document.addEventListener('click', closeAllMutDropdowns));
-    onUnmounted(() => document.removeEventListener('click', closeAllMutDropdowns));
+    function closeAllCatDropdowns() {
+      facts.value.forEach(f => { if (f._catOpen) f._catOpen = false; });
+    }
+
+    onMounted(() => {
+      document.addEventListener('click', closeAllMutDropdowns);
+      document.addEventListener('click', closeAllCatDropdowns);
+    });
+    onUnmounted(() => {
+      document.removeEventListener('click', closeAllMutDropdowns);
+      document.removeEventListener('click', closeAllCatDropdowns);
+    });
 
     function toggleMutability(fact) {
       const wasOpen = fact._mutOpen;
       closeAllMutDropdowns();
       fact._mutOpen = !wasOpen;
+    }
+
+    function toggleCategory(fact) {
+      const wasOpen = fact._catOpen;
+      closeAllCatDropdowns();
+      fact._catOpen = !wasOpen;
+    }
+
+    async function patchCategory(fact, newCat) {
+      fact._catOpen = false;
+      fact._catError = '';
+      if (newCat === fact.category) return;
+      const r = await apiPatchFactCategory(currentCharacter.value.id, fact.id, newCat);
+      if (r.ok) {
+        fact.category = newCat;
+      } else if (r.status === 409) {
+        fact._catError = `A ${newCat} fact '${fact.key}' already exists.`;
+      }
     }
 
     async function patchMutability(fact, newMut) {
@@ -679,7 +770,7 @@ createApp({
       if (!currentCharacter.value) return;
       const r = await fetch(`/api/characters/${currentCharacter.value.id}/facts`);
       const raw = await r.json();
-      facts.value = raw.map(f => ({ ...f, _editValue: f.value, _mutOpen: false }));
+      facts.value = raw.map(f => ({ ...f, _editValue: f.value, _mutOpen: false, _catOpen: false, _catError: '' }));
     }
 
     async function loadInferences() {
