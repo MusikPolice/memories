@@ -596,3 +596,26 @@ async def test_delete_fact_by_id_returns_200(client: AsyncClient) -> None:
     fact_id = create_resp.json()["id"]
     response = await client.delete(f"/api/characters/{char_id}/facts/{fact_id}")
     assert response.status_code == 200
+
+
+async def test_patch_fact_category_conflict_returns_409(client: AsyncClient) -> None:
+    """Patching a fact's category to one where (category, key) already exists returns 409."""
+    char_resp = await client.post(
+        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
+    )
+    char_id = char_resp.json()["id"]
+    # Create user/name = "Jon" and character/name = "Elara"
+    await client.post(
+        f"/api/characters/{char_id}/facts",
+        json={"key": "name", "value": "Jon", "category": "user"},
+    )
+    char_fact = await client.post(
+        f"/api/characters/{char_id}/facts",
+        json={"key": "name", "value": "Elara", "category": "character"},
+    )
+    elara_id = char_fact.json()["id"]
+    # Try to re-categorise character/name → user, which would collide with user/name
+    response = await client.patch(
+        f"/api/characters/{char_id}/facts/{elara_id}", json={"category": "user"}
+    )
+    assert response.status_code == 409

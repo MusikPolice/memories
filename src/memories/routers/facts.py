@@ -123,6 +123,11 @@ async def patch_fact_endpoint(character_id: int, fact_id: int, body: _PatchBody,
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail="Fact not found") from exc
+    except aiosqlite.IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A {body.category} fact with that key already exists",
+        ) from exc
 
 
 @router.delete("/{character_id}/facts/{fact_id}")
