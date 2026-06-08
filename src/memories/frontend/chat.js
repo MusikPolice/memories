@@ -107,6 +107,16 @@ export function buildNotificationFromSidechannel(payload) {
     };
   }
 
+  if (payload.type === 'experience_update') {
+    return {
+      role: 'notification',
+      scType: 'experience_update',
+      turn_id: payload.turn_id,
+      experience_updates: (payload.experience_updates || []).map(u => ({ ...u })),
+      _loading: false,
+    };
+  }
+
   return null;
 }
 
@@ -304,4 +314,91 @@ export function apiPromoteInference(characterId, inferenceId, key, value, catego
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ key, value, category, mutability }),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 API helpers — session end and experiences
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {number} sessionId
+ * @returns {Promise<Response>}
+ */
+export function apiEndSession(sessionId) {
+  return fetch(`/api/sessions/${sessionId}/end`, { method: 'POST' });
+}
+
+/**
+ * @param {number} characterId
+ * @param {number} sessionId
+ * @param {string} statement
+ * @param {string} source  'told_by_user' | 'observed'
+ * @returns {Promise<Response>}
+ */
+export function apiCreateExperience(characterId, sessionId, statement, source) {
+  return fetch(`/api/characters/${characterId}/experiences`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, statement, source }),
+  });
+}
+
+/**
+ * @param {number} characterId
+ * @returns {Promise<Response>}
+ */
+export function apiListExperiences(characterId) {
+  return fetch(`/api/characters/${characterId}/experiences`);
+}
+
+/**
+ * @param {number} characterId
+ * @param {number} experienceId
+ * @returns {Promise<Response>}
+ */
+export function apiDeleteExperience(characterId, experienceId) {
+  return fetch(`/api/characters/${characterId}/experiences/${experienceId}`, {
+    method: 'DELETE',
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — experience sorting
+// ---------------------------------------------------------------------------
+
+/**
+ * Sort experiences for display: active first (by score desc), then inactive (by score desc),
+ * then any without a score at the bottom.
+ *
+ * @param {object[]} experiences
+ * @param {Set<number>} activeIds
+ * @param {Map<number, number>} scoreMap
+ * @returns {object[]}
+ */
+export function sortExperiences(experiences, activeIds, scoreMap) {
+  return experiences.slice().sort((a, b) => {
+    const aActive = activeIds.has(a.id) ? 1 : 0;
+    const bActive = activeIds.has(b.id) ? 1 : 0;
+    if (aActive !== bActive) return bActive - aActive;
+    const aScore = scoreMap.get(a.id) ?? -Infinity;
+    const bScore = scoreMap.get(b.id) ?? -Infinity;
+    // Guard against -Infinity - (-Infinity) = NaN when both lack a score.
+    if (aScore === bScore) return 0;
+    return bScore - aScore;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — score map construction from SSE payload
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert the `experience_scores` array from the SSE `message` event into the
+ * Map<number, number> required by sortExperiences.
+ *
+ * @param {Array<{id: number, score: number}>} experienceScores
+ * @returns {Map<number, number>}
+ */
+export function buildScoreMap(experienceScores) {
+  return new Map(experienceScores.map(s => [s.id, s.score]));
 }

@@ -17,6 +17,12 @@ import {
   apiPatchFactMutability,
   apiPatchFactCategory,
   apiPromoteInference,
+  apiEndSession,
+  apiCreateExperience,
+  apiListExperiences,
+  apiDeleteExperience,
+  sortExperiences,
+  buildScoreMap,
 } from '../../src/memories/frontend/chat.js';
 
 // ---------------------------------------------------------------------------
@@ -583,5 +589,355 @@ describe('Phase 4 buildNotificationFromSidechannel — mutability implication', 
     expect(notif.turn_id).toBe(5);
     expect(notif.violations[0]._editValue).toBe('anxious');
     expect(notif._loading).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 — experience_update sidechannel notification (tests 182–186)
+// ---------------------------------------------------------------------------
+
+describe('Phase 5 buildNotificationFromSidechannel — experience_update', () => {
+  it('buildNotificationFromSidechannel_handles_experience_update_type', () => {
+    const payload = {
+      type: 'experience_update',
+      turn_id: 4,
+      experience_updates: [{ contradicted_experience_id: 5, description: 'Character is now in New York' }],
+    };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif).not.toBeNull();
+  });
+
+  it('buildNotificationFromSidechannel_experience_update_has_scType', () => {
+    const payload = { type: 'experience_update', turn_id: 4, experience_updates: [] };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif.scType).toBe('experience_update');
+  });
+
+  it('buildNotificationFromSidechannel_experience_update_has_turn_id', () => {
+    const payload = { type: 'experience_update', turn_id: 7, experience_updates: [] };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif.turn_id).toBe(7);
+  });
+
+  it('buildNotificationFromSidechannel_experience_update_has_experience_updates_array', () => {
+    const updates = [
+      { contradicted_experience_id: 5, description: 'now in New York' },
+      { contradicted_experience_id: 8, description: 'changed job' },
+    ];
+    const payload = { type: 'experience_update', turn_id: 4, experience_updates: updates };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif.experience_updates).toEqual(updates);
+  });
+
+  it('buildNotificationFromSidechannel_experience_update_empty_updates_array', () => {
+    const payload = { type: 'experience_update', turn_id: 4, experience_updates: [] };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif.experience_updates).toEqual([]);
+  });
+
+  it('buildNotificationFromSidechannel_experience_update_has_loading_false', () => {
+    const payload = { type: 'experience_update', turn_id: 4, experience_updates: [] };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif._loading).toBe(false);
+  });
+
+  it('buildNotificationFromSidechannel_experience_update_missing_field_defaults_to_empty_array', () => {
+    // payload has no experience_updates key — the || [] fallback must fire
+    const payload = { type: 'experience_update', turn_id: 4 };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif.experience_updates).toEqual([]);
+  });
+
+  it('buildNotificationFromSidechannel_experience_update_clones_items', () => {
+    const original = { contradicted_experience_id: 5, description: 'now in New York' };
+    const payload = { type: 'experience_update', turn_id: 4, experience_updates: [original] };
+    const notif = buildNotificationFromSidechannel(payload);
+    // Items must be copies so Vue mutations don't alias back to the SSE object.
+    expect(notif.experience_updates[0]).not.toBe(original);
+    expect(notif.experience_updates[0]).toEqual(original);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 API helpers — apiEndSession (tests 187–189)
+// ---------------------------------------------------------------------------
+
+describe('Phase 5 apiEndSession', () => {
+  beforeEach(() => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true });
+  });
+
+  it('apiEndSession_posts_to_correct_url', async () => {
+    await apiEndSession(7);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/7/end',
+      expect.objectContaining({ method: 'POST' })
+    );
+  });
+
+  it('apiEndSession_uses_post_method', async () => {
+    await apiEndSession(7);
+    const [, opts] = fetch.mock.calls[0];
+    expect(opts.method).toBe('POST');
+  });
+
+  it('apiEndSession_sends_no_body', async () => {
+    await apiEndSession(7);
+    const [, opts] = fetch.mock.calls[0];
+    expect(opts).not.toHaveProperty('body');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 API helpers — apiCreateExperience (tests 190–195)
+// ---------------------------------------------------------------------------
+
+describe('Phase 5 apiCreateExperience', () => {
+  beforeEach(() => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true });
+  });
+
+  it('apiCreateExperience_posts_to_correct_url', async () => {
+    await apiCreateExperience(7, 3, 'We are in Chicago', 'told_by_user');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/characters/7/experiences',
+      expect.objectContaining({ method: 'POST' })
+    );
+  });
+
+  it('apiCreateExperience_sends_session_id_in_body', async () => {
+    await apiCreateExperience(7, 3, 'We are in Chicago', 'told_by_user');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.session_id).toBe(3);
+  });
+
+  it('apiCreateExperience_sends_statement_in_body', async () => {
+    await apiCreateExperience(7, 3, 'We are in Chicago', 'told_by_user');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.statement).toBe('We are in Chicago');
+  });
+
+  it('apiCreateExperience_sends_source_in_body', async () => {
+    await apiCreateExperience(7, 3, 'We are in Chicago', 'told_by_user');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body).toHaveProperty('source');
+  });
+
+  it('apiCreateExperience_sends_told_by_user_source', async () => {
+    await apiCreateExperience(7, 3, 'some text', 'told_by_user');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.source).toBe('told_by_user');
+  });
+
+  it('apiCreateExperience_sends_observed_source', async () => {
+    await apiCreateExperience(7, 3, 'some text', 'observed');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.source).toBe('observed');
+  });
+
+  it('apiCreateExperience_sends_content_type_json_header', async () => {
+    await apiCreateExperience(7, 3, 'some text', 'told_by_user');
+    const [, opts] = fetch.mock.calls[0];
+    expect(opts.headers['Content-Type']).toBe('application/json');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 API helpers — apiListExperiences (tests 196–197)
+// ---------------------------------------------------------------------------
+
+describe('Phase 5 apiListExperiences', () => {
+  beforeEach(() => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true });
+  });
+
+  it('apiListExperiences_gets_correct_url', async () => {
+    await apiListExperiences(7);
+    expect(fetch).toHaveBeenCalledWith('/api/characters/7/experiences');
+  });
+
+  it('apiListExperiences_uses_get_method', async () => {
+    await apiListExperiences(7);
+    // No options object passed → browser defaults to GET.
+    // Assert on the absence of the options arg, not on call arity, so that
+    // adding an AbortSignal later does not produce a misleading failure.
+    expect(fetch.mock.calls[0][1]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 API helpers — apiDeleteExperience (tests 198–199)
+// ---------------------------------------------------------------------------
+
+describe('Phase 5 apiDeleteExperience', () => {
+  beforeEach(() => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true });
+  });
+
+  it('apiDeleteExperience_sends_delete_to_correct_url', async () => {
+    await apiDeleteExperience(7, 42);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/characters/7/experiences/42',
+      expect.objectContaining({ method: 'DELETE' })
+    );
+  });
+
+  it('apiDeleteExperience_uses_delete_method', async () => {
+    await apiDeleteExperience(7, 42);
+    const [, opts] = fetch.mock.calls[0];
+    expect(opts.method).toBe('DELETE');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 — parseSSEBlock with new message event fields (tests 200–202)
+// ---------------------------------------------------------------------------
+
+describe('Phase 5 parseSSEBlock — message event with experience fields', () => {
+  it('parseSSEBlock_message_event_exposes_active_experience_ids', () => {
+    const block =
+      'event: message\n' +
+      'data: {"role":"assistant","content":"hi","turn_id":1,"active_experience_ids":[3,7],"experience_scores":[]}';
+    const result = parseSSEBlock(block);
+    const data = JSON.parse(result.data);
+    expect(data.active_experience_ids).toEqual([3, 7]);
+  });
+
+  it('parseSSEBlock_message_event_active_experience_ids_defaults_absent', () => {
+    const block = 'event: message\ndata: {"role":"assistant","content":"hi","turn_id":1}';
+    const result = parseSSEBlock(block);
+    const data = JSON.parse(result.data);
+    expect(data).not.toHaveProperty('active_experience_ids');
+  });
+
+  it('parseSSEBlock_message_event_exposes_experience_scores', () => {
+    const block =
+      'event: message\n' +
+      'data: {"role":"assistant","content":"hi","turn_id":1,"active_experience_ids":[],"experience_scores":[{"id":3,"score":0.8}]}';
+    const result = parseSSEBlock(block);
+    const data = JSON.parse(result.data);
+    expect(data.experience_scores).toEqual([{ id: 3, score: 0.8 }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 — sortExperiences (tests 203–208)
+// ---------------------------------------------------------------------------
+
+describe('sortExperiences', () => {
+  function makeExp(id) {
+    return { id, statement: `Experience ${id}` };
+  }
+
+  it('sortExperiences_active_before_inactive', () => {
+    const experiences = [makeExp(1), makeExp(2)];
+    const activeIds = new Set([2]);
+    const scoreMap = new Map([[1, 0.5], [2, 0.5]]);
+    const sorted = sortExperiences(experiences, activeIds, scoreMap);
+    expect(sorted[0].id).toBe(2);
+    expect(sorted[1].id).toBe(1);
+  });
+
+  it('sortExperiences_active_sorted_by_score_descending', () => {
+    const experiences = [makeExp(1), makeExp(2)];
+    const activeIds = new Set([1, 2]);
+    const scoreMap = new Map([[1, 0.4], [2, 0.9]]);
+    const sorted = sortExperiences(experiences, activeIds, scoreMap);
+    expect(sorted[0].id).toBe(2);
+    expect(sorted[1].id).toBe(1);
+  });
+
+  it('sortExperiences_inactive_sorted_by_score_descending', () => {
+    const experiences = [makeExp(1), makeExp(2)];
+    const activeIds = new Set([]);
+    const scoreMap = new Map([[1, 0.2], [2, 0.7]]);
+    const sorted = sortExperiences(experiences, activeIds, scoreMap);
+    expect(sorted[0].id).toBe(2);
+    expect(sorted[1].id).toBe(1);
+  });
+
+  it('sortExperiences_active_group_always_above_inactive_group', () => {
+    const experiences = [makeExp(1), makeExp(2)];
+    const activeIds = new Set([1]);
+    const scoreMap = new Map([[1, 0.1], [2, 0.9]]);
+    const sorted = sortExperiences(experiences, activeIds, scoreMap);
+    expect(sorted[0].id).toBe(1); // active despite lower score
+    expect(sorted[1].id).toBe(2);
+  });
+
+  it('sortExperiences_no_score_experience_falls_to_bottom', () => {
+    const experiences = [makeExp(1), makeExp(2), makeExp(3)];
+    const activeIds = new Set([]);
+    // exp 1 has no score; exp 2 = 0.5; exp 3 = 0.3
+    const scoreMap = new Map([[2, 0.5], [3, 0.3]]);
+    const sorted = sortExperiences(experiences, activeIds, scoreMap);
+    expect(sorted[0].id).toBe(2);
+    expect(sorted[1].id).toBe(3);
+    expect(sorted[2].id).toBe(1); // no score → last
+  });
+
+  it('sortExperiences_stable_when_scores_and_active_status_equal', () => {
+    const experiences = [makeExp(10), makeExp(20), makeExp(30)];
+    const activeIds = new Set([]);
+    const scoreMap = new Map([[10, 0.5], [20, 0.5], [30, 0.5]]);
+    const sorted = sortExperiences(experiences, activeIds, scoreMap);
+    // All identical priority — original order must be preserved (stable sort)
+    expect(sorted.map(e => e.id)).toEqual([10, 20, 30]);
+  });
+
+  it('sortExperiences_two_unscored_experiences_preserve_order', () => {
+    // Both absent from scoreMap → aScore = bScore = -Infinity.
+    // Comparator must return 0, not NaN (-Infinity - (-Infinity) = NaN).
+    const experiences = [makeExp(1), makeExp(2)];
+    const activeIds = new Set([]);
+    const scoreMap = new Map();
+    const sorted = sortExperiences(experiences, activeIds, scoreMap);
+    expect(sorted.map(e => e.id)).toEqual([1, 2]);
+  });
+
+  it('sortExperiences_does_not_mutate_input_array', () => {
+    const experiences = [makeExp(3), makeExp(1), makeExp(2)];
+    const activeIds = new Set([1]);
+    const scoreMap = new Map([[1, 0.9], [2, 0.5], [3, 0.1]]);
+    const inputOrder = experiences.map(e => e.id);
+    sortExperiences(experiences, activeIds, scoreMap);
+    expect(experiences.map(e => e.id)).toEqual(inputOrder);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 — buildScoreMap (converts SSE experience_scores array → Map)
+// ---------------------------------------------------------------------------
+
+describe('buildScoreMap', () => {
+  it('buildScoreMap_returns_empty_map_for_empty_input', () => {
+    expect(buildScoreMap([])).toEqual(new Map());
+  });
+
+  it('buildScoreMap_returns_a_Map_instance', () => {
+    expect(buildScoreMap([{ id: 1, score: 0.5 }])).toBeInstanceOf(Map);
+  });
+
+  it('buildScoreMap_maps_id_to_score', () => {
+    const map = buildScoreMap([{ id: 3, score: 0.8 }, { id: 7, score: 0.2 }]);
+    expect(map.get(3)).toBe(0.8);
+    expect(map.get(7)).toBe(0.2);
+  });
+
+  it('buildScoreMap_missing_key_returns_undefined', () => {
+    const map = buildScoreMap([{ id: 1, score: 0.5 }]);
+    expect(map.get(99)).toBeUndefined();
+  });
+
+  it('buildScoreMap_result_is_directly_usable_by_sortExperiences', () => {
+    const experiences = [{ id: 1, statement: 'a' }, { id: 2, statement: 'b' }];
+    const scoreMap = buildScoreMap([{ id: 1, score: 0.2 }, { id: 2, score: 0.9 }]);
+    const sorted = sortExperiences(experiences, new Set(), scoreMap);
+    expect(sorted[0].id).toBe(2);
   });
 });
