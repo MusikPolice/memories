@@ -23,6 +23,8 @@ import {
   apiDeleteExperience,
   sortExperiences,
   buildScoreMap,
+  buildProposalList,
+  removeContradictedExperiences,
 } from '../../src/memories/frontend/chat.js';
 
 // ---------------------------------------------------------------------------
@@ -939,5 +941,161 @@ describe('buildScoreMap', () => {
     const scoreMap = buildScoreMap([{ id: 1, score: 0.2 }, { id: 2, score: 0.9 }]);
     const sorted = sortExperiences(experiences, new Set(), scoreMap);
     expect(sorted[0].id).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildProposalList
+// ---------------------------------------------------------------------------
+
+describe('buildProposalList', () => {
+  it('buildProposalList_returns_empty_array_for_empty_input', () => {
+    expect(buildProposalList([])).toEqual([]);
+  });
+
+  it('buildProposalList_returns_empty_array_for_null_input', () => {
+    expect(buildProposalList(null)).toEqual([]);
+  });
+
+  it('buildProposalList_returns_empty_array_for_undefined_input', () => {
+    expect(buildProposalList(undefined)).toEqual([]);
+  });
+
+  it('buildProposalList_wraps_each_proposal_with_ui_state', () => {
+    const raw = [{ statement: 'We are in Chicago', source: 'told_by_user', turn_reference: 2 }];
+    const result = buildProposalList(raw);
+    expect(result[0]._editing).toBe(false);
+    expect(result[0]._editStatement).toBe('');
+    expect(result[0]._loading).toBe(false);
+  });
+
+  it('buildProposalList_preserves_statement', () => {
+    const raw = [{ statement: 'We are in Chicago', source: 'told_by_user' }];
+    expect(buildProposalList(raw)[0].statement).toBe('We are in Chicago');
+  });
+
+  it('buildProposalList_preserves_source', () => {
+    const raw = [{ statement: 'text', source: 'observed' }];
+    expect(buildProposalList(raw)[0].source).toBe('observed');
+  });
+
+  it('buildProposalList_preserves_turn_reference', () => {
+    const raw = [{ statement: 'text', source: 'told_by_user', turn_reference: 7 }];
+    expect(buildProposalList(raw)[0].turn_reference).toBe(7);
+  });
+
+  it('buildProposalList_handles_multiple_proposals', () => {
+    const raw = [
+      { statement: 'A', source: 'told_by_user' },
+      { statement: 'B', source: 'observed' },
+    ];
+    const result = buildProposalList(raw);
+    expect(result).toHaveLength(2);
+    expect(result[1].statement).toBe('B');
+  });
+
+  it('buildProposalList_does_not_mutate_input', () => {
+    const raw = [{ statement: 'A', source: 'told_by_user' }];
+    const original = { ...raw[0] };
+    buildProposalList(raw);
+    expect(raw[0]).toEqual(original);
+  });
+
+  it('buildProposalList_returns_new_objects_not_same_references', () => {
+    const raw = [{ statement: 'A', source: 'told_by_user' }];
+    const result = buildProposalList(raw);
+    expect(result[0]).not.toBe(raw[0]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// removeContradictedExperiences
+// ---------------------------------------------------------------------------
+
+describe('removeContradictedExperiences', () => {
+  const experiences = [
+    { id: 1, statement: 'We are in Chicago', source: 'told_by_user' },
+    { id: 2, statement: 'User dislikes mornings', source: 'observed' },
+    { id: 3, statement: 'User has a cat', source: 'told_by_user' },
+  ];
+
+  it('removeContradictedExperiences_removes_the_contradicted_experience', () => {
+    const notif = {
+      scType: 'experience_update',
+      experience_updates: [{ contradicted_experience_id: 1, description: 'now in New York' }],
+    };
+    const result = removeContradictedExperiences(experiences, notif);
+    expect(result.map(e => e.id)).not.toContain(1);
+  });
+
+  it('removeContradictedExperiences_keeps_non_contradicted_experiences', () => {
+    const notif = {
+      scType: 'experience_update',
+      experience_updates: [{ contradicted_experience_id: 1, description: 'desc' }],
+    };
+    const result = removeContradictedExperiences(experiences, notif);
+    expect(result.map(e => e.id)).toContain(2);
+    expect(result.map(e => e.id)).toContain(3);
+  });
+
+  it('removeContradictedExperiences_removes_multiple_ids', () => {
+    const notif = {
+      scType: 'experience_update',
+      experience_updates: [
+        { contradicted_experience_id: 1, description: 'a' },
+        { contradicted_experience_id: 3, description: 'b' },
+      ],
+    };
+    const result = removeContradictedExperiences(experiences, notif);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe(2);
+  });
+
+  it('removeContradictedExperiences_returns_all_when_no_updates', () => {
+    const notif = { scType: 'experience_update', experience_updates: [] };
+    const result = removeContradictedExperiences(experiences, notif);
+    expect(result).toHaveLength(3);
+  });
+
+  it('removeContradictedExperiences_handles_missing_experience_updates_field', () => {
+    const notif = { scType: 'experience_update' };
+    const result = removeContradictedExperiences(experiences, notif);
+    expect(result).toHaveLength(3);
+  });
+
+  it('removeContradictedExperiences_returns_empty_when_all_removed', () => {
+    const notif = {
+      scType: 'experience_update',
+      experience_updates: [
+        { contradicted_experience_id: 1, description: 'a' },
+        { contradicted_experience_id: 2, description: 'b' },
+        { contradicted_experience_id: 3, description: 'c' },
+      ],
+    };
+    expect(removeContradictedExperiences(experiences, notif)).toHaveLength(0);
+  });
+
+  it('removeContradictedExperiences_ignores_unknown_id_gracefully', () => {
+    const notif = {
+      scType: 'experience_update',
+      experience_updates: [{ contradicted_experience_id: 99, description: 'ghost' }],
+    };
+    const result = removeContradictedExperiences(experiences, notif);
+    expect(result).toHaveLength(3);
+  });
+
+  it('removeContradictedExperiences_does_not_mutate_input_array', () => {
+    const notif = {
+      scType: 'experience_update',
+      experience_updates: [{ contradicted_experience_id: 1, description: 'd' }],
+    };
+    removeContradictedExperiences(experiences, notif);
+    expect(experiences).toHaveLength(3);
+  });
+
+  it('removeContradictedExperiences_returns_new_array_not_same_reference', () => {
+    const notif = { scType: 'experience_update', experience_updates: [] };
+    const result = removeContradictedExperiences(experiences, notif);
+    expect(result).not.toBe(experiences);
   });
 });

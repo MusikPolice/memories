@@ -402,3 +402,38 @@ export function sortExperiences(experiences, activeIds, scoreMap) {
 export function buildScoreMap(experienceScores) {
   return new Map(experienceScores.map(s => [s.id, s.score]));
 }
+
+// ---------------------------------------------------------------------------
+// Phase 5 — proposal list and experience-update helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap raw proposed-experience objects from the session-end API response with
+ * the UI state fields the review panel needs.
+ *
+ * @param {Array<{statement: string, source: string, turn_reference?: number}>} proposedExperiences
+ * @returns {object[]}
+ */
+export function buildProposalList(proposedExperiences) {
+  return (proposedExperiences || []).map(p => ({
+    ...p,
+    _editing: false,
+    _editStatement: '',
+    _loading: false,
+  }));
+}
+
+/**
+ * Remove experiences that were contradicted by an `experience_update` verdict.
+ * Returns a new array; does not mutate the input.
+ *
+ * @param {object[]} experiences  current approved experiences list
+ * @param {object}   notification experience_update notification from buildNotificationFromSidechannel
+ * @returns {object[]}
+ */
+export function removeContradictedExperiences(experiences, notification) {
+  const deletedIds = new Set(
+    (notification.experience_updates || []).map(u => u.contradicted_experience_id),
+  );
+  return experiences.filter(e => !deletedIds.has(e.id));
+}

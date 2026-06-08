@@ -107,6 +107,8 @@
     .notification-card.inference .notification-title { background: #eefff8; color: #006040; }
     .notification-card.contradiction { border-color: #f04040; }
     .notification-card.contradiction .notification-title { background: #fff0ee; color: #a00000; }
+    .notification-card.experience-update { border-color: #4080c0; }
+    .notification-card.experience-update .notification-title { background: #eef4ff; color: #1a50a0; }
 
     .violation-desc { color: #555; margin: 8px 0 4px; line-height: 1.4; }
     .violation-fact { margin: 4px 0 8px; }
@@ -474,6 +476,20 @@
             </div>
           </div>
 
+          <!-- Experience update notification (informational) -->
+          <div v-else-if="msg.role === 'notification' && msg.scType === 'experience_update'"
+               class="notification-card experience-update">
+            <div class="notification-title">🔄 Experience updated</div>
+            <div class="notification-body">
+              <div v-for="(u, i) in msg.experience_updates" :key="i">
+                <p class="violation-desc">{{ u.description }}</p>
+              </div>
+              <div class="notification-actions">
+                <button class="btn-ignore" @click="dismissNotification(msg)">Dismiss</button>
+              </div>
+            </div>
+          </div>
+
         </template>
 
         <div v-if="generating" class="msg generating">{{ statusText || 'Thinking…' }}</div>
@@ -772,6 +788,9 @@ import {
   apiEndSession,
   apiCreateExperience,
   apiDeleteExperience,
+  buildScoreMap,
+  buildProposalList,
+  removeContradictedExperiences,
   sortExperiences,
 } from './chat.js';
 
@@ -1004,15 +1023,14 @@ createApp({
     async function endSession() {
       reviewingSession.value = true;
       sessionEnded.value = true;
+      activeExperienceIds.value = new Set();
+      experienceScoreMap.value = new Map();
       try {
         const r = await apiEndSession(sessionId.value);
         if (r.ok) {
           const data = await r.json();
-          const proposals = (data.proposed_experiences || []).map(p => ({
-            ...p, _editing: false, _editStatement: '', _loading: false,
-          }));
+          const proposals = buildProposalList(data.proposed_experiences);
           sessionProposals.value = proposals;
-          // If no proposals, just refresh the approved list
           if (proposals.length === 0) await loadExperiences();
         }
       } finally {
@@ -1219,15 +1237,16 @@ createApp({
                 activeExperienceIds.value = new Set(payload.active_experience_ids);
               }
               if (payload.experience_scores) {
-                experienceScoreMap.value = new Map(
-                  payload.experience_scores.map(s => [s.id, s.score])
-                );
+                experienceScoreMap.value = buildScoreMap(payload.experience_scores);
               }
               await scrollToBottom();
 
             } else if (eventName === 'sidechannel' && dataStr) {
               const notif = buildNotificationFromSidechannel(JSON.parse(dataStr));
               if (notif) {
+                if (notif.scType === 'experience_update') {
+                  experiences.value = removeContradictedExperiences(experiences.value, notif);
+                }
                 messages.value.push(notif);
                 await scrollToBottom();
               }
