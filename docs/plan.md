@@ -443,7 +443,7 @@ CREATE INDEX idx_messages_session_turn ON messages(session_id, turn_id);
 - Cascade: Fact edit re-invokes evaluator per downstream Inference; marks stale those that no longer hold; Fact delete marks all downstream Inferences invalidated and surfaces to user
 - **Frontend tests:** update `chat.test.js` if any new SSE events or sidechannel types are introduced for stale/invalidated inference notifications
 
-### Phase 4 — Fact categories, mutability levels, and inference promotion
+### Phase 4 — Fact categories, mutability levels, and inference promotion ✅ Complete
 
 **Goal:** Make the fact model expressive enough to handle the real diversity of things that can be known — and stop the evaluator from treating fluid things like mood as immutable law.
 
@@ -467,7 +467,7 @@ CREATE INDEX idx_messages_session_turn ON messages(session_id, turn_id);
 - Sidechannel fact list: group facts visually by category; within each group, each row reads left-to-right as **[mutability icon] [key] [value]**. The mutability control is shown on every fact (not only non-default ones) so the column is always populated and text alignment is consistent. Clicking the icon opens a small inline dropdown showing all three options with icon + label: 🔒 Immutable / 📌 Settable / 💧 Fluid
 - **Frontend tests:** add `chat.test.js` coverage for any new sidechannel event types introduced by mutability-aware evaluator verdicts
 
-### Phase 5 — Experiences and session memory
+### Phase 5 — Experiences and session memory ✅ Complete
 - End-of-session flow: single evaluator pass outputs closing journal + Experience proposals
 - Closing journal stored in `sessions.closing_journal`
 - User review UI in sidechannel: accept / edit / discard each Experience proposal
@@ -478,7 +478,18 @@ CREATE INDEX idx_messages_session_turn ON messages(session_id, turn_id);
 - Experience invalidation: delete contradicted Experiences immediately on `experience_update` verdict
 - **Frontend tests:** add `chat.test.js` coverage for the end-of-session sidechannel events (Experience proposals) and any new API helpers for accept/edit/discard
 
-### Phase 6a — Budget visibility and message annotation
+### Phase 6 — Fact extraction from user messages
+
+**Goal:** Extend the evaluator pipeline to capture Facts the user states in their own messages — not just check the character's responses — so the world model grows passively from natural conversation rather than requiring the user to manually add Facts through the sidechannel.
+
+- Pre-turn pass: analyse the user's message for explicit or implicit facts before invoking the character LLM (e.g., "We're meeting in Chicago" → `setting/location = Chicago`)
+- User-stated facts are accepted as authoritative (the user is the author of the world), but contradictions with existing Facts are surfaced in the sidechannel as notifications rather than silently overwriting
+- Whether to push back and confirm user-stated contradictions is an open UX question — default is to surface for confirmation rather than accepting outright
+- New `status(extracting)` SSE state before `status(generating)` — the SSE event sequence in `chat_service.py` and the `sseStateToLabel` mapping in `chat.js` both need updating
+- Adds a third LLM call per turn (pre-turn extractor); integrate into `run_turn()` in `chat_service.py` before the contradiction loop
+- **Frontend tests:** add `chat.test.js` coverage for the `status(extracting)` state and any new sidechannel event types for user-fact contradictions
+
+### Phase 7a — Budget visibility and message annotation
 - **Frontend tests:** add `chat.test.js` coverage for any new SSE status events (e.g. context pressure percentage) and the `sseStateToLabel` mapping if new states are added
 - Track token counts using Ollama response `prompt_eval_count` / `eval_count` after each call
 - Estimate pre-flight token cost of new prompts via `tiktoken` (cl100k_base)
@@ -489,14 +500,14 @@ CREATE INDEX idx_messages_session_turn ON messages(session_id, turn_id);
 
 **Goal:** Validate token accounting and annotation logic against real conversations before adding compression complexity.
 
-### Phase 6b — Compression
+### Phase 7b — Compression
 - Assign messages to segments; open new segment on each event boundary (Fact created, evaluator event, size cap)
 - Compression pass at 80% of available budget: drop fully-annotated segments, journal the rest
 - Journal entries token-capped at configurable max (default 200 tokens)
 - Journal entries stored in `segments` table, injected in place of raw messages
 - Uses `captured_by` annotations from Phase 6a
 
-### Phase 7 — Polish, media server migration, and stretch goals
+### Phase 8 — Polish, media server migration, and stretch goals
 - Responsive layout for phone
 - Auth if needed
 - Point Ollama URL to media server
@@ -509,15 +520,25 @@ CREATE INDEX idx_messages_session_turn ON messages(session_id, turn_id);
 
 The items below were discussed and deliberately deferred — not forgotten, just not yet scoped into a specific phase.
 
-### Fact extraction from user messages
+### Hierarchical fact organisation and auto-discovered clusters
 
-The evaluator currently only checks the *character's* response against established Facts. A future enhancement would add a pre-turn pass analysing the *user's* message before invoking the character LLM — capturing explicit or implicit facts the user has stated (what they're wearing, where they are, how the room looks).
+Facts are currently a flat key-value store within three top-level categories (`character`, `user`, `setting`). Complex characters accumulate enough facts that the sidechannel becomes unwieldy, and the evaluator has no signal about the *kinds* of facts it can propose. This idea adds a second tier — clusters — making the full path `{category}.{cluster}.{key}` (e.g., `character.identity.name`, `character.appearance.hair_colour`).
 
-Design notes:
-- User-stated facts are accepted as authoritative (the user is the author of the world), but contradictions with existing Facts are surfaced in the sidechannel as notifications rather than silently overwriting
-- Adds a third LLM call per turn; the SSE event sequence would need a new `status(extracting)` state before `status(generating)`
-- Whether to push back and confirm user-stated contradictions (rather than accepting them outright) is an open UX question — leaning toward surfacing for confirmation
-- Belongs in its own mini-phase, most naturally between Phase 5 and Phase 6a
+**Two separable parts with different risk levels:**
+
+*Part A — cluster assignment (lower risk):* Add a `cluster TEXT` column to `facts`. Clusters could be manually assigned at creation time (via a new selector in the fact creation form) or left null. Even with manual assignment, this immediately enables: collapsible sidechannel groups; evaluator prompts that enumerate available clusters ("you can propose facts about the character's *identity*, *appearance*, *biography*, or suggest a new cluster"); and richer context for the Fact extraction pass in Phase 6.
+
+*Part B — auto-discovery via embeddings (experimental):* Hypothesis — embedding the *key* (or a `key: value` string) for each fact and running cosine similarity will reveal meaningful clusters. `name`, `age`, `pronouns` should cluster together because the keys describe the same kind of information; `hair_colour`, `height`, `outfit` should form a separate cluster. Values alone are unlikely to cluster well (a name, a number, and a pronoun string are semantically unrelated). **This hypothesis needs a small experiment before committing to the implementation.** If it holds, the workflow becomes: on each new fact write, embed the key, find the nearest cluster centroid, auto-assign if similarity exceeds a threshold, otherwise surface "new cluster?" to the user with a suggested heading derived from a short LLM call.
+
+**Open questions before promoting to a Phase:**
+- Do keys (or `key: value` pairs) cluster meaningfully in practice on real character data? Test on a 20–30 fact character before designing the auto-assignment logic.
+- Bootstrap problem: a character's first 3–5 facts are too sparse to cluster. Either pre-seed with default cluster names (`identity`, `appearance`, `biography`, `state_of_mind`, `relationships`, `setting_details`) and assign manually until enough facts exist, or accept a null cluster for early facts and cluster lazily once a threshold is reached.
+- Does hierarchical organisation actually help the Character or Evaluator LLM, or is this purely a UI and prompt-engineering win? Worth measuring evaluator fact-proposal quality before and after.
+- Schema impact: the current `UNIQUE(character_id, category, key)` constraint would need to become `UNIQUE(character_id, category, cluster, key)` or similar — a migration, not just an `ALTER TABLE ADD COLUMN`.
+
+**If Part B validates:** this is likely a Phase between Phase 6 (Fact extraction) and Phase 7a (Budget visibility), since Phase 6's pre-turn extractor would immediately benefit from cluster-aware fact proposals.
+
+**Future extension:** a cluster taxonomy could seed a character creation wizard — default clusters with placeholder keys guide the user through filling in a new character's identity, appearance, and backstory before the first session begins.
 
 ### Numerical ranges for facts
 
@@ -536,6 +557,17 @@ Phase 4 adds mutability levels but deliberately excludes rules about when a low-
 Design notes:
 - Possibly encoded as constraint rules attached to facts or as a separate rule store
 - High complexity; evaluate whether the Phase 4 mutability model is sufficient in practice before committing to this
+
+### Tool use for Facts, Inferences, and Experiences
+
+Some models are trained to use tools rather than process large context injections. Rather than baking all Facts, Inferences, and Experiences into the system prompt upfront, expose them as tools the Character LLM and Evaluator can call with CRUD operations — fetching only what they need, when they need it.
+
+Design notes:
+- Potential benefit: smaller prompts, more selective retrieval, and a natural fit for models fine-tuned on tool-call patterns rather than raw context injection
+- Tool surface would expose at minimum: `get_facts()`, `get_inferences()`, `search_experiences(query)`, and possibly write tools (`propose_fact(key, value)`) for the evaluator's implication flow
+- The Evaluator's structured-verdict pattern may need rethinking: it currently receives everything in one prompt and returns one JSON blob; a tool-calling evaluator would issue multiple calls per turn, increasing latency
+- Key open question: is the context injection approach genuinely the bottleneck, or does the evaluator's correctness depend on seeing all Facts together? Worth benchmarking on a large (50+ Fact) character before committing
+- Likely requires a dedicated experimental branch to compare verdict quality and latency against the current injection approach
 
 ### Playwright end-to-end tests
 
