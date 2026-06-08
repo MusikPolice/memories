@@ -10,6 +10,7 @@ import aiosqlite
 
 from memories.database import (
     create_inference,
+    delete_experience,
     get_active_segment,
     get_character,
     get_facts,
@@ -21,12 +22,20 @@ from memories.database import (
     store_message,
 )
 from memories.exceptions import NotFoundError, SessionEndedError
-from memories.models import Character, Fact, Inference
+from memories.models import Character, Experience, Fact, Inference
 from memories.services.evaluator import (
     ContradictionNotification,
     EvaluatorParseError,
     EvaluatorResult,
     run_evaluator,
+)
+from memories.services.experience_service import (
+    TOP_K_EXPERIENCES,
+    add_active_experiences,
+    cold_start_retrieve,
+    get_active_experiences,
+    remove_active_experience,
+    retrieve_experiences,
 )
 from memories.services.inference_service import MAX_INFERENCE_DEPTH, compute_depth
 from memories.services.ollama_client import OllamaClient
@@ -47,6 +56,7 @@ async def run_contradiction_loop(
     think: bool = False,
     max_retries: int = MAX_CONTRADICTION_RETRIES,
     inferences: list[Inference] | None = None,
+    experiences: list[Experience] | None = None,
 ) -> tuple[str, str, EvaluatorResult]:
     """Run the character LLM + evaluator, retrying until no contradictions remain.
 
@@ -84,6 +94,7 @@ async def run_contradiction_loop(
                 ollama,
                 contradiction_hints=contradiction_hints or None,
                 inferences=inferences or None,
+                experiences=experiences or None,
             )
         except EvaluatorParseError:
             _log.warning(
@@ -122,10 +133,10 @@ async def run_turn(
     user_content: str,
     ollama: OllamaClient,
     think: bool = False,
-) -> tuple[str, str, int, EvaluatorResult]:
+) -> tuple[str, str, int, EvaluatorResult, dict[int, float]]:
     """Execute one conversation turn.
 
-    Returns ``(response_content, thinking_text, turn_id, evaluator_result)``.
+    Returns ``(response_content, thinking_text, turn_id, evaluator_result, experience_scores)``.
     The assistant message is stored only after the evaluator confirms the
     response is not a contradiction (or retries are exhausted).
     """
@@ -140,10 +151,36 @@ async def run_turn(
 
     facts = await get_facts(db, session.character_id)
     inferences = await get_inferences(db, session.character_id)
-    system_prompt = build_system_prompt(character, facts, inferences)
+
+    # --- Experience retrieval ---
+    turn_id = await next_turn_id(db, session_id)
+
+    if turn_id == 1:
+        seed_experiences = await cold_start_retrieve(db, session.character_id, session_id, ollama)
+        if seed_experiences:
+            add_active_experiences(session_id, seed_experiences)
+            _log.info(
+                "session=%d cold-start loaded %d experience(s)", session_id, len(seed_experiences)
+            )
+
+    active = get_active_experiences(session_id)
+    already_active_ids = {e.id for e in active}
+    new_experiences, experience_scores = await retrieve_experiences(
+        db,
+        session.character_id,
+        user_content,
+        ollama,
+        top_k=TOP_K_EXPERIENCES,
+        exclude_ids=already_active_ids,
+    )
+    if new_experiences:
+        add_active_experiences(session_id, new_experiences)
+        _log.info("session=%d retrieved %d new experience(s)", session_id, len(new_experiences))
+
+    active = get_active_experiences(session_id)
+    system_prompt = build_system_prompt(character, facts, inferences, active or None)
     history = await get_messages(db, session_id)
     segment = await get_active_segment(db, session_id)
-    turn_id = await next_turn_id(db, session_id)
 
     await store_message(
         db,
@@ -171,7 +208,30 @@ async def run_turn(
         ollama,
         think=think,
         inferences=inferences,
+        experiences=active or None,
     )
+
+    # Handle experience_update verdict: delete contradicted experiences
+    if eval_result.verdict == "experience_update":
+        if not eval_result.experience_updates:
+            _log.warning(
+                "session=%d experience_update verdict returned no experience_updates",
+                session_id,
+            )
+        for upd in eval_result.experience_updates:
+            try:
+                await delete_experience(db, upd.contradicted_experience_id)
+                remove_active_experience(session_id, upd.contradicted_experience_id)
+                _log.info(
+                    "session=%d deleted contradicted experience %d",
+                    session_id,
+                    upd.contradicted_experience_id,
+                )
+            except NotFoundError:
+                _log.warning(
+                    "experience_update referenced unknown experience %d",
+                    upd.contradicted_experience_id,
+                )
 
     # Determine ungrounded_implications to store with the assistant message
     ungrounded: list[dict[str, Any]] | None = None
@@ -190,10 +250,15 @@ async def run_turn(
     )
 
     # Auto-promote logical inferences with depth cap.
+    # Runs for both "new_inference_logical" and "experience_update" (orthogonal signals).
+    # Only logical inferences are auto-promoted; probabilistic ones require user review
+    # and are silently discarded when they appear alongside experience_update.
     # Append each stored inference to the snapshot so subsequent depth
     # computations in the same batch see the correct chain depth.
-    if eval_result.verdict == "new_inference_logical":
+    if eval_result.verdict in ("new_inference_logical", "experience_update"):
         for inf in eval_result.new_inferences:
+            if inf.inference_type != "logical":
+                continue
             depth = compute_depth(inf.source_inference_ids, inferences)
             if depth > MAX_INFERENCE_DEPTH:
                 continue
@@ -236,4 +301,4 @@ async def run_turn(
         eval_result.verdict,
         len(eval_result.violations),
     )
-    return char_content, char_thinking, turn_id, eval_result
+    return char_content, char_thinking, turn_id, eval_result, experience_scores

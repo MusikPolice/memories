@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from memories.models import Character, Fact, Inference
+from memories.models import Character, Experience, Fact, Inference
 from memories.services.prompt_builder import build_system_prompt
 
 # ---------------------------------------------------------------------------
@@ -333,3 +333,99 @@ def test_single_fact_per_category_renders_correctly() -> None:
     before_occ = prompt[:occ_idx]
     assert "User" in before_name
     assert "Character" in before_occ
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 additions — experiences parameter
+# ---------------------------------------------------------------------------
+
+_P5_NOW = datetime(2026, 6, 7, 0, 0, 0)
+_P5_CHAR = Character(id=1, name="Elara Voss", modelfile_base="qwen3:7b", created_at=_P5_NOW)
+
+
+def _exp(
+    exp_id: int,
+    statement: str,
+    source: str = "told_by_user",
+) -> Experience:
+    return Experience(
+        id=exp_id,
+        character_id=1,
+        session_id=1,
+        statement=statement,
+        source=source,  # type: ignore[arg-type]
+        approved_at=_P5_NOW,
+        created_at=_P5_NOW,
+    )
+
+
+_P5_EXPERIENCES = [
+    _exp(1, "We are currently located in Chicago", "told_by_user"),
+    _exp(2, "Jon seemed uncomfortable when asked about his family", "observed"),
+]
+
+
+def test_experiences_section_included_when_active() -> None:
+    prompt = build_system_prompt(_P5_CHAR, [], experiences=_P5_EXPERIENCES)
+    assert "## Your Experiences" in prompt
+
+
+def test_experience_statement_appears_in_prompt() -> None:
+    prompt = build_system_prompt(_P5_CHAR, [], experiences=_P5_EXPERIENCES)
+    assert "We are currently located in Chicago" in prompt
+
+
+def test_experience_source_told_by_user_labelled() -> None:
+    exp = _exp(1, "Chicago statement", "told_by_user")
+    prompt = build_system_prompt(_P5_CHAR, [], experiences=[exp])
+    assert "told by user" in prompt.lower()
+
+
+def test_experience_source_observed_labelled() -> None:
+    exp = _exp(2, "Observed statement", "observed")
+    prompt = build_system_prompt(_P5_CHAR, [], experiences=[exp])
+    assert "observed" in prompt.lower()
+
+
+def test_multiple_experiences_all_appear() -> None:
+    exps = [
+        _exp(1, "Statement one"),
+        _exp(2, "Statement two"),
+        _exp(3, "Statement three"),
+    ]
+    prompt = build_system_prompt(_P5_CHAR, [], experiences=exps)
+    assert "Statement one" in prompt
+    assert "Statement two" in prompt
+    assert "Statement three" in prompt
+
+
+def test_experiences_section_absent_when_empty_list() -> None:
+    prompt = build_system_prompt(_P5_CHAR, [], experiences=[])
+    assert "## Your Experiences" not in prompt
+
+
+def test_experiences_section_absent_when_none() -> None:
+    prompt = build_system_prompt(_P5_CHAR, [], experiences=None)
+    assert "## Your Experiences" not in prompt
+
+
+def test_experiences_section_follows_inferences() -> None:
+    inferences = [
+        Inference(
+            id=1,
+            character_id=1,
+            statement="Some inference",
+            derivation="from fact",
+            source_fact_ids=[],
+            source_inference_ids=[],
+            depth=1,
+            inference_type="logical",
+            status="active",
+            created_at=_P5_NOW,
+        )
+    ]
+    prompt = build_system_prompt(_P5_CHAR, [], inferences=inferences, experiences=_P5_EXPERIENCES)
+    inf_idx = prompt.find("Some inference")
+    exp_idx = prompt.find("We are currently located in Chicago")
+    assert inf_idx != -1 and exp_idx != -1
+    assert inf_idx < exp_idx, "Experiences section should appear after inferences"

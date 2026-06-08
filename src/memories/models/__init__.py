@@ -78,3 +78,13 @@ class Inference(BaseModel):
     inference_type: str = "logical"
     status: str = "active"
     created_at: datetime
+
+
+class Experience(BaseModel):
+    id: int
+    character_id: int
+    session_id: int
+    statement: str
+    source: Literal["told_by_user", "observed"]
+    approved_at: datetime
+    created_at: datetime

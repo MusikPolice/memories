@@ -20,15 +20,30 @@ import httpx
 import pytest
 import respx
 
-from memories.database import create_fact, get_decisions, get_inferences, get_messages
+from memories.database import (
+    _embedding_to_blob,
+    create_experience,
+    create_fact,
+    get_decisions,
+    get_experiences,
+    get_inferences,
+    get_messages,
+)
 from memories.exceptions import NotFoundError, SessionEndedError
 from memories.models import Character, Session
 from memories.services.chat_service import run_turn
 from memories.services.evaluator import EvaluatorResult
+from memories.services.experience_service import get_active_experiences
 from memories.services.ollama_client import OllamaClient, OllamaConnectionError
-from tests.unit.conftest import OLLAMA_BASE_URL, make_evaluator_ndjson, make_ollama_ndjson
+from tests.unit.conftest import (
+    OLLAMA_BASE_URL,
+    make_embed_response,
+    make_evaluator_ndjson,
+    make_ollama_ndjson,
+)
 
 _CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
+_EMBED_URL = f"{OLLAMA_BASE_URL}/api/embed"
 
 
 def _mock_ok(content: str = "I am fine, thank you.") -> httpx.Response:
@@ -232,7 +247,7 @@ async def test_run_turn_returns_evaluator_result(
 ) -> None:
     with respx.mock:
         respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
-        _, _, _, eval_result = await run_turn(db, session.id, "Hello", ollama)
+        _, _, _, eval_result, _ = await run_turn(db, session.id, "Hello", ollama)
     assert isinstance(eval_result, EvaluatorResult)
 
 
@@ -241,7 +256,7 @@ async def test_pass_verdict_response_stored_and_returned(
 ) -> None:
     with respx.mock:
         respx.post(_CHAT_URL).mock(side_effect=_mock_turn("Clean reply."))
-        content, _, _turn_id, _ = await run_turn(db, session.id, "Hello", ollama)
+        content, _, _turn_id, _, _ = await run_turn(db, session.id, "Hello", ollama)
     assert content == "Clean reply."
     msgs = await get_messages(db, session.id)
     assert any(m.role == "assistant" and m.content == "Clean reply." for m in msgs)
@@ -342,7 +357,7 @@ async def test_contradiction_loop_exits_on_pass(
                 _mock_eval("pass"),
             ]
         )
-        content, _, _, eval_result = await run_turn(db, session.id, "Hello", ollama)
+        content, _, _, eval_result, _ = await run_turn(db, session.id, "Hello", ollama)
     assert content == "Good."
     assert eval_result.verdict == "pass"
     assert len(route.calls) == 4
@@ -386,7 +401,7 @@ async def test_contradiction_max_retries_exceeded_delivers_anyway(
 
     with respx.mock:
         respx.post(_CHAT_URL).mock(side_effect=side_effects)
-        content, _, _, eval_result = await run_turn(db, session.id, "Hello", ollama)
+        content, _, _, eval_result, _ = await run_turn(db, session.id, "Hello", ollama)
 
     assert content == "Still wrong."
     assert eval_result.max_retries_exceeded is True
@@ -409,7 +424,7 @@ async def test_contradiction_notifications_collected_per_iteration(
                 _mock_eval("pass"),
             ]
         )
-        _, _, _, eval_result = await run_turn(db, session.id, "Hello", ollama)
+        _, _, _, eval_result, _ = await run_turn(db, session.id, "Hello", ollama)
     assert len(eval_result.contradiction_notifications) == 2
 
 
@@ -552,7 +567,7 @@ async def test_run_turn_falls_back_to_pass_on_evaluator_parse_error(
         respx.post(_CHAT_URL).mock(
             side_effect=[_mock_ok("I am fine."), httpx.Response(200, content=malformed_eval)]
         )
-        content, _, _, result = await run_turn(db, session.id, "How are you?", ollama)
+        content, _, _, result, _ = await run_turn(db, session.id, "How are you?", ollama)
 
     assert content == "I am fine."
     assert result.verdict == "pass"
@@ -735,3 +750,407 @@ async def test_evaluator_called_with_inferences(
     eval_body = json.loads(route.calls[1].request.content)
     eval_prompt = eval_body["messages"][1]["content"]  # user message has the evaluator prompt
     assert "Alice is probably left-handed" in eval_prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 additions — experience retrieval, active set, and experience_update
+# ---------------------------------------------------------------------------
+
+
+async def _insert_experience(
+    db: aiosqlite.Connection,
+    character_id: int,
+    session_id: int,
+    statement: str = "User lives in Chicago",
+    source: str = "told_by_user",
+) -> object:
+    blob = _embedding_to_blob([1.0, 0.0, 0.0, 0.0])
+    return await create_experience(
+        db,
+        character_id=character_id,
+        session_id=session_id,
+        statement=statement,
+        source=source,
+        embedding=blob,
+    )
+
+
+async def test_run_turn_retrieves_experiences_for_user_message(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    await _insert_experience(db, character.id, session.id)
+    with respx.mock:
+        embed_route = respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
+        )
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Hello", ollama)
+    assert embed_route.called
+
+
+async def test_run_turn_adds_retrieved_experiences_to_active_set(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    await _insert_experience(db, character.id, session.id)
+    with respx.mock:
+        respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
+        )
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Hello", ollama)
+    active = get_active_experiences(session.id)
+    assert len(active) > 0
+
+
+async def test_run_turn_no_embed_call_when_no_experiences_in_db(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    with respx.mock:
+        embed_route = respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response())
+        )
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Hello", ollama)
+    assert not embed_route.called
+
+
+async def test_run_turn_includes_active_experiences_in_system_prompt(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    await _insert_experience(db, character.id, session.id, "User lives in Chicago")
+    with respx.mock:
+        respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
+        )
+        route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Hello", ollama)
+    body = json.loads(route.calls[0].request.content)
+    system_content = body["messages"][0]["content"]
+    assert "User lives in Chicago" in system_content
+
+
+async def test_run_turn_cold_start_embeds_previous_journal(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    from memories.database import create_session as _cs
+    from memories.database import update_session_closing_journal
+
+    await update_session_closing_journal(db, session.id, "A memorable conversation.")
+    session2 = await _cs(db, character_id=character.id)
+    await _insert_experience(db, character.id, session.id)
+
+    with respx.mock:
+        embed_route = respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
+        )
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session2.id, "Hi there", ollama)
+
+    # Should be called at least once for cold-start journal embedding
+    assert embed_route.called
+    bodies = [json.loads(c.request.content) for c in embed_route.calls]
+    inputs = [b.get("input", "") for b in bodies]
+    assert any("A memorable conversation." in inp for inp in inputs)
+
+
+async def test_run_turn_cold_start_seeds_active_experiences(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    from memories.database import create_session as _cs
+    from memories.database import update_session_closing_journal
+
+    await update_session_closing_journal(db, session.id, "Journal.")
+    session2 = await _cs(db, character_id=character.id)
+    await _insert_experience(db, character.id, session.id)
+
+    with respx.mock:
+        respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
+        )
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session2.id, "First message", ollama)
+
+    active = get_active_experiences(session2.id)
+    assert len(active) > 0
+
+
+async def test_run_turn_no_cold_start_when_no_previous_session(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    # No previous session with closing journal — cold-start should not fire
+    await _insert_experience(db, character.id, session.id)
+    with respx.mock:
+        embed_route = respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
+        )
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Hello", ollama)
+
+    # embed IS called for user-message retrieval, but NOT for cold start journal
+    call_inputs = [json.loads(c.request.content).get("input", "") for c in embed_route.calls]
+    assert not any("journal" in inp.lower() for inp in call_inputs)
+
+
+async def test_run_turn_cold_start_only_fires_on_first_turn(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    from memories.database import create_session as _cs
+    from memories.database import update_session_closing_journal
+
+    await update_session_closing_journal(db, session.id, "Previous session journal.")
+    session2 = await _cs(db, character_id=character.id)
+    await _insert_experience(db, character.id, session.id)
+
+    with respx.mock:
+        respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
+        )
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session2.id, "Turn one", ollama)
+
+    with respx.mock:
+        embed_route2 = respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
+        )
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session2.id, "Turn two", ollama)
+
+    # On the second turn, embed is called at most once (for user message), not twice
+    for call in embed_route2.calls:
+        body = json.loads(call.request.content)
+        assert "Previous session journal." not in body.get("input", "")
+
+
+async def test_run_turn_active_set_accumulates_across_turns(
+    db: aiosqlite.Connection,
+    character: Character,
+    session: Session,
+    ollama: OllamaClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    blob = _embedding_to_blob([1.0, 0.0, 0.0, 0.0])
+    exp1 = await create_experience(
+        db,
+        character_id=character.id,
+        session_id=session.id,
+        statement="Experience one",
+        source="told_by_user",
+        embedding=blob,
+    )
+    blob2 = _embedding_to_blob([0.0, 1.0, 0.0, 0.0])
+    exp2 = await create_experience(
+        db,
+        character_id=character.id,
+        session_id=session.id,
+        statement="Experience two",
+        source="observed",
+        embedding=blob2,
+    )
+
+    # Limit to 1 retrieval per turn so each turn fetches a distinct experience.
+    # Patching the name inside chat_service (where it was imported) is required
+    # because TOP_K_EXPERIENCES is a module-level constant evaluated at import time.
+    monkeypatch.setattr("memories.services.chat_service.TOP_K_EXPERIENCES", 1)
+
+    # Turn 1: query vector aligns with exp1 → retrieves exp1
+    with respx.mock:
+        respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
+        )
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "First", ollama)
+
+    # Turn 2: query vector aligns with exp2 → exp1 already active, retrieves exp2
+    with respx.mock:
+        respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([0.0, 1.0, 0.0, 0.0]))
+        )
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Second", ollama)
+
+    active = get_active_experiences(session.id)
+    active_ids = {e.id for e in active}
+    assert exp1.id in active_ids and exp2.id in active_ids
+
+
+async def test_run_turn_experience_update_deletes_experience_from_db(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    exp = await _insert_experience(db, character.id, session.id)
+    exp_updates = [{"contradicted_experience_id": exp.id, "description": "Now in New York"}]
+
+    with respx.mock:
+        respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
+        )
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_ok("We are in New York."),
+                httpx.Response(
+                    200,
+                    content=make_evaluator_ndjson(
+                        "experience_update", experience_updates=exp_updates
+                    ),
+                ),
+            ]
+        )
+        await run_turn(db, session.id, "Where are we?", ollama)
+
+    remaining = await get_experiences(db, character.id)
+    assert not any(e.id == exp.id for e in remaining)
+
+
+async def test_run_turn_experience_update_removes_from_active_set(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    exp = await _insert_experience(db, character.id, session.id)
+    exp_updates = [{"contradicted_experience_id": exp.id, "description": "Moved to New York"}]
+
+    with respx.mock:
+        respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
+        )
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_ok("Now in New York."),
+                httpx.Response(
+                    200,
+                    content=make_evaluator_ndjson(
+                        "experience_update", experience_updates=exp_updates
+                    ),
+                ),
+            ]
+        )
+        await run_turn(db, session.id, "Location?", ollama)
+
+    active = get_active_experiences(session.id)
+    assert not any(e.id == exp.id for e in active)
+
+
+async def test_run_turn_experience_update_invalid_id_logs_warning_but_does_not_raise(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    exp_updates = [{"contradicted_experience_id": 99999, "description": "Non-existent"}]
+
+    with respx.mock:
+        respx.post(_EMBED_URL).mock(return_value=httpx.Response(200, content=make_embed_response()))
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_ok("Response."),
+                httpx.Response(
+                    200,
+                    content=make_evaluator_ndjson(
+                        "experience_update", experience_updates=exp_updates
+                    ),
+                ),
+            ]
+        )
+        # Should not raise even though experience ID doesn't exist
+        await run_turn(db, session.id, "Hello", ollama)
+
+
+async def test_run_turn_passes_active_experiences_to_evaluator(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    await _insert_experience(db, character.id, session.id, "User lives in Chicago")
+    with respx.mock:
+        respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
+        )
+        route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Hello", ollama)
+
+    # calls[1] is the evaluator call
+    eval_body = json.loads(route.calls[1].request.content)
+    eval_prompt = eval_body["messages"][1]["content"]
+    assert "User lives in Chicago" in eval_prompt
+
+
+async def test_run_turn_experience_update_promotes_logical_inferences(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    exp = await _insert_experience(db, character.id, session.id)
+    new_inferences = [
+        {
+            "inference_type": "logical",
+            "statement": "Character is moving cities",
+            "derivation": "mentioned New York",
+            "source_fact_ids": [],
+            "source_inference_ids": [],
+        }
+    ]
+    exp_updates = [{"contradicted_experience_id": exp.id, "description": "Now in New York"}]
+
+    with respx.mock:
+        respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
+        )
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_ok("Now in New York."),
+                httpx.Response(
+                    200,
+                    content=make_evaluator_ndjson(
+                        "experience_update",
+                        new_inferences=new_inferences,
+                        experience_updates=exp_updates,
+                    ),
+                ),
+            ]
+        )
+        await run_turn(db, session.id, "Where are we?", ollama)
+
+    stored = await get_inferences(db, character.id)
+    assert any("Character is moving cities" in i.statement for i in stored)
+
+
+async def test_run_turn_experience_update_does_not_promote_probabilistic_inferences(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """Probabilistic inferences are silently discarded when verdict is experience_update."""
+    exp = await _insert_experience(db, character.id, session.id)
+    new_inferences = [
+        {
+            "inference_type": "probabilistic",
+            "statement": "Character seems nostalgic about Chicago",
+            "derivation": "tone of response",
+            "source_fact_ids": [],
+            "source_inference_ids": [],
+        }
+    ]
+    exp_updates = [{"contradicted_experience_id": exp.id, "description": "Now in New York"}]
+
+    with respx.mock:
+        respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
+        )
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_ok("Now in New York."),
+                httpx.Response(
+                    200,
+                    content=make_evaluator_ndjson(
+                        "experience_update",
+                        new_inferences=new_inferences,
+                        experience_updates=exp_updates,
+                    ),
+                ),
+            ]
+        )
+        await run_turn(db, session.id, "Where are we?", ollama)
+
+    stored = await get_inferences(db, character.id)
+    assert not any("nostalgic about Chicago" in i.statement for i in stored)
+
+
+async def test_run_turn_returns_five_tuple_with_scores_dict(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    with respx.mock:
+        respx.post(_EMBED_URL).mock(return_value=httpx.Response(200, content=make_embed_response()))
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        result = await run_turn(db, session.id, "Hello", ollama)
+
+    assert len(result) == 5
+    *_, scores = result
+    assert isinstance(scores, dict)

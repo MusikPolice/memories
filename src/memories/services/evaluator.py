@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from memories.models import Character, Fact, Inference
+from memories.models import Character, Experience, Fact, Inference
 from memories.services.ollama_client import OllamaClient
 
 _VALID_VERDICTS = frozenset(
@@ -50,10 +50,16 @@ class ContradictionNotification(BaseModel):
     description: str
 
 
+class ExperienceUpdate(BaseModel):
+    contradicted_experience_id: int
+    description: str
+
+
 class EvaluatorResult(BaseModel):
     verdict: str
     new_inferences: list[NewInference] = []
     violations: list[Violation] = []
+    experience_updates: list[ExperienceUpdate] = []
     decision_log: str = ""
     contradiction_notifications: list[ContradictionNotification] = []
     max_retries_exceeded: bool = False
@@ -66,6 +72,7 @@ def build_evaluator_prompt(
     character_response: str,
     contradiction_hints: list[str] | None = None,
     inferences: list[Inference] | None = None,
+    experiences: list[Experience] | None = None,
 ) -> str:
     """Build the user-facing content for the evaluator Ollama call."""
     parts: list[str] = [f"Character: {character.name}"]
@@ -85,6 +92,13 @@ def build_evaluator_prompt(
             parts.append(f"[{inf.id}] {inf.statement}  (from: {inf.derivation})")
     else:
         parts.append("(no inferences established yet)")
+
+    parts.append("\n## Active Experiences (id: statement  [source])")
+    if experiences:
+        for exp in experiences:
+            parts.append(f"[{exp.id}] {exp.statement}  [{exp.source}]")
+    else:
+        parts.append("(no active experiences this session)")
 
     parts.append(f'\n## Conversation Context\nUser said: "{user_message}"')
     parts.append(f"\n## Character Response to Evaluate\n{character_response}")
@@ -169,10 +183,21 @@ Examples:
 - Character says their eye colour contradicts the eye colour fact → contradiction
 - Character says "I'm 26" and the age fact is 26 → pass
 
+## Experience Contradiction Rules
+If the character's response contradicts an Active Experience — implying the world has
+changed in a way that invalidates it — return verdict `experience_update`:
+- Unlike `contradiction`, the response IS delivered; no regeneration occurs.
+- Include the contradicted Experience's id in `experience_updates[].contradicted_experience_id`.
+- `experience_update` takes priority over `implication` but lower than `contradiction`.
+
+Note: `contradiction` applies ONLY to immutable Facts. A character response that contradicts
+an Experience is never a `contradiction` — it is always `experience_update`.
+
 Return a JSON object with this exact structure:
 
 {
-  "verdict": "<contradiction|implication|new_inference_logical|new_inference_probabilistic|pass>",
+  "verdict": "<contradiction|implication|new_inference_logical
+    |new_inference_probabilistic|experience_update|pass>",
   "new_inferences": [
     {
       "inference_type": "logical | probabilistic",
@@ -187,6 +212,12 @@ Return a JSON object with this exact structure:
       "type": "contradiction | implication",
       "description": "what was wrong or what new fact was implied",
       "suggested_fact": {"key": "...", "value": "..."} or null
+    }
+  ],
+  "experience_updates": [
+    {
+      "contradicted_experience_id": 5,
+      "description": "brief description of why this experience was contradicted"
     }
   ],
   "decision_log": "One-sentence summary of why you chose this verdict."
@@ -217,10 +248,17 @@ async def run_evaluator(
     ollama: OllamaClient,
     contradiction_hints: list[str] | None = None,
     inferences: list[Inference] | None = None,
+    experiences: list[Experience] | None = None,
 ) -> EvaluatorResult:
     """Run the evaluator LLM and return a parsed verdict."""
     prompt = build_evaluator_prompt(
-        character, facts, user_message, character_response, contradiction_hints, inferences
+        character,
+        facts,
+        user_message,
+        character_response,
+        contradiction_hints,
+        inferences,
+        experiences,
     )
     model = character.current_model_name or character.modelfile_base
     messages: list[dict[str, str]] = [
@@ -251,12 +289,7 @@ async def run_evaluator(
 
     verdict = data.get("verdict")
 
-    # experience_update is Phase 5; coerce to pass now
-    if verdict == "experience_update":
-        data["verdict"] = "pass"
-        verdict = "pass"
-
-    if verdict not in _VALID_VERDICTS - {"experience_update"}:
+    if verdict not in _VALID_VERDICTS:
         raise EvaluatorParseError(f"Unknown evaluator verdict: {verdict!r}")
 
     if "decision_log" not in data:

@@ -1,6 +1,6 @@
 """System prompt construction for the character LLM call."""
 
-from memories.models import Character, Fact, Inference
+from memories.models import Character, Experience, Fact, Inference
 
 _CATEGORY_ORDER = ["user", "character", "setting"]
 
@@ -34,6 +34,7 @@ def build_system_prompt(
     character: Character,
     facts: list[Fact],
     inferences: list[Inference] | None = None,
+    experiences: list[Experience] | None = None,
 ) -> str:
     lines: list[str] = [
         f"You are {character.name}. Stay in character at all times.",
@@ -69,5 +70,15 @@ def build_system_prompt(
         lines.append("")
         for inf in inferences:
             lines.append(f"{inf.statement} (from: {inf.derivation})")
+
+    if experiences:
+        lines.append("")
+        lines.append("## Your Experiences")
+        lines.append("These are things you have learned or observed through past conversations.")
+        lines.append("They are working memory — you may reference them freely.")
+        lines.append("")
+        for exp in experiences:
+            source_label = "told by user" if exp.source == "told_by_user" else "observed"
+            lines.append(f"[{source_label}] {exp.statement}")
 
     return "\n".join(lines)

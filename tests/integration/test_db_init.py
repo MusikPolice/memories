@@ -82,3 +82,35 @@ async def test_facts_uniqueness_constraint_is_category_scoped(db: aiosqlite.Conn
     # The unique constraint must reference the category column
     assert "category" in table_sql, "Expected 'category' in facts table DDL unique constraint"
     assert "UNIQUE" in table_sql.upper(), "Expected UNIQUE constraint in facts table DDL"
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 additions — experiences table and sessions.closing_journal
+# ---------------------------------------------------------------------------
+
+
+async def test_experiences_table_exists(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute("PRAGMA table_info(experiences)")
+    rows = await cursor.fetchall()
+    assert len(rows) > 0, "experiences table should have columns"
+
+
+async def test_experiences_table_has_embedding_column(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute("PRAGMA table_info(experiences)")
+    rows = await cursor.fetchall()
+    col_names = [row[1] for row in rows]
+    assert "embedding" in col_names
+
+
+async def test_experiences_table_has_approved_at_column(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute("PRAGMA table_info(experiences)")
+    rows = await cursor.fetchall()
+    col_names = [row[1] for row in rows]
+    assert "approved_at" in col_names
+
+
+async def test_sessions_table_has_closing_journal_column(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute("PRAGMA table_info(sessions)")
+    rows = await cursor.fetchall()
+    col_names = [row[1] for row in rows]
+    assert "closing_journal" in col_names

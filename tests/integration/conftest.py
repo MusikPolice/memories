@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from typing import Any
 
 import aiosqlite
 import pytest
@@ -12,9 +13,17 @@ from memories.database import create_character, create_fact, create_session
 from memories.deps import get_db, get_ollama
 from memories.main import app
 from memories.models import Character, Fact, Session
+from memories.services import experience_service
 from memories.services.ollama_client import OllamaClient
 
 OLLAMA_BASE_URL = "http://test-ollama-integration:11434"
+
+
+@pytest.fixture(autouse=True)
+def _clear_active_experiences() -> Any:
+    experience_service._session_active_experiences.clear()
+    yield
+    experience_service._session_active_experiences.clear()
 
 
 @pytest.fixture

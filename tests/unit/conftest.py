@@ -10,6 +10,7 @@ import pytest
 
 from memories.database import create_character, create_fact, create_session
 from memories.models import Character, Fact, Session
+from memories.services import experience_service
 from memories.services.ollama_client import OllamaClient
 
 # Base URL used by all unit tests that mock the Ollama HTTP layer.
@@ -56,6 +57,7 @@ def make_evaluator_ndjson(
     new_inferences: list[dict[str, Any]] | None = None,
     violations: list[dict[str, Any]] | None = None,
     decision_log: str = "Response is grounded and clean.",
+    experience_updates: list[dict[str, Any]] | None = None,
 ) -> bytes:
     """Build a minimal Ollama NDJSON body whose content is an evaluator JSON verdict.
 
@@ -69,7 +71,23 @@ def make_evaluator_ndjson(
         "violations": violations or [],
         "decision_log": decision_log,
     }
+    if experience_updates is not None:
+        data["experience_updates"] = experience_updates
     return make_ollama_ndjson(json.dumps(data))
+
+
+def make_embed_response(vec: list[float] | None = None) -> bytes:
+    """Build a minimal Ollama embed API JSON response body."""
+    if vec is None:
+        vec = [1.0, 0.0, 0.0, 0.0]
+    return json.dumps({"embeddings": [vec]}).encode()
+
+
+@pytest.fixture(autouse=True)
+def _clear_active_experiences() -> Any:
+    experience_service._session_active_experiences.clear()
+    yield
+    experience_service._session_active_experiences.clear()
 
 
 @pytest.fixture

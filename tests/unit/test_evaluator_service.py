@@ -9,15 +9,16 @@ import httpx
 import pytest
 import respx
 
-from memories.models import Character, Fact, Inference
+from memories.models import Character, Experience, Fact, Inference
 from memories.services.evaluator import (
     EvaluatorParseError,
     EvaluatorResult,
+    ExperienceUpdate,
     build_evaluator_prompt,
     run_evaluator,
 )
 from memories.services.ollama_client import OllamaClient
-from tests.unit.conftest import OLLAMA_BASE_URL, make_ollama_ndjson
+from tests.unit.conftest import OLLAMA_BASE_URL, make_evaluator_ndjson, make_ollama_ndjson
 
 _CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
 
@@ -207,12 +208,15 @@ async def test_evaluator_parses_new_inference_probabilistic(ollama: OllamaClient
 
 
 @respx.mock
-async def test_evaluator_coerces_experience_update_to_pass(ollama: OllamaClient) -> None:
+async def test_evaluator_returns_experience_update_verdict_not_coerced(
+    ollama: OllamaClient,
+) -> None:
+    # Phase 5: experience_update should be returned as-is, not coerced to pass.
     respx.post(_CHAT_URL).mock(
         return_value=httpx.Response(200, content=_eval_json("experience_update"))
     )
     result = await run_evaluator(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, ollama)
-    assert result.verdict == "pass"
+    assert result.verdict == "experience_update"
 
 
 @respx.mock
@@ -587,3 +591,154 @@ def test_evaluator_prompt_high_mutability_mood_change_must_not_use_new_inference
     # Must have guidance that high-mutability changes require implication
     assert "implication" in prompt_lower
     assert "high" in prompt_lower
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 additions — experiences parameter and experience_update verdict
+# ---------------------------------------------------------------------------
+
+_P5_NOW = datetime(2026, 6, 7)
+
+_P5_EXPERIENCES = [
+    Experience(
+        id=5,
+        character_id=1,
+        session_id=1,
+        statement="We are currently located in Chicago",
+        source="told_by_user",
+        approved_at=_P5_NOW,
+        created_at=_P5_NOW,
+    ),
+    Experience(
+        id=7,
+        character_id=1,
+        session_id=1,
+        statement="Jon seemed uncomfortable when asked about his family",
+        source="observed",
+        approved_at=_P5_NOW,
+        created_at=_P5_NOW,
+    ),
+]
+
+
+def test_evaluator_prompt_includes_active_experiences() -> None:
+    prompt = build_evaluator_prompt(
+        _CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, experiences=_P5_EXPERIENCES
+    )
+    assert "We are currently located in Chicago" in prompt
+    assert "Jon seemed uncomfortable" in prompt
+
+
+def test_evaluator_prompt_no_experiences_uses_fallback() -> None:
+    prompt = build_evaluator_prompt(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, experiences=[])
+    assert "no active experiences" in prompt.lower()
+
+
+def test_evaluator_prompt_includes_experience_ids() -> None:
+    prompt = build_evaluator_prompt(
+        _CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, experiences=_P5_EXPERIENCES
+    )
+    assert "[5]" in prompt
+    assert "[7]" in prompt
+
+
+def test_evaluator_prompt_includes_experience_source_label() -> None:
+    prompt = build_evaluator_prompt(
+        _CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, experiences=_P5_EXPERIENCES
+    )
+    assert "told_by_user" in prompt or "told by user" in prompt.lower()
+    assert "observed" in prompt
+
+
+def test_evaluator_prompt_contains_experience_update_instructions() -> None:
+    prompt = build_evaluator_prompt(
+        _CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, experiences=_P5_EXPERIENCES
+    )
+    assert "experience_update" in prompt
+
+
+def test_evaluator_prompt_contains_experience_update_json_schema() -> None:
+    prompt = build_evaluator_prompt(
+        _CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, experiences=_P5_EXPERIENCES
+    )
+    assert "experience_updates" in prompt
+
+
+@respx.mock
+async def test_run_evaluator_accepts_experiences_parameter(ollama: OllamaClient) -> None:
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=make_evaluator_ndjson("pass"))
+    )
+    result = await run_evaluator(
+        _CHARACTER,
+        _FACTS,
+        _USER_MSG,
+        _CHAR_RESPONSE,
+        ollama,
+        experiences=_P5_EXPERIENCES,
+    )
+    assert isinstance(result, EvaluatorResult)
+
+
+@respx.mock
+async def test_run_evaluator_returns_experience_update_verdict(ollama: OllamaClient) -> None:
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=make_evaluator_ndjson("experience_update"))
+    )
+    result = await run_evaluator(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, ollama)
+    assert result.verdict == "experience_update"
+
+
+@respx.mock
+async def test_run_evaluator_parses_experience_updates_list(ollama: OllamaClient) -> None:
+    exp_updates = [
+        {"contradicted_experience_id": 5, "description": "Character implies they are in New York"},
+        {"contradicted_experience_id": 7, "description": "Character says family is fine"},
+    ]
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_evaluator_ndjson("experience_update", experience_updates=exp_updates),
+        )
+    )
+    result = await run_evaluator(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, ollama)
+    assert len(result.experience_updates) == 2
+    assert isinstance(result.experience_updates[0], ExperienceUpdate)
+
+
+@respx.mock
+async def test_run_evaluator_experience_update_not_coerced_to_pass(
+    ollama: OllamaClient,
+) -> None:
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=make_evaluator_ndjson("experience_update"))
+    )
+    result = await run_evaluator(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, ollama)
+    assert result.verdict == "experience_update"
+    assert result.verdict != "pass"
+
+
+def test_evaluator_result_model_has_experience_updates_field() -> None:
+    result = EvaluatorResult(verdict="pass", decision_log="ok")
+    assert hasattr(result, "experience_updates")
+    assert result.experience_updates == []
+
+
+@respx.mock
+async def test_contradiction_takes_priority_over_experience_update(
+    ollama: OllamaClient,
+) -> None:
+    violations = [
+        {"type": "contradiction", "description": "Contradicts fact", "suggested_fact": None}
+    ]
+    exp_updates = [{"contradicted_experience_id": 5, "description": "Also contradicts experience"}]
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_evaluator_ndjson(
+                "contradiction", violations=violations, experience_updates=exp_updates
+            ),
+        )
+    )
+    result = await run_evaluator(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, ollama)
+    assert result.verdict == "contradiction"

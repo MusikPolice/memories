@@ -16,6 +16,7 @@ from memories.services.ollama_client import (
 from tests.unit.conftest import OLLAMA_BASE_URL, make_ollama_ndjson
 
 _CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
+_EMBED_URL = f"{OLLAMA_BASE_URL}/api/embed"
 _GENERATE_URL = f"{OLLAMA_BASE_URL}/api/generate"
 _SAMPLE_MESSAGES = [{"role": "user", "content": "Hello"}]
 
@@ -183,3 +184,56 @@ async def test_format_schema_dict_passed_through(ollama: OllamaClient) -> None:
     await ollama.chat("qwen3:7b", _SAMPLE_MESSAGES, format=schema)
     body = json.loads(route.calls[0].request.content)
     assert body.get("format") == schema
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 additions — embed() method
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_embed_calls_api_embed_endpoint(ollama: OllamaClient) -> None:
+    route = respx.post(_EMBED_URL).mock(
+        return_value=httpx.Response(200, json={"embeddings": [[1.0, 2.0, 3.0]]})
+    )
+    await ollama.embed("nomic-embed-text", "Hello world")
+    assert route.called
+
+
+@respx.mock
+async def test_embed_sends_model_and_input(ollama: OllamaClient) -> None:
+    route = respx.post(_EMBED_URL).mock(
+        return_value=httpx.Response(200, json={"embeddings": [[1.0, 2.0]]})
+    )
+    await ollama.embed("nomic-embed-text", "Hello world")
+    body = json.loads(route.calls[0].request.content)
+    assert body.get("model") == "nomic-embed-text"
+    assert body.get("input") == "Hello world"
+
+
+@respx.mock
+async def test_embed_returns_first_embedding(ollama: OllamaClient) -> None:
+    respx.post(_EMBED_URL).mock(return_value=httpx.Response(200, json={"embeddings": [[1.0, 2.0]]}))
+    result = await ollama.embed("nomic-embed-text", "test")
+    assert result == [1.0, 2.0]
+
+
+@respx.mock
+async def test_embed_raises_connection_error_on_network_failure(ollama: OllamaClient) -> None:
+    respx.post(_EMBED_URL).mock(side_effect=httpx.ConnectError("refused"))
+    with pytest.raises(OllamaConnectionError):
+        await ollama.embed("nomic-embed-text", "test")
+
+
+@respx.mock
+async def test_embed_raises_response_error_on_non_200(ollama: OllamaClient) -> None:
+    respx.post(_EMBED_URL).mock(return_value=httpx.Response(404, content=b"Not found"))
+    with pytest.raises(OllamaResponseError):
+        await ollama.embed("nomic-embed-text", "test")
+
+
+@respx.mock
+async def test_embed_raises_response_error_on_empty_embeddings(ollama: OllamaClient) -> None:
+    respx.post(_EMBED_URL).mock(return_value=httpx.Response(200, json={"embeddings": []}))
+    with pytest.raises(OllamaResponseError):
+        await ollama.embed("nomic-embed-text", "test")

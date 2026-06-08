@@ -13,7 +13,16 @@ from typing import Any
 import aiosqlite
 
 from memories.exceptions import NotFoundError
-from memories.models import Character, Decision, Fact, Inference, Message, Segment, Session
+from memories.models import (
+    Character,
+    Decision,
+    Experience,
+    Fact,
+    Inference,
+    Message,
+    Segment,
+    Session,
+)
 
 # ---------------------------------------------------------------------------
 # Full schema — created once at startup; all tables present from Phase 1
@@ -588,3 +597,121 @@ async def delete_inference(db: aiosqlite.Connection, inference_id: int) -> None:
     await db.commit()
     if cursor.rowcount == 0:
         raise NotFoundError(f"Inference {inference_id} not found")
+
+
+# ---------------------------------------------------------------------------
+# Experiences
+# ---------------------------------------------------------------------------
+
+
+def _embedding_to_blob(embedding: list[float]) -> bytes:
+    return json.dumps(embedding).encode()
+
+
+def _blob_to_embedding(blob: bytes) -> list[float]:
+    result: list[float] = json.loads(blob.decode())
+    return result
+
+
+def _parse_experience(row: aiosqlite.Row) -> Experience:
+    d = _row(row)
+    d.pop("embedding", None)
+    return Experience.model_validate(d)
+
+
+async def create_experience(
+    db: aiosqlite.Connection,
+    *,
+    character_id: int,
+    session_id: int,
+    statement: str,
+    source: str,
+    embedding: bytes,
+) -> Experience:
+    cursor = await db.execute(
+        """INSERT INTO experiences
+               (character_id, session_id, statement, source, embedding, approved_at)
+           VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+        (character_id, session_id, statement, source, embedding),
+    )
+    await db.commit()
+    assert cursor.lastrowid is not None
+    row = await (
+        await db.execute("SELECT * FROM experiences WHERE id = ?", (cursor.lastrowid,))
+    ).fetchone()
+    assert row is not None
+    return _parse_experience(row)
+
+
+async def get_experience(db: aiosqlite.Connection, experience_id: int) -> Experience | None:
+    row = await (
+        await db.execute("SELECT * FROM experiences WHERE id = ?", (experience_id,))
+    ).fetchone()
+    return _parse_experience(row) if row else None
+
+
+async def get_experiences(db: aiosqlite.Connection, character_id: int) -> list[Experience]:
+    cursor = await db.execute(
+        "SELECT * FROM experiences WHERE character_id = ? ORDER BY created_at",
+        (character_id,),
+    )
+    rows = await cursor.fetchall()
+    return [_parse_experience(r) for r in rows]
+
+
+async def get_experiences_with_embeddings(
+    db: aiosqlite.Connection, character_id: int
+) -> list[tuple[Experience, list[float]]]:
+    cursor = await db.execute(
+        "SELECT * FROM experiences"
+        " WHERE character_id = ? AND embedding IS NOT NULL"
+        " ORDER BY created_at",
+        (character_id,),
+    )
+    rows = await cursor.fetchall()
+    result = []
+    for row in rows:
+        d = _row(row)
+        blob: bytes = d.pop("embedding")
+        exp = Experience.model_validate(d)
+        vec = _blob_to_embedding(blob)
+        result.append((exp, vec))
+    return result
+
+
+async def delete_experience(db: aiosqlite.Connection, experience_id: int) -> None:
+    cursor = await db.execute("DELETE FROM experiences WHERE id = ?", (experience_id,))
+    await db.commit()
+    if cursor.rowcount == 0:
+        raise NotFoundError(f"Experience {experience_id} not found")
+
+
+async def update_session_closing_journal(
+    db: aiosqlite.Connection, session_id: int, closing_journal: str
+) -> Session:
+    cursor = await db.execute(
+        "UPDATE sessions SET closing_journal = ? WHERE id = ?",
+        (closing_journal, session_id),
+    )
+    await db.commit()
+    if cursor.rowcount == 0:
+        raise NotFoundError(f"Session {session_id} not found")
+    row = await (await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))).fetchone()
+    assert row is not None
+    return Session.model_validate(_row(row))
+
+
+async def get_previous_session(
+    db: aiosqlite.Connection, character_id: int, before_session_id: int
+) -> Session | None:
+    row = await (
+        await db.execute(
+            """SELECT * FROM sessions
+               WHERE character_id = ?
+                 AND id < ?
+                 AND closing_journal IS NOT NULL
+               ORDER BY id DESC LIMIT 1""",
+            (character_id, before_session_id),
+        )
+    ).fetchone()
+    return Session.model_validate(_row(row)) if row else None

@@ -89,6 +89,30 @@ class OllamaClient:
         except httpx.ConnectError as exc:
             raise OllamaConnectionError(str(exc)) from exc
 
+    async def embed(self, model: str, text: str) -> list[float]:
+        """Embed *text* using *model* via POST /api/embed.
+
+        Returns the first embedding from the response.
+        Raises OllamaConnectionError or OllamaResponseError on failure.
+        """
+        url = f"{self.base_url}/api/embed"
+        payload = {"model": model, "input": text}
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
+            ) as http:
+                response = await http.post(url, json=payload)
+                if response.status_code != 200:
+                    raise OllamaResponseError(f"Ollama returned HTTP {response.status_code}")
+                data = response.json()
+                embeddings = data.get("embeddings", [])
+                if not embeddings:
+                    raise OllamaResponseError("Ollama embed response contained no embeddings")
+                vec: list[float] = embeddings[0]
+                return vec
+        except httpx.ConnectError as exc:
+            raise OllamaConnectionError(str(exc)) from exc
+
     async def warmup(self, model: str) -> None:
         """Load *model* into Ollama's memory without generating any output.
 

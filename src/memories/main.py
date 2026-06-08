@@ -15,7 +15,16 @@ from fastapi.staticfiles import StaticFiles
 
 from memories import deps
 from memories.database import init_db, list_characters
-from memories.routers import characters, chat, decisions, facts, implication, inferences, sessions
+from memories.routers import (
+    characters,
+    chat,
+    decisions,
+    experiences,
+    facts,
+    implication,
+    inferences,
+    sessions,
+)
 from memories.services.ollama_client import OllamaClient, OllamaConnectionError, OllamaResponseError
 
 _log = logging.getLogger(__name__)
@@ -25,8 +34,6 @@ async def _warmup_models(db: aiosqlite.Connection) -> None:
     """Preload every model referenced by an existing character into Ollama's memory."""
     chars = await list_characters(db)
     models = {c.current_model_name or c.modelfile_base for c in chars}
-    if not models:
-        return
     ollama = OllamaClient()
     for model in models:
         _log.info("warming up model: %s", model)
@@ -35,6 +42,12 @@ async def _warmup_models(db: aiosqlite.Connection) -> None:
             _log.info("model ready: %s", model)
         except (OllamaConnectionError, OllamaResponseError) as exc:
             _log.warning("could not warm up %s (%s) — will load on first request", model, exc)
+    embed_model = os.getenv("EMBED_MODEL", "nomic-embed-text")
+    try:
+        await ollama.warmup(embed_model)
+        _log.info("embed model %r warmed up", embed_model)
+    except (OllamaConnectionError, OllamaResponseError) as exc:
+        _log.warning("could not warm up embed model %r: %s", embed_model, exc)
 
 
 @asynccontextmanager
@@ -64,6 +77,7 @@ app.include_router(chat.router, prefix="/api/sessions", tags=["chat"])
 app.include_router(implication.router, prefix="/api/sessions", tags=["implication"])
 app.include_router(decisions.router, prefix="/api/sessions", tags=["decisions"])
 app.include_router(inferences.router, prefix="/api/characters", tags=["inferences"])
+app.include_router(experiences.router, prefix="/api/characters", tags=["experiences"])
 
 
 @app.get("/health")

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from memories.database import get_session
 from memories.deps import get_db, get_ollama
 from memories.services.chat_service import run_turn
+from memories.services.experience_service import get_active_experiences
 from memories.services.ollama_client import OllamaClient
 
 router = APIRouter()
@@ -40,7 +41,7 @@ async def send_message(
     async def _stream() -> AsyncGenerator[str, None]:
         yield 'event: status\ndata: {"state": "generating"}\n\n'
         yield 'event: status\ndata: {"state": "reviewing"}\n\n'
-        content, thinking, turn_id, eval_result = await run_turn(
+        content, thinking, turn_id, eval_result, experience_scores = await run_turn(
             db, session_id, body.content, ollama, think=body.think
         )
 
@@ -62,10 +63,15 @@ async def send_message(
         if thinking:
             yield f"event: thinking\ndata: {json.dumps({'content': thinking})}\n\n"
 
+        active_ids = [e.id for e in get_active_experiences(session_id)]
+        scores_list = [{"id": eid, "score": score} for eid, score in experience_scores.items()]
+
         msg_data: dict[str, object] = {
             "role": "assistant",
             "content": content,
             "turn_id": turn_id,
+            "active_experience_ids": active_ids,
+            "experience_scores": scores_list,
         }
         if eval_result.verdict in ("implication", "new_inference_probabilistic"):
             msg_data["ungrounded"] = True
@@ -83,6 +89,15 @@ async def send_message(
                 "new_inferences": [i.model_dump() for i in eval_result.new_inferences],
             }
             yield f"event: sidechannel\ndata: {json.dumps(sc_payload)}\n\n"
+
+        # Emit sidechannel for experience_update verdict
+        if eval_result.verdict == "experience_update":
+            exp_sc_payload: dict[str, object] = {
+                "type": "experience_update",
+                "turn_id": turn_id,
+                "experience_updates": [u.model_dump() for u in eval_result.experience_updates],
+            }
+            yield f"event: sidechannel\ndata: {json.dumps(exp_sc_payload)}\n\n"
 
         yield "event: done\ndata: {}\n\n"
 
