@@ -47,6 +47,7 @@ export function parseSSEBlocks(text) {
 // ---------------------------------------------------------------------------
 
 const _STATE_LABELS = {
+  extracting: 'Extracting facts from conversation…',
   generating: 'Generating response…',
   reviewing: 'Reviewing against facts…',
   regenerating: 'Regenerating (contradiction found)…',
@@ -95,6 +96,26 @@ export function buildNotificationFromSidechannel(payload) {
       turn_id: payload.turn_id,
       new_inferences: (payload.new_inferences || []).map(inf => ({ ...inf, _loading: false })),
       _loading: false,
+    };
+  }
+
+  if (payload.type === 'extraction_applied') {
+    return {
+      role: 'notification',
+      scType: 'extraction_applied',
+      turn_id: payload.turn_id,
+      added: (payload.added || []).map(f => ({ ...f })),
+      updated: (payload.updated || []).map(u => ({ ...u })),
+    };
+  }
+
+  if (payload.type === 'implicit_fact_proposed') {
+    return {
+      role: 'notification',
+      scType: 'implicit_fact_proposed',
+      turn_id: payload.turn_id,
+      new_proposals: (payload.new_proposals || []).map(p => ({ ...p, _loading: false })),
+      update_proposals: (payload.update_proposals || []).map(p => ({ ...p, _loading: false })),
     };
   }
 
@@ -436,4 +457,66 @@ export function removeContradictedExperiences(experiences, notification) {
     (notification.experience_updates || []).map(u => u.contradicted_experience_id),
   );
   return experiences.filter(e => !deletedIds.has(e.id));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 API helpers — extraction resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {number} sessionId
+ * @param {number} turnId
+ * @param {number} factId
+ * @param {string} restoreValue
+ * @returns {Promise<Response>}
+ */
+export function apiUndoUserFact(sessionId, turnId, factId, restoreValue) {
+  return fetch(`/api/sessions/${sessionId}/turns/${turnId}/undo-user-fact`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fact_id: factId, restore_value: restoreValue }),
+  });
+}
+
+/**
+ * @param {number} sessionId
+ * @param {number} turnId
+ * @param {string} key
+ * @param {string} value
+ * @param {string} category
+ * @param {string} mutability
+ * @param {number|null} [existingFactId]
+ * @returns {Promise<Response>}
+ */
+export function apiAcceptImplicitFact(sessionId, turnId, key, value, category, mutability, existingFactId = null) {
+  const body = { key, value, category, mutability };
+  if (existingFactId !== null) body.existing_fact_id = existingFactId;
+  return fetch(`/api/sessions/${sessionId}/turns/${turnId}/accept-implicit-fact`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * @param {number} sessionId
+ * @param {number} turnId
+ * @param {string} key
+ * @returns {Promise<Response>}
+ */
+export function apiIgnoreImplicitFact(sessionId, turnId, key) {
+  return fetch(`/api/sessions/${sessionId}/turns/${turnId}/ignore-implicit-fact`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }),
+  });
+}
+
+/**
+ * @param {number} characterId
+ * @param {number} factId
+ * @returns {Promise<Response>}
+ */
+export function apiDeleteFact(characterId, factId) {
+  return fetch(`/api/characters/${characterId}/facts/${factId}`, { method: 'DELETE' });
 }

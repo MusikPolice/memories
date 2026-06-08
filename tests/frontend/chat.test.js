@@ -25,6 +25,10 @@ import {
   buildScoreMap,
   buildProposalList,
   removeContradictedExperiences,
+  apiUndoUserFact,
+  apiAcceptImplicitFact,
+  apiIgnoreImplicitFact,
+  apiDeleteFact,
 } from '../../src/memories/frontend/chat.js';
 
 // ---------------------------------------------------------------------------
@@ -1070,5 +1074,194 @@ describe('removeContradictedExperiences', () => {
     const notif = { scType: 'experience_update', experience_updates: [] };
     const result = removeContradictedExperiences(experiences, notif);
     expect(result).not.toBe(experiences);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6 — sseStateToLabel for extracting state (tests 66-67)
+// ---------------------------------------------------------------------------
+
+describe('Phase 6 sseStateToLabel — extracting state', () => {
+  it('sseStateToLabel_extracting_returns_non_empty_string', () => {
+    const label = sseStateToLabel('extracting');
+    expect(label).not.toBe('');
+  });
+
+  it('sseStateToLabel_extracting_differs_from_generating', () => {
+    const label = sseStateToLabel('extracting');
+    expect(label).not.toBe(sseStateToLabel('generating'));
+    expect(label).not.toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6 — buildNotificationFromSidechannel for extraction_applied (tests 68-73)
+// ---------------------------------------------------------------------------
+
+describe('Phase 6 buildNotificationFromSidechannel — extraction_applied', () => {
+  const _payload = {
+    type: 'extraction_applied',
+    turn_id: 2,
+    added: [{ key: 'location', value: 'Chicago', category: 'setting', fact_id: 10 }],
+    updated: [{ fact_id: 5, key: 'home_city', old_value: 'Reykjavik', new_value: 'Chicago' }],
+  };
+
+  it('buildNotificationFromSidechannel_handles_extraction_applied', () => {
+    const notif = buildNotificationFromSidechannel(_payload);
+    expect(notif).not.toBeNull();
+  });
+
+  it('buildNotificationFromSidechannel_extraction_applied_scType', () => {
+    const notif = buildNotificationFromSidechannel(_payload);
+    expect(notif.scType).toBe('extraction_applied');
+  });
+
+  it('buildNotificationFromSidechannel_extraction_applied_includes_added', () => {
+    const notif = buildNotificationFromSidechannel(_payload);
+    expect(Array.isArray(notif.added)).toBe(true);
+  });
+
+  it('buildNotificationFromSidechannel_extraction_applied_includes_updated', () => {
+    const notif = buildNotificationFromSidechannel(_payload);
+    expect(Array.isArray(notif.updated)).toBe(true);
+  });
+
+  it('buildNotificationFromSidechannel_extraction_applied_updated_entry_has_old_and_new_value', () => {
+    const notif = buildNotificationFromSidechannel(_payload);
+    expect(notif.updated[0].old_value).toBe('Reykjavik');
+    expect(notif.updated[0].new_value).toBe('Chicago');
+  });
+
+  it('buildNotificationFromSidechannel_extraction_applied_updated_entry_has_fact_id', () => {
+    const notif = buildNotificationFromSidechannel(_payload);
+    expect(notif.updated[0].fact_id).toBe(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6 — buildNotificationFromSidechannel for implicit_fact_proposed (tests 74-79)
+// ---------------------------------------------------------------------------
+
+describe('Phase 6 buildNotificationFromSidechannel — implicit_fact_proposed', () => {
+  const _payload = {
+    type: 'implicit_fact_proposed',
+    turn_id: 3,
+    new_proposals: [
+      { key: 'mood', value: 'anxious', category: 'user', mutability: 'high', source_quote: 'feeling off' },
+    ],
+    update_proposals: [
+      { existing_fact_id: 2, key: 'home_city', old_value: 'Reykjavik', value: 'Chicago', source_quote: 'just got home in Chicago' },
+    ],
+  };
+
+  it('buildNotificationFromSidechannel_handles_implicit_fact_proposed', () => {
+    const notif = buildNotificationFromSidechannel(_payload);
+    expect(notif).not.toBeNull();
+  });
+
+  it('buildNotificationFromSidechannel_implicit_fact_proposed_scType', () => {
+    const notif = buildNotificationFromSidechannel(_payload);
+    expect(notif.scType).toBe('implicit_fact_proposed');
+  });
+
+  it('buildNotificationFromSidechannel_implicit_fact_proposed_includes_new_proposals', () => {
+    const notif = buildNotificationFromSidechannel(_payload);
+    expect(Array.isArray(notif.new_proposals)).toBe(true);
+  });
+
+  it('buildNotificationFromSidechannel_implicit_fact_proposed_includes_update_proposals', () => {
+    const notif = buildNotificationFromSidechannel(_payload);
+    expect(Array.isArray(notif.update_proposals)).toBe(true);
+  });
+
+  it('buildNotificationFromSidechannel_implicit_update_proposal_has_old_value', () => {
+    const notif = buildNotificationFromSidechannel(_payload);
+    expect(notif.update_proposals[0].old_value).toBe('Reykjavik');
+  });
+
+  it('buildNotificationFromSidechannel_implicit_update_proposal_has_existing_fact_id', () => {
+    const notif = buildNotificationFromSidechannel(_payload);
+    expect(notif.update_proposals[0].existing_fact_id).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6 API helpers — undo, accept, ignore, delete (tests 80-88)
+// ---------------------------------------------------------------------------
+
+describe('Phase 6 API helpers', () => {
+  beforeEach(() => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true });
+  });
+
+  it('apiUndoUserFact_posts_to_correct_url', async () => {
+    await apiUndoUserFact(5, 3, 42, 'Oslo');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/5/turns/3/undo-user-fact',
+      expect.objectContaining({ method: 'POST' })
+    );
+  });
+
+  it('apiUndoUserFact_sends_fact_id_and_restore_value', async () => {
+    await apiUndoUserFact(5, 3, 42, 'Oslo');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.fact_id).toBe(42);
+    expect(body.restore_value).toBe('Oslo');
+  });
+
+  it('apiAcceptImplicitFact_posts_to_correct_url', async () => {
+    await apiAcceptImplicitFact(5, 3, 'mood', 'anxious', 'user', 'high');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/5/turns/3/accept-implicit-fact',
+      expect.objectContaining({ method: 'POST' })
+    );
+  });
+
+  it('apiAcceptImplicitFact_sends_proposal_data_in_body', async () => {
+    await apiAcceptImplicitFact(5, 3, 'mood', 'anxious', 'user', 'high');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.key).toBe('mood');
+    expect(body.value).toBe('anxious');
+    expect(body.category).toBe('user');
+    expect(body.mutability).toBe('high');
+  });
+
+  it('apiAcceptImplicitFact_sends_existing_fact_id_when_tier4', async () => {
+    await apiAcceptImplicitFact(5, 3, 'home_city', 'Chicago', 'user', 'low', 2);
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.existing_fact_id).toBe(2);
+  });
+
+  it('apiAcceptImplicitFact_omits_existing_fact_id_when_tier3', async () => {
+    await apiAcceptImplicitFact(5, 3, 'mood', 'anxious', 'user', 'high', null);
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body).not.toHaveProperty('existing_fact_id');
+  });
+
+  it('apiIgnoreImplicitFact_posts_to_correct_url', async () => {
+    await apiIgnoreImplicitFact(5, 3, 'mood');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/5/turns/3/ignore-implicit-fact',
+      expect.objectContaining({ method: 'POST' })
+    );
+  });
+
+  it('apiIgnoreImplicitFact_sends_key_in_body', async () => {
+    await apiIgnoreImplicitFact(5, 3, 'mood');
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.key).toBe('mood');
+  });
+
+  it('apiDeleteFact_sends_delete_to_correct_url', async () => {
+    await apiDeleteFact(7, 42);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/characters/7/facts/42',
+      expect.objectContaining({ method: 'DELETE' })
+    );
   });
 });

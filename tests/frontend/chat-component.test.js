@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { ChatComponent } from '../../src/memories/frontend/chat-component.js';
+import { sseStateToLabel } from '../../src/memories/frontend/chat.js';
 
 // Vue emits onMounted/onUnmounted warnings when setup() is called outside a component tree.
 // This is intentional — we test the setup() function directly without mounting.
@@ -618,5 +619,176 @@ describe('ignoreImplication', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
     await vm.ignoreImplication(notif, violation);
     expect(vm.messages.value.find(m => m === notif)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6 — SSE extraction events and done event refresh (tests 89-97)
+// ---------------------------------------------------------------------------
+
+describe('Phase 6 SSE extraction events', () => {
+  let vm;
+
+  beforeEach(() => { vm = setupComponent(); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  function mockMessages(sseBlocks) {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url) => {
+      if (url && url.includes('/messages')) return makeStreamResponse(sseBlocks);
+      return { ok: true, json: async () => [] };
+    }));
+  }
+
+  it('sse_status_extracting_sets_loading_state', async () => {
+    vm.inputText.value = 'hello';
+    mockMessages([
+      'event: status\ndata: {"state":"extracting"}',
+      'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
+      'event: done\ndata: {}',
+    ]);
+    await vm.sendMessage();
+    expect(sseStateToLabel('extracting')).not.toBe('');
+  });
+
+  it('sse_status_extracting_does_not_show_thinking_indicator', async () => {
+    vm.inputText.value = 'hello';
+    mockMessages([
+      'event: status\ndata: {"state":"extracting"}',
+      'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
+      'event: done\ndata: {}',
+    ]);
+    await vm.sendMessage();
+    const thinkingEntries = vm.messages.value.filter(m => m.role === 'thinking');
+    expect(thinkingEntries).toHaveLength(0);
+    expect(sseStateToLabel('extracting')).not.toBe('');
+  });
+
+  it('sse_extraction_applied_sidechannel_adds_notification', async () => {
+    vm.inputText.value = 'hello';
+    mockMessages([
+      'event: sidechannel\ndata: ' + JSON.stringify({
+        type: 'extraction_applied', turn_id: 1,
+        added: [{ key: 'location', value: 'Chicago', category: 'setting', fact_id: 10 }],
+        updated: [],
+      }),
+      'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
+      'event: done\ndata: {}',
+    ]);
+    await vm.sendMessage();
+    const notif = vm.messages.value.find(m => m.scType === 'extraction_applied');
+    expect(notif).toBeDefined();
+  });
+
+  it('sse_extraction_applied_notification_has_correct_scType', async () => {
+    vm.inputText.value = 'hello';
+    mockMessages([
+      'event: sidechannel\ndata: ' + JSON.stringify({
+        type: 'extraction_applied', turn_id: 1,
+        added: [{ key: 'location', value: 'Chicago', category: 'setting', fact_id: 10 }],
+        updated: [],
+      }),
+      'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
+      'event: done\ndata: {}',
+    ]);
+    await vm.sendMessage();
+    const notif = vm.messages.value.find(m => m.scType === 'extraction_applied');
+    expect(notif?.scType).toBe('extraction_applied');
+  });
+
+  it('sse_implicit_fact_proposed_sidechannel_adds_notification', async () => {
+    vm.inputText.value = 'hello';
+    mockMessages([
+      'event: sidechannel\ndata: ' + JSON.stringify({
+        type: 'implicit_fact_proposed', turn_id: 1,
+        new_proposals: [{ key: 'mood', value: 'anxious', category: 'user', mutability: 'high', source_quote: 'feeling off' }],
+        update_proposals: [],
+      }),
+      'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
+      'event: done\ndata: {}',
+    ]);
+    await vm.sendMessage();
+    const notif = vm.messages.value.find(m => m.scType === 'implicit_fact_proposed');
+    expect(notif).toBeDefined();
+  });
+
+  it('sse_implicit_fact_proposed_notification_has_correct_scType', async () => {
+    vm.inputText.value = 'hello';
+    mockMessages([
+      'event: sidechannel\ndata: ' + JSON.stringify({
+        type: 'implicit_fact_proposed', turn_id: 1,
+        new_proposals: [{ key: 'mood', value: 'anxious', category: 'user', mutability: 'high', source_quote: 'feeling off' }],
+        update_proposals: [],
+      }),
+      'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
+      'event: done\ndata: {}',
+    ]);
+    await vm.sendMessage();
+    const notif = vm.messages.value.find(m => m.scType === 'implicit_fact_proposed');
+    expect(notif?.scType).toBe('implicit_fact_proposed');
+  });
+
+  it('sse_both_sidechannel_types_in_same_turn_produce_two_notifications', async () => {
+    vm.inputText.value = 'hello';
+    mockMessages([
+      'event: sidechannel\ndata: ' + JSON.stringify({
+        type: 'extraction_applied', turn_id: 1,
+        added: [],
+        updated: [{ fact_id: 5, key: 'home_city', old_value: 'Reykjavik', new_value: 'Chicago' }],
+      }),
+      'event: sidechannel\ndata: ' + JSON.stringify({
+        type: 'implicit_fact_proposed', turn_id: 1,
+        new_proposals: [{ key: 'mood', value: 'anxious', category: 'user', mutability: 'high', source_quote: 'feeling off' }],
+        update_proposals: [],
+      }),
+      'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
+      'event: done\ndata: {}',
+    ]);
+    await vm.sendMessage();
+    const extractionNotifs = vm.messages.value.filter(
+      m => m.scType === 'extraction_applied' || m.scType === 'implicit_fact_proposed'
+    );
+    expect(extractionNotifs).toHaveLength(2);
+  });
+
+  it('sse_done_event_triggers_fact_list_refresh', async () => {
+    vm.currentCharacter.value = { id: 7, name: 'Alice' };
+    vm.sessionId.value = 3;
+    let factsRefreshed = false;
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url) => {
+      if (url && url.includes('/messages')) {
+        return makeStreamResponse([
+          'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
+          'event: done\ndata: {}',
+        ]);
+      }
+      if (url && url.includes('/facts')) { factsRefreshed = true; }
+      return { ok: true, json: async () => [] };
+    }));
+    vm.inputText.value = 'hello';
+    await vm.sendMessage();
+    expect(factsRefreshed).toBe(true);
+  });
+
+  it('sse_no_extraction_notifications_when_extraction_empty', async () => {
+    vm.currentCharacter.value = { id: 7, name: 'Alice' };
+    vm.sessionId.value = 3;
+    let factsRefreshed = false;
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url) => {
+      if (url && url.includes('/messages')) {
+        return makeStreamResponse([
+          'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
+          'event: done\ndata: {}',
+        ]);
+      }
+      if (url && url.includes('/facts')) { factsRefreshed = true; }
+      return { ok: true, json: async () => [] };
+    }));
+    vm.inputText.value = 'hello';
+    await vm.sendMessage();
+    const extractionNotifs = vm.messages.value.filter(
+      m => m.scType === 'extraction_applied' || m.scType === 'implicit_fact_proposed'
+    );
+    expect(extractionNotifs).toHaveLength(0);
+    expect(factsRefreshed).toBe(true);
   });
 });

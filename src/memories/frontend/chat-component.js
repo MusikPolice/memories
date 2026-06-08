@@ -478,6 +478,9 @@ export const ChatComponent = {
                 messages.value.push(notif);
                 await scrollToBottom();
               }
+
+            } else if (eventName === 'done') {
+              if (currentCharacter.value) await loadFacts();
             }
           }
         }

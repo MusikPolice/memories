@@ -1154,3 +1154,314 @@ async def test_run_turn_returns_five_tuple_with_scores_dict(
     assert len(result) == 5
     *_, scores = result
     assert isinstance(scores, dict)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 additions — fact extraction pre-turn hook
+# ---------------------------------------------------------------------------
+
+
+async def test_run_turn_calls_extractor_before_character_llm(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """Extractor Ollama call precedes character Ollama call (respx call order)."""
+    from tests.unit.conftest import make_extractor_ndjson
+
+    with respx.mock:
+        route = respx.post(_CHAT_URL).mock(
+            side_effect=[
+                httpx.Response(200, content=make_extractor_ndjson()),  # extractor (call 0)
+                _mock_ok("I hear you."),  # character (call 1)
+                _mock_eval("pass"),  # evaluator (call 2)
+            ]
+        )
+        await run_turn(db, session.id, "Hello", ollama)
+
+    # Phase 6: extractor + character + evaluator = 3 calls
+    assert len(route.calls) == 3
+
+
+async def test_run_turn_auto_adds_tier1_facts(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """new_facts in extractor result → create_fact called for each before character call."""
+    from tests.unit.conftest import make_extractor_ndjson
+
+    new_fact = {
+        "key": "meeting_location",
+        "value": "Chicago",
+        "category": "setting",
+        "mutability": "low",
+        "source_quote": "We're meeting in Chicago",
+    }
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                httpx.Response(200, content=make_extractor_ndjson(new_facts=[new_fact])),
+                _mock_ok("See you in Chicago."),
+                _mock_eval("pass"),
+            ]
+        )
+        await run_turn(db, session.id, "We're meeting in Chicago!", ollama)
+
+    from memories.database import get_facts
+
+    facts = await get_facts(db, character.id)
+    assert any(f.key == "meeting_location" and f.value == "Chicago" for f in facts)
+
+
+async def test_run_turn_auto_updates_tier2_facts(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """fact_updates in extractor result → update_fact called for each before character call."""
+    from memories.database import create_fact, get_facts
+    from tests.unit.conftest import make_extractor_ndjson
+
+    existing = await create_fact(db, character_id=character.id, key="home_city", value="Reykjavik")
+    update = {
+        "fact_id": existing.id,
+        "key": "home_city",
+        "old_value": "Reykjavik",
+        "new_value": "Chicago",
+        "source_quote": "I moved to Chicago",
+    }
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                httpx.Response(200, content=make_extractor_ndjson(fact_updates=[update])),
+                _mock_ok("Chicago is a great city."),
+                _mock_eval("pass"),
+            ]
+        )
+        await run_turn(db, session.id, "I moved to Chicago last month.", ollama)
+
+    facts = await get_facts(db, character.id)
+    updated = next(f for f in facts if f.key == "home_city")
+    assert updated.value == "Chicago"
+
+
+async def test_run_turn_does_not_write_implicit_proposals_to_db(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """implicit_proposals in extractor result → no create_fact or update_fact called for them."""
+    from memories.database import get_facts
+    from memories.services.extraction_service import ExtractionResult
+    from tests.unit.conftest import make_extractor_ndjson
+
+    proposal = {
+        "key": "mood",
+        "value": "anxious",
+        "category": "user",
+        "mutability": "high",
+        "source_quote": "feeling off all week",
+    }
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                httpx.Response(200, content=make_extractor_ndjson(implicit_proposals=[proposal])),
+                _mock_ok("I can hear some tension in your voice."),
+                _mock_eval("pass"),
+            ]
+        )
+        result = await run_turn(db, session.id, "I've been feeling off.", ollama)
+
+    facts = await get_facts(db, character.id)
+    assert not any(f.key == "mood" for f in facts)
+    # The ExtractionResult in the return value should carry the proposals
+    assert isinstance(result[-1], ExtractionResult)
+
+
+async def test_run_turn_passes_tier1_and_tier2_facts_to_character(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """Character system prompt includes extracted/updated fact values."""
+    from tests.unit.conftest import make_extractor_ndjson
+
+    new_fact = {
+        "key": "meeting_location",
+        "value": "Chicago",
+        "category": "setting",
+        "mutability": "low",
+        "source_quote": "We're in Chicago",
+    }
+    with respx.mock:
+        route = respx.post(_CHAT_URL).mock(
+            side_effect=[
+                httpx.Response(200, content=make_extractor_ndjson(new_facts=[new_fact])),
+                _mock_ok("See you in Chicago."),
+                _mock_eval("pass"),
+            ]
+        )
+        await run_turn(db, session.id, "We're in Chicago!", ollama)
+
+    # calls[1] is the character LLM call after extraction
+    assert len(route.calls) == 3
+    char_body = json.loads(route.calls[1].request.content)
+    system_content: str = char_body["messages"][0]["content"]
+    assert "Chicago" in system_content
+
+
+async def test_run_turn_character_prompt_does_not_include_implicit_proposals(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """System prompt does not contain proposed-but-unconfirmed values from implicit_proposals."""
+    from memories.services.extraction_service import ExtractionResult
+    from tests.unit.conftest import make_extractor_ndjson
+
+    proposal = {
+        "key": "current_feeling",
+        "value": "very anxious",
+        "category": "user",
+        "mutability": "high",
+        "source_quote": "anxious",
+    }
+    with respx.mock:
+        route = respx.post(_CHAT_URL).mock(
+            side_effect=[
+                httpx.Response(200, content=make_extractor_ndjson(implicit_proposals=[proposal])),
+                _mock_ok("Take it easy."),
+                _mock_eval("pass"),
+            ]
+        )
+        result = await run_turn(db, session.id, "Feeling anxious today.", ollama)
+
+    assert len(route.calls) == 3
+    char_body = json.loads(route.calls[1].request.content)
+    system_content: str = char_body["messages"][0]["content"]
+    assert "very anxious" not in system_content
+    # ExtractionResult should carry the unwritten proposals
+    assert isinstance(result[-1], ExtractionResult)
+    assert len(result[-1].implicit_proposals) == 1
+
+
+async def test_run_turn_returns_extraction_result(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """run_turn return value includes the full ExtractionResult."""
+    from memories.services.extraction_service import ExtractionResult
+    from tests.unit.conftest import make_extractor_ndjson
+
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                httpx.Response(200, content=make_extractor_ndjson()),
+                _mock_ok("Hello."),
+                _mock_eval("pass"),
+            ]
+        )
+        result = await run_turn(db, session.id, "Hello", ollama)
+
+    assert isinstance(result[-1], ExtractionResult)
+
+
+async def test_run_turn_on_extraction_failure_continues_with_empty_result(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """ExtractionParseError → turn completes; extraction result is empty."""
+    from memories.services.extraction_service import ExtractionResult
+
+    # First response is invalid JSON (triggers ExtractionParseError in extractor)
+    invalid_extractor = make_ollama_ndjson("not valid extraction json")
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                httpx.Response(200, content=invalid_extractor),
+                _mock_ok("Still responding."),
+                _mock_eval("pass"),
+            ]
+        )
+        result = await run_turn(db, session.id, "Hello", ollama)
+
+    assert isinstance(result[-1], ExtractionResult)
+    extraction = result[-1]
+    assert extraction.new_facts == []
+    assert extraction.fact_updates == []
+    assert extraction.implicit_proposals == []
+
+
+async def test_run_turn_on_ollama_connection_error_during_extraction_continues(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """Ollama connection failure during extraction → turn continues; warning logged."""
+    from memories.services.extraction_service import ExtractionResult
+
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                httpx.ConnectError("connection refused"),  # extraction fails
+                _mock_ok("Still responding."),
+                _mock_eval("pass"),
+            ]
+        )
+        # Phase 6: extraction failure is non-fatal; character call proceeds
+        result = await run_turn(db, session.id, "Hello", ollama)
+
+    assert isinstance(result[-1], ExtractionResult)
+    assert result[-1].new_facts == []
+
+
+async def test_run_turn_deduplicates_tier1_facts_that_already_exist(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """Extractor proposes a new fact with existing key/category → IntegrityError caught silently."""
+    from memories.database import create_fact, get_facts
+    from tests.unit.conftest import make_extractor_ndjson
+
+    # Pre-existing fact with same key
+    await create_fact(db, character_id=character.id, key="occupation", value="surgeon")
+
+    duplicate = {
+        "key": "occupation",
+        "value": "retired surgeon",
+        "category": "character",
+        "mutability": "immutable",
+        "source_quote": "I used to be a surgeon",
+    }
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                httpx.Response(200, content=make_extractor_ndjson(new_facts=[duplicate])),
+                _mock_ok("Yes, I was."),
+                _mock_eval("pass"),
+            ]
+        )
+        # Should not raise; IntegrityError on the duplicate should be swallowed
+        result = await run_turn(db, session.id, "Were you a surgeon?", ollama)
+
+    from memories.services.extraction_service import ExtractionResult
+
+    facts = await get_facts(db, character.id)
+    # Original fact must still be there; duplicate (different value) was suppressed
+    occupation_facts = [f for f in facts if f.key == "occupation"]
+    assert len(occupation_facts) == 1
+    # Phase 6: result must include ExtractionResult (fails before implementation)
+    assert isinstance(result[-1], ExtractionResult)
+
+
+async def test_run_turn_empty_extraction_result_does_not_change_facts(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """All three extraction lists empty → no fact writes; turn proceeds normally."""
+    from memories.database import create_fact, get_facts
+    from memories.services.extraction_service import ExtractionResult
+    from tests.unit.conftest import make_extractor_ndjson
+
+    await create_fact(db, character_id=character.id, key="occupation", value="surgeon")
+
+    with respx.mock:
+        route = respx.post(_CHAT_URL).mock(
+            side_effect=[
+                httpx.Response(200, content=make_extractor_ndjson()),  # empty extraction
+                _mock_ok("Hello."),
+                _mock_eval("pass"),
+            ]
+        )
+        result = await run_turn(db, session.id, "Hello", ollama)
+
+    # Extraction call happened (3 total calls)
+    assert len(route.calls) == 3
+    facts = await get_facts(db, character.id)
+    assert len(facts) == 1
+    assert facts[0].key == "occupation"
+    assert isinstance(result[-1], ExtractionResult)
+    assert result[-1].new_facts == []

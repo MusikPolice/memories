@@ -76,6 +76,25 @@ def make_evaluator_ndjson(
     return make_ollama_ndjson(json.dumps(data))
 
 
+def make_extractor_ndjson(
+    new_facts: list[dict[str, Any]] | None = None,
+    fact_updates: list[dict[str, Any]] | None = None,
+    implicit_proposals: list[dict[str, Any]] | None = None,
+) -> bytes:
+    """Build a minimal Ollama NDJSON body whose content is a fact-extractor JSON result.
+
+    Use this to mock the first Ollama call (extractor) in any Phase 6 test that
+    exercises ``run_turn``.  The returned bytes can be passed to
+    ``httpx.Response(200, content=...)``.
+    """
+    data: dict[str, Any] = {
+        "new_facts": new_facts or [],
+        "fact_updates": fact_updates or [],
+        "implicit_proposals": implicit_proposals or [],
+    }
+    return make_ollama_ndjson(json.dumps(data))
+
+
 def make_embed_response(vec: list[float] | None = None) -> bytes:
     """Build a minimal Ollama embed API JSON response body."""
     if vec is None:

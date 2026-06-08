@@ -1415,3 +1415,553 @@ async def test_accept_implication_on_high_mutability_fact_preserves_mutability(
     mood_fact = next((f for f in facts if f.key == "mood"), None)
     assert mood_fact is not None
     assert mood_fact.mutability == "high"
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 additions — fact extraction SSE events and DB writes
+# ---------------------------------------------------------------------------
+
+
+def _mock_extraction_turn(
+    new_facts: list[dict] | None = None,
+    fact_updates: list[dict] | None = None,
+    implicit_proposals: list[dict] | None = None,
+    character_content: str = "I hear you.",
+    evaluator_verdict: str = "pass",
+    evaluator_violations: list[dict] | None = None,
+) -> list[httpx.Response]:
+    """Return side_effect list for a Phase 6 turn: extractor + character + evaluator."""
+    from tests.unit.conftest import make_extractor_ndjson
+
+    return [
+        httpx.Response(
+            200,
+            content=make_extractor_ndjson(
+                new_facts=new_facts,
+                fact_updates=fact_updates,
+                implicit_proposals=implicit_proposals,
+            ),
+        ),
+        _mock_ok(character_content),
+        _mock_eval(evaluator_verdict, violations=evaluator_violations),
+    ]
+
+
+async def test_turn_tier1_fact_added_to_db(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """Extractor returns a new_fact; after turn, GET /facts includes it."""
+    new_fact = {
+        "key": "meeting_city",
+        "value": "Chicago",
+        "category": "setting",
+        "mutability": "low",
+        "source_quote": "We're meeting in Chicago",
+    }
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_extraction_turn(new_facts=[new_fact]))
+        await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "We're meeting in Chicago."},
+        )
+
+    facts = await get_facts(db, character.id)
+    assert any(f.key == "meeting_city" and f.value == "Chicago" for f in facts)
+
+
+async def test_turn_tier1_fact_in_character_prompt(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """Character system prompt includes the Tier 1 auto-added fact."""
+    new_fact = {
+        "key": "meeting_city",
+        "value": "Chicago",
+        "category": "setting",
+        "mutability": "low",
+        "source_quote": "We're meeting in Chicago",
+    }
+    with respx.mock:
+        route = respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=_mock_extraction_turn(new_facts=[new_fact])
+        )
+        await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "We're meeting in Chicago."},
+        )
+
+    # calls[1] is the character LLM call (after extraction at calls[0])
+    assert len(route.calls) == 3
+    char_body = json.loads(route.calls[1].request.content)
+    system_content = char_body["messages"][0]["content"]
+    assert "Chicago" in system_content
+
+
+async def test_turn_tier2_update_overwrites_fact_in_db(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """Extractor returns a fact_update; after turn, GET /facts shows updated value."""
+    existing = await create_fact(db, character_id=character.id, key="home_city", value="Reykjavik")
+    update = {
+        "fact_id": existing.id,
+        "key": "home_city",
+        "old_value": "Reykjavik",
+        "new_value": "Chicago",
+        "source_quote": "I moved to Chicago",
+    }
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_extraction_turn(fact_updates=[update]))
+        await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "I moved to Chicago last month."},
+        )
+
+    facts = await get_facts(db, character.id)
+    home = next(f for f in facts if f.key == "home_city")
+    assert home.value == "Chicago"
+
+
+async def test_turn_tier2_character_prompt_uses_new_value(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """Character system prompt includes the Tier 2 updated value, not the old one."""
+    existing = await create_fact(db, character_id=character.id, key="home_city", value="Reykjavik")
+    update = {
+        "fact_id": existing.id,
+        "key": "home_city",
+        "old_value": "Reykjavik",
+        "new_value": "Chicago",
+        "source_quote": "I moved to Chicago",
+    }
+    with respx.mock:
+        route = respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=_mock_extraction_turn(fact_updates=[update])
+        )
+        await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "I moved to Chicago."},
+        )
+
+    assert len(route.calls) == 3
+    char_body = json.loads(route.calls[1].request.content)
+    system_content = char_body["messages"][0]["content"]
+    assert "Chicago" in system_content
+    assert "Reykjavik" not in system_content
+
+
+async def test_turn_tier3_proposal_not_written_to_db(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """Extractor returns implicit new proposal; after turn, GET /facts does not include it."""
+    proposal = {
+        "key": "current_mood",
+        "value": "anxious",
+        "category": "user",
+        "mutability": "high",
+        "source_quote": "feeling off",
+    }
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=_mock_extraction_turn(implicit_proposals=[proposal])
+        )
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "I've been feeling off."},
+        )
+
+    facts = await get_facts(db, character.id)
+    assert not any(f.key == "current_mood" for f in facts)
+    # The implicit_fact_proposed sidechannel event should be present (fails before Phase 6)
+    events = _parse_sse(response.text)
+    implicit_events = [
+        e
+        for e in events
+        if e.get("event") == "sidechannel"
+        and json.loads(e.get("data", "{}")).get("type") == "implicit_fact_proposed"
+    ]
+    assert len(implicit_events) > 0
+
+
+async def test_turn_tier4_proposal_does_not_overwrite_existing_fact(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """Extractor returns implicit update proposal; after turn, GET /facts still shows old value."""
+    existing = await create_fact(db, character_id=character.id, key="home_city", value="Reykjavik")
+    proposal = {
+        "key": "home_city",
+        "value": "Chicago",
+        "category": "user",
+        "mutability": "low",
+        "source_quote": "just got home here",
+        "existing_fact_id": existing.id,
+        "old_value": "Reykjavik",
+    }
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=_mock_extraction_turn(implicit_proposals=[proposal])
+        )
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "Just got home."},
+        )
+
+    facts = await get_facts(db, character.id)
+    home = next(f for f in facts if f.key == "home_city")
+    assert home.value == "Reykjavik"
+    # The implicit_fact_proposed sidechannel event should be present (fails before Phase 6)
+    events = _parse_sse(response.text)
+    implicit_events = [
+        e
+        for e in events
+        if e.get("event") == "sidechannel"
+        and json.loads(e.get("data", "{}")).get("type") == "implicit_fact_proposed"
+    ]
+    assert len(implicit_events) > 0
+
+
+async def test_turn_emits_extraction_applied_when_tier1_or_tier2_present(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """SSE stream includes sidechannel event with type: extraction_applied."""
+    new_fact = {
+        "key": "location",
+        "value": "Chicago",
+        "category": "setting",
+        "mutability": "low",
+        "source_quote": "We're in Chicago",
+    }
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_extraction_turn(new_facts=[new_fact]))
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "We're in Chicago."},
+        )
+
+    events = _parse_sse(response.text)
+    extraction_events = [
+        e
+        for e in events
+        if e.get("event") == "sidechannel"
+        and json.loads(e.get("data", "{}")).get("type") == "extraction_applied"
+    ]
+    assert len(extraction_events) == 1
+
+
+async def test_turn_extraction_applied_added_list_has_key_and_fact_id(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """extraction_applied payload added list contains key and fact_id."""
+    new_fact = {
+        "key": "location",
+        "value": "Chicago",
+        "category": "setting",
+        "mutability": "low",
+        "source_quote": "We're in Chicago",
+    }
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_extraction_turn(new_facts=[new_fact]))
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "We're in Chicago."},
+        )
+
+    events = _parse_sse(response.text)
+    sc = next(
+        e
+        for e in events
+        if e.get("event") == "sidechannel"
+        and json.loads(e.get("data", "{}")).get("type") == "extraction_applied"
+    )
+    payload = json.loads(sc["data"])
+    assert len(payload["added"]) == 1
+    assert payload["added"][0]["key"] == "location"
+    assert "fact_id" in payload["added"][0]
+
+
+async def test_turn_extraction_applied_updated_list_has_old_and_new_values(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """extraction_applied payload updated list has old_value and new_value."""
+    existing = await create_fact(db, character_id=character.id, key="home_city", value="Reykjavik")
+    update = {
+        "fact_id": existing.id,
+        "key": "home_city",
+        "old_value": "Reykjavik",
+        "new_value": "Chicago",
+        "source_quote": "I moved to Chicago",
+    }
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_extraction_turn(fact_updates=[update]))
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "I moved to Chicago."},
+        )
+
+    events = _parse_sse(response.text)
+    sc = next(
+        e
+        for e in events
+        if e.get("event") == "sidechannel"
+        and json.loads(e.get("data", "{}")).get("type") == "extraction_applied"
+    )
+    payload = json.loads(sc["data"])
+    assert len(payload["updated"]) == 1
+    assert payload["updated"][0]["old_value"] == "Reykjavik"
+    assert payload["updated"][0]["new_value"] == "Chicago"
+
+
+async def test_turn_emits_implicit_fact_proposed_when_implicit_proposals_present(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """SSE stream includes sidechannel event with type: implicit_fact_proposed."""
+    proposal = {
+        "key": "mood",
+        "value": "anxious",
+        "category": "user",
+        "mutability": "high",
+        "source_quote": "feeling off all week",
+    }
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=_mock_extraction_turn(implicit_proposals=[proposal])
+        )
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "I've been feeling off."},
+        )
+
+    events = _parse_sse(response.text)
+    implicit_events = [
+        e
+        for e in events
+        if e.get("event") == "sidechannel"
+        and json.loads(e.get("data", "{}")).get("type") == "implicit_fact_proposed"
+    ]
+    assert len(implicit_events) == 1
+
+
+async def test_turn_implicit_fact_proposed_new_proposals_list_populated(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """implicit_fact_proposed payload new_proposals list is populated for Tier 3."""
+    proposal = {
+        "key": "mood",
+        "value": "anxious",
+        "category": "user",
+        "mutability": "high",
+        "source_quote": "feeling off all week",
+    }
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=_mock_extraction_turn(implicit_proposals=[proposal])
+        )
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "I've been feeling off."},
+        )
+
+    events = _parse_sse(response.text)
+    sc = next(
+        e
+        for e in events
+        if e.get("event") == "sidechannel"
+        and json.loads(e.get("data", "{}")).get("type") == "implicit_fact_proposed"
+    )
+    payload = json.loads(sc["data"])
+    assert len(payload["new_proposals"]) == 1
+    assert payload["new_proposals"][0]["key"] == "mood"
+
+
+async def test_turn_implicit_fact_proposed_update_proposals_has_old_value(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """implicit_fact_proposed payload update_proposals has old_value for Tier 4."""
+    existing = await create_fact(db, character_id=character.id, key="home_city", value="Reykjavik")
+    proposal = {
+        "key": "home_city",
+        "value": "Chicago",
+        "category": "user",
+        "mutability": "low",
+        "source_quote": "just got home here",
+        "existing_fact_id": existing.id,
+        "old_value": "Reykjavik",
+    }
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=_mock_extraction_turn(implicit_proposals=[proposal])
+        )
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "Just got home."},
+        )
+
+    events = _parse_sse(response.text)
+    sc = next(
+        e
+        for e in events
+        if e.get("event") == "sidechannel"
+        and json.loads(e.get("data", "{}")).get("type") == "implicit_fact_proposed"
+    )
+    payload = json.loads(sc["data"])
+    assert len(payload["update_proposals"]) == 1
+    assert payload["update_proposals"][0]["old_value"] == "Reykjavik"
+
+
+async def test_turn_both_sidechannel_events_emitted_in_same_turn(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """A turn producing both Tier 2 and Tier 3 results emits both sidechannel events."""
+    existing = await create_fact(db, character_id=character.id, key="home_city", value="Reykjavik")
+    update = {
+        "fact_id": existing.id,
+        "key": "home_city",
+        "old_value": "Reykjavik",
+        "new_value": "Chicago",
+        "source_quote": "I moved to Chicago",
+    }
+    proposal = {
+        "key": "mood",
+        "value": "excited",
+        "category": "user",
+        "mutability": "high",
+        "source_quote": "feeling excited",
+    }
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=_mock_extraction_turn(fact_updates=[update], implicit_proposals=[proposal])
+        )
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "I moved to Chicago and I'm excited!"},
+        )
+
+    events = _parse_sse(response.text)
+    sc_types = {
+        json.loads(e.get("data", "{}")).get("type")
+        for e in events
+        if e.get("event") == "sidechannel"
+    }
+    assert "extraction_applied" in sc_types
+    assert "implicit_fact_proposed" in sc_types
+
+
+async def test_turn_no_sidechannel_when_extraction_empty(
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """Extractor returns empty result; no extraction sidechannel events."""
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=_mock_extraction_turn()  # all lists empty
+        )
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "Hello."},
+        )
+
+    events = _parse_sse(response.text)
+    extraction_sc = [
+        e
+        for e in events
+        if e.get("event") == "sidechannel"
+        and json.loads(e.get("data", "{}")).get("type")
+        in ("extraction_applied", "implicit_fact_proposed")
+    ]
+    assert len(extraction_sc) == 0
+    # The turn should still complete with 3 Ollama calls (fails before Phase 6)
+    # We can't inspect route.calls here, but we can check the status events
+    status_events = [e for e in events if e.get("event") == "status"]
+    states = [json.loads(e["data"])["state"] for e in status_events]
+    assert "extracting" in states
+
+
+async def test_turn_emits_status_extracting_before_status_generating(
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """SSE stream contains status(extracting) and it precedes status(generating)."""
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_extraction_turn())
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "Hello."},
+        )
+
+    events = _parse_sse(response.text)
+    status_events = [e for e in events if e.get("event") == "status"]
+    states = [json.loads(e["data"])["state"] for e in status_events]
+
+    assert "extracting" in states
+    extracting_idx = states.index("extracting")
+    generating_idx = states.index("generating")
+    assert extracting_idx < generating_idx
+
+
+async def test_turn_on_extractor_failure_still_delivers_response(
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """Extractor mock raises error; SSE stream still delivers character message event."""
+    # First mock returns invalid JSON (triggers extraction parse error)
+
+    invalid_extraction = httpx.Response(
+        200, content=make_ollama_ndjson("not valid extraction json")
+    )
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=[
+                invalid_extraction,
+                _mock_ok("I am fine, despite the extraction failure."),
+                _mock_eval("pass"),
+            ]
+        )
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "Hello."},
+        )
+
+    events = _parse_sse(response.text)
+    message_events = [e for e in events if e.get("event") == "message"]
+    assert len(message_events) == 1
+    assert "I am fine" in json.loads(message_events[0]["data"])["content"]
