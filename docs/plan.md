@@ -537,6 +537,35 @@ Design notes:
 - Possibly encoded as constraint rules attached to facts or as a separate rule store
 - High complexity; evaluate whether the Phase 4 mutability model is sufficient in practice before committing to this
 
+### Playwright end-to-end tests
+
+**Context:** Option A from `docs/frontend-testing.md` was implemented in the `refactor(frontend)` commit (June 2026): `chat-component.js` extracted, importmap added, 41 component tests, 85.5% overall coverage via Vitest. Option A covers state-logic bugs but has one structural blind spot: it cannot catch a missing or broken template block — a `v-else-if` that exists in `chat-component.js` logic but has no corresponding card in `index.html`. The CLAUDE.md rule requiring "four things in the same commit" for new sidechannel types is a process control for this, not a test. As the UI grows (more notification types, more sidechannel cards, more conditional rendering), this gap widens.
+
+**What Playwright adds over the current Vitest setup:**
+
+| | Playwright | Current Vitest setup |
+|---|---|---|
+| Template coverage | Yes — renders real DOM | No |
+| Ollama stub required | Yes (~150–200 lines) | No (respx) |
+| Test runtime | 30–90 s | ~3 s |
+| CI complexity | Chromium install, subprocess mgmt | None |
+| Flakiness risk | SSE timing is fiddly | Low |
+
+**Recommendation:** scope narrowly to 3–4 smoke tests that require both template and logic — session start → send message → notification card renders, session end → proposal cards render. Do not attempt broad coverage with Playwright; keep using Vitest for logic. The Ollama stub is the gating effort; once it exists the test cases themselves are short.
+
+**Implementation sketch:**
+
+- `npm install --save-dev @playwright/test && npx playwright install chromium`
+- `playwright.config.js` at repo root: `webServer` pointing to `uvicorn memories.main:app --port 8001` with `MEMORIES_DB_PATH=:memory:` and `OLLAMA_BASE_URL=http://localhost:11435`
+- `tests/e2e/ollama_stub.py` — minimal FastAPI stub returning canned NDJSON streams for `/api/chat`, fixed embedding for `/api/embed`, and `{}` for `/api/generate`. The character response stream and the evaluator response stream need to be distinguishable (see `make_ollama_ndjson()` / `make_evaluator_ndjson()` in `tests/unit/conftest.py` for the NDJSON format). The global setup fixture starts the stub as a subprocess alongside the main server.
+- `tests/e2e/test_notifications.py` — the four key test cases that motivated this analysis:
+  - `test_experience_update_notification_renders` — the `experience_update` sidechannel card appears in the chat stream
+  - `test_experience_removed_from_pane_after_update` — the contradicted experience disappears from the Experiences pane
+  - `test_session_end_shows_proposals` — clicking End Session populates the proposal review cards
+  - `test_active_ids_reset_on_session_end` — active dot indicators (●) are cleared when the session ends
+
+The Playwright `webServer` config does not support launching a second process (the Ollama stub) natively — this requires a custom `globalSetup` / `globalTeardown` script in `playwright.config.js`.
+
 ---
 
 ## Open Questions
