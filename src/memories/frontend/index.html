@@ -40,14 +40,20 @@
     }
     .picker-card button:hover { background: #f0f4ff; }
 
-    /* ── Main layout ── */
-    .layout { display: flex; flex: 1; overflow: hidden; }
+    /* ── Main layout: 3-column grid ── */
+    .layout {
+      display: grid;
+      grid-template-columns: 50% 25% 25%;
+      flex: 1;
+      overflow: hidden;
+    }
 
     /* ── Chat panel ── */
     .chat-panel {
-      flex: 2; display: flex; flex-direction: column;
+      display: flex; flex-direction: column;
       border-right: 1px solid #ddd;
       min-width: 0;
+      overflow: hidden;
     }
     .chat-header {
       display: flex; align-items: center; justify-content: space-between;
@@ -159,8 +165,17 @@
 
     /* ── Facts panel ── */
     .facts-panel {
-      flex: 1; display: flex; flex-direction: column;
+      display: flex; flex-direction: column;
       background: #fff; min-width: 0;
+      border-right: 1px solid #ddd;
+      overflow: hidden;
+    }
+
+    /* ── Side panel (column 3: inferences + experiences) ── */
+    .side-panel {
+      display: flex; flex-direction: column;
+      background: #fff; min-width: 0;
+      overflow: hidden;
     }
     .facts-header {
       padding: 12px 16px; font-weight: 600; border-bottom: 1px solid #ddd;
@@ -231,9 +246,51 @@
     .category-dropdown > div:hover { background: #f0f4ff; }
     .category-dropdown > div.active { font-weight: 600; color: #3b5bdb; background: #f0f4ff; }
 
-    /* ── Inferences section ── */
-    .inferences-section { max-height: 280px; overflow-y: auto; padding: 8px 16px; border-top: 1px solid #ddd; }
+    /* ── Inferences section (top of side panel) ── */
+    .inferences-section {
+      flex: 1 1 auto; min-height: 50%;
+      overflow-y: auto; padding: 8px 16px;
+    }
     .inferences-header { font-weight: 600; font-size: 13px; margin-bottom: 6px; color: #555; }
+
+    /* ── Experiences section (bottom of side panel) ── */
+    .experiences-section {
+      flex: 0 0 auto; max-height: 50%;
+      overflow-y: auto; padding: 8px 16px;
+      border-top: 1px solid #ddd;
+    }
+    .experiences-header { font-weight: 600; font-size: 13px; margin-bottom: 6px; color: #555; }
+    .experience-row {
+      display: flex; align-items: flex-start; gap: 5px;
+      margin-bottom: 7px; font-size: 13px; line-height: 1.4;
+    }
+    .exp-dot { font-size: 9px; margin-top: 3px; flex-shrink: 0; }
+    .exp-dot.active  { color: #3b5bdb; }
+    .exp-dot.inactive { color: #ccc; }
+    .exp-source {
+      font-size: 10px; font-weight: 700; padding: 1px 4px;
+      border-radius: 3px; flex-shrink: 0; margin-top: 2px;
+    }
+    .exp-source.told-by-user { background: #e8f0ff; color: #3b5bdb; }
+    .exp-source.observed     { background: #f5f5f5; color: #666; }
+    .exp-statement { flex: 1; }
+    .exp-delete {
+      background: none; border: none; cursor: pointer;
+      color: #bbb; font-size: 12px; flex-shrink: 0; padding: 0 2px;
+    }
+    .exp-delete:hover { color: #c00; }
+    .experience-proposal {
+      background: #f8f9ff; border: 1px solid #dde;
+      border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 13px;
+    }
+    .experience-proposal textarea {
+      width: 100%; margin-top: 4px; padding: 4px 6px;
+      border: 1px solid #bbd; border-radius: 4px; font-size: 13px;
+      font-family: inherit; resize: vertical; min-height: 48px;
+    }
+    .experience-proposal textarea:focus { outline: none; border-color: #3b5bdb; }
+    .exp-proposal-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+    .exp-review-loading { color: #888; font-size: 13px; font-style: italic; padding: 4px 0; }
     .inference-row { margin-bottom: 8px; }
     .inference-row-top { display: flex; align-items: flex-start; gap: 4px; }
     .promote-btn {
@@ -587,53 +644,112 @@
         <p v-if="factError" class="error-msg">{{ factError }}</p>
       </div>
 
-      <!-- Inferences section -->
-      <div v-if="inferences.length > 0" class="inferences-section">
-        <div class="inferences-header">Inferences</div>
-        <div v-for="inf in inferences" :key="inf.id" class="inference-row">
-          <div class="inference-row-top">
-            <button class="promote-btn" @click.stop="togglePromote(inf)" title="Promote to Fact">⬆</button>
-            <span class="inference-row-statement" @click="inf._expanded = !inf._expanded">
-              <span class="inference-type-badge" :class="inf.inference_type">{{ inf.inference_type }}</span>{{ inf.statement }}
-            </span>
-          </div>
-          <div v-if="inf._expanded" class="inference-row-derivation">{{ inf.derivation }}</div>
-          <div v-if="inf._promoteOpen" class="promote-form" @click.stop>
-            <input v-model="inf._promoteKey" placeholder="fact key" />
-            <input v-model="inf._promoteValue" placeholder="fact value" />
-            <div class="form-row">
-              <select v-model="inf._promoteCategory">
-                <option value="user">User</option>
-                <option value="character">Character</option>
-                <option value="setting">Setting</option>
-              </select>
-              <select v-model="inf._promoteMutability">
-                <option value="immutable">🔒 Immutable</option>
-                <option value="low">📌 Settable</option>
-                <option value="high">💧 Fluid</option>
-              </select>
-            </div>
-            <p v-if="inf._promoteError" class="error-msg">{{ inf._promoteError }}</p>
-            <div class="promote-form-actions">
-              <button class="btn-accept" :disabled="inf._promoteLoading || !inf._promoteKey?.trim()"
-                      @click="promoteInference(inf)">
-                {{ inf._promoteLoading ? 'Promoting…' : 'Promote' }}
-              </button>
-              <button class="btn-ignore" @click="inf._promoteOpen = false">Cancel</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <div class="facts-footer">
-        <button class="btn-end" v-if="!sessionEnded" @click="endSession">
-          End Session
+        <button class="btn-end" v-if="!sessionEnded" :disabled="reviewingSession" @click="endSession">
+          {{ reviewingSession ? 'Reviewing…' : 'End Session' }}
         </button>
         <div v-else>
           <p class="session-ended-label">Session ended</p>
           <button class="btn-new-session" @click="newSession">New Session</button>
         </div>
       </div>
+    </div>
+
+    <!-- Column 3: Inferences + Experiences -->
+    <div class="side-panel">
+
+      <!-- Inferences pane -->
+      <div class="inferences-section">
+        <div v-if="inferences.length > 0">
+          <div class="inferences-header">Inferences</div>
+          <div v-for="inf in inferences" :key="inf.id" class="inference-row">
+            <div class="inference-row-top">
+              <button class="promote-btn" @click.stop="togglePromote(inf)" title="Promote to Fact">⬆</button>
+              <span class="inference-row-statement" @click="inf._expanded = !inf._expanded">
+                <span class="inference-type-badge" :class="inf.inference_type">{{ inf.inference_type }}</span>{{ inf.statement }}
+              </span>
+            </div>
+            <div v-if="inf._expanded" class="inference-row-derivation">{{ inf.derivation }}</div>
+            <div v-if="inf._promoteOpen" class="promote-form" @click.stop>
+              <input v-model="inf._promoteKey" placeholder="fact key" />
+              <input v-model="inf._promoteValue" placeholder="fact value" />
+              <div class="form-row">
+                <select v-model="inf._promoteCategory">
+                  <option value="user">User</option>
+                  <option value="character">Character</option>
+                  <option value="setting">Setting</option>
+                </select>
+                <select v-model="inf._promoteMutability">
+                  <option value="immutable">🔒 Immutable</option>
+                  <option value="low">📌 Settable</option>
+                  <option value="high">💧 Fluid</option>
+                </select>
+              </div>
+              <p v-if="inf._promoteError" class="error-msg">{{ inf._promoteError }}</p>
+              <div class="promote-form-actions">
+                <button class="btn-accept" :disabled="inf._promoteLoading || !inf._promoteKey?.trim()"
+                        @click="promoteInference(inf)">
+                  {{ inf._promoteLoading ? 'Promoting…' : 'Promote' }}
+                </button>
+                <button class="btn-ignore" @click="inf._promoteOpen = false">Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p v-else style="color:#aaa;font-size:13px;padding-top:4px">No inferences yet.</p>
+      </div>
+
+      <!-- Experiences pane -->
+      <div v-if="reviewingSession || sessionProposals.length > 0 || experiences.length > 0"
+           class="experiences-section">
+        <div class="experiences-header">Experiences</div>
+
+        <!-- Loading state while session-end LLM call is in flight -->
+        <p v-if="reviewingSession" class="exp-review-loading">Reviewing session…</p>
+
+        <!-- Proposal review cards -->
+        <template v-else-if="sessionProposals.length > 0">
+          <div v-for="(p, i) in sessionProposals" :key="i" class="experience-proposal">
+            <span :class="['exp-source', p.source === 'told_by_user' ? 'told-by-user' : 'observed']">
+              {{ p.source === 'told_by_user' ? 'user' : 'obs' }}
+            </span>
+            <textarea v-if="p._editing" v-model="p._editStatement"></textarea>
+            <div v-else class="exp-statement" style="margin-top:4px">{{ p.statement }}</div>
+            <div class="exp-proposal-actions">
+              <button class="btn-accept" :disabled="p._loading" @click="acceptProposal(p)">
+                {{ p._loading ? 'Saving…' : 'Accept' }}
+              </button>
+              <button v-if="!p._editing" class="btn-ignore" :disabled="p._loading"
+                      @click="p._editing = true; p._editStatement = p.statement">
+                Edit
+              </button>
+              <button v-else class="btn-accept" :disabled="p._loading || !p._editStatement.trim()"
+                      @click="confirmEditProposal(p)">
+                {{ p._loading ? 'Saving…' : 'Confirm' }}
+              </button>
+              <button class="btn-ignore" :disabled="p._loading" @click="discardProposal(i)">
+                Discard
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <!-- Approved experiences list -->
+        <template v-else>
+          <div v-for="exp in sortedExperiences" :key="exp.id" class="experience-row">
+            <span :class="['exp-dot', activeExperienceIds.has(exp.id) ? 'active' : 'inactive']">
+              {{ activeExperienceIds.has(exp.id) ? '●' : '○' }}
+            </span>
+            <span :class="['exp-source', exp.source === 'told_by_user' ? 'told-by-user' : 'observed']">
+              {{ exp.source === 'told_by_user' ? 'user' : 'obs' }}
+            </span>
+            <span class="exp-statement">{{ exp.statement }}</span>
+            <button class="exp-delete" @click="deleteExperience(exp)" title="Delete">✕</button>
+          </div>
+          <p v-if="experiences.length === 0" style="color:#aaa;font-size:13px">No experiences yet.</p>
+        </template>
+      </div>
+
     </div>
 
   </div>
@@ -653,6 +769,10 @@ import {
   apiPatchFactMutability,
   apiPatchFactCategory,
   apiPromoteInference,
+  apiEndSession,
+  apiCreateExperience,
+  apiDeleteExperience,
+  sortExperiences,
 } from './chat.js';
 
 const { createApp, ref, computed, nextTick, onMounted, onUnmounted } = Vue;
@@ -671,6 +791,11 @@ createApp({
     const generating = ref(false);
     const statusText = ref('');
     const sessionEnded = ref(false);
+    const reviewingSession = ref(false);
+    const experiences = ref([]);
+    const activeExperienceIds = ref(new Set());
+    const experienceScoreMap = ref(new Map());
+    const sessionProposals = ref([]);
     const thinkEnabled = ref(false);
     const newKey = ref('');
     const newValue = ref('');
@@ -752,6 +877,12 @@ createApp({
       }
     }
 
+    async function loadExperiences() {
+      if (!currentCharacter.value) return;
+      const r = await fetch(`/api/characters/${currentCharacter.value.id}/experiences`);
+      experiences.value = await r.json();
+    }
+
     async function pickCharacter(ch) {
       currentCharacter.value = ch;
       const r = await fetch('/api/sessions/', {
@@ -762,7 +893,7 @@ createApp({
       const sess = await r.json();
       sessionId.value = sess.id;
       showPicker.value = false;
-      await Promise.all([loadFacts(), loadInferences()]);
+      await Promise.all([loadFacts(), loadInferences(), loadExperiences()]);
       nextTick(() => inputEl.value?.focus());
     }
 
@@ -871,14 +1002,77 @@ createApp({
     }
 
     async function endSession() {
-      await fetch(`/api/sessions/${sessionId.value}/end`, { method: 'POST' });
+      reviewingSession.value = true;
       sessionEnded.value = true;
+      try {
+        const r = await apiEndSession(sessionId.value);
+        if (r.ok) {
+          const data = await r.json();
+          const proposals = (data.proposed_experiences || []).map(p => ({
+            ...p, _editing: false, _editStatement: '', _loading: false,
+          }));
+          sessionProposals.value = proposals;
+          // If no proposals, just refresh the approved list
+          if (proposals.length === 0) await loadExperiences();
+        }
+      } finally {
+        reviewingSession.value = false;
+      }
+    }
+
+    async function acceptProposal(p) {
+      p._loading = true;
+      try {
+        const r = await apiCreateExperience(
+          currentCharacter.value.id, sessionId.value, p.statement, p.source,
+        );
+        if (r.ok) {
+          const idx = sessionProposals.value.indexOf(p);
+          if (idx !== -1) sessionProposals.value.splice(idx, 1);
+          if (sessionProposals.value.length === 0) await loadExperiences();
+        }
+      } finally {
+        p._loading = false;
+      }
+    }
+
+    async function confirmEditProposal(p) {
+      const edited = p._editStatement.trim();
+      if (!edited) return;
+      p._loading = true;
+      try {
+        const r = await apiCreateExperience(
+          currentCharacter.value.id, sessionId.value, edited, p.source,
+        );
+        if (r.ok) {
+          const idx = sessionProposals.value.indexOf(p);
+          if (idx !== -1) sessionProposals.value.splice(idx, 1);
+          if (sessionProposals.value.length === 0) await loadExperiences();
+        }
+      } finally {
+        p._loading = false;
+      }
+    }
+
+    function discardProposal(i) {
+      sessionProposals.value.splice(i, 1);
+      if (sessionProposals.value.length === 0) loadExperiences();
+    }
+
+    async function deleteExperience(exp) {
+      await apiDeleteExperience(currentCharacter.value.id, exp.id);
+      await loadExperiences();
     }
 
     async function newSession() {
       messages.value = [];
       facts.value = [];
       inferences.value = [];
+      experiences.value = [];
+      sessionProposals.value = [];
+      activeExperienceIds.value = new Set();
+      experienceScoreMap.value = new Map();
+      reviewingSession.value = false;
       inputText.value = '';
       sending.value = false;
       generating.value = false;
@@ -1021,6 +1215,14 @@ createApp({
                 turn_id: payload.turn_id,
                 contradictionExhausted: payload.contradiction_exhausted || false,
               });
+              if (payload.active_experience_ids) {
+                activeExperienceIds.value = new Set(payload.active_experience_ids);
+              }
+              if (payload.experience_scores) {
+                experienceScoreMap.value = new Map(
+                  payload.experience_scores.map(s => [s.id, s.score])
+                );
+              }
               await scrollToBottom();
 
             } else if (eventName === 'sidechannel' && dataStr) {
@@ -1048,11 +1250,17 @@ createApp({
       }
     }
 
+    const sortedExperiences = computed(() =>
+      sortExperiences(experiences.value, activeExperienceIds.value, experienceScoreMap.value)
+    );
+
     loadCharacters();
 
     return {
       showPicker, characters, currentCharacter, sessionId,
       messages, facts, inferences, factsByCategory,
+      experiences, sortedExperiences, activeExperienceIds, sessionProposals,
+      reviewingSession,
       inputText, sending, generating, statusText, sessionEnded,
       thinkEnabled, newKey, newValue, newCategory, newMutability,
       factError, messagesEl, inputEl,
@@ -1063,6 +1271,7 @@ createApp({
       endSession, newSession, sendMessage,
       acceptImplication, ignoreImplication, acceptInference, ignoreInference,
       dismissNotification,
+      acceptProposal, confirmEditProposal, discardProposal, deleteExperience,
     };
   },
 }).mount('#app');

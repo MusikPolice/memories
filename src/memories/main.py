@@ -44,7 +44,7 @@ async def _warmup_models(db: aiosqlite.Connection) -> None:
             _log.warning("could not warm up %s (%s) — will load on first request", model, exc)
     embed_model = os.getenv("EMBED_MODEL", "nomic-embed-text")
     try:
-        await ollama.warmup(embed_model)
+        await ollama.warmup_embed(embed_model)
         _log.info("embed model %r warmed up", embed_model)
     except (OllamaConnectionError, OllamaResponseError) as exc:
         _log.warning("could not warm up embed model %r: %s", embed_model, exc)
