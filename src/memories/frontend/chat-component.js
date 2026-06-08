@@ -134,9 +134,12 @@ export const ChatComponent = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ character_id: ch.id }),
       });
-      const sess = await r.json();
-      sessionId.value = sess.id;
+      const data = await r.json();
+      sessionId.value = data.session.id;
       showPicker.value = false;
+      if (data.previous_journal) {
+        messages.value.push({ role: 'journal', content: data.previous_journal, name: ch.name });
+      }
       await Promise.all([loadFacts(), loadInferences(), loadExperiences()]);
       nextTick(() => inputEl.value?.focus());
     }

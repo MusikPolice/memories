@@ -16,6 +16,7 @@ from memories.database import (
     get_facts,
     get_inferences,
     get_messages,
+    get_previous_session,
     get_session,
     update_session_closing_journal,
 )
@@ -42,18 +43,28 @@ class _CreateBody(BaseModel):
     character_id: int
 
 
+class _CreateSessionResponse(BaseModel):
+    session: Session
+    previous_journal: str | None
+
+
 class _EndSessionResponse(BaseModel):
     session: Session
     closing_journal: str
     proposed_experiences: list[ProposedExperience]
 
 
-@router.post("/", status_code=201, response_model=Session)
-async def create_session_endpoint(body: _CreateBody, db: _DB) -> Session:
+@router.post("/", status_code=201, response_model=_CreateSessionResponse)
+async def create_session_endpoint(body: _CreateBody, db: _DB) -> _CreateSessionResponse:
     character = await get_character(db, body.character_id)
     if character is None:
         raise HTTPException(status_code=404, detail="Character not found")
-    return await create_session(db, character_id=body.character_id)
+    session = await create_session(db, character_id=body.character_id)
+    prev = await get_previous_session(db, body.character_id, before_session_id=session.id)
+    return _CreateSessionResponse(
+        session=session,
+        previous_journal=prev.closing_journal if prev else None,
+    )
 
 
 @router.post("/{session_id}/end", response_model=_EndSessionResponse)

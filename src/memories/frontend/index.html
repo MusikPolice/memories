@@ -78,6 +78,16 @@
     .msg.assistant { align-self: flex-start; background: #fff; border: 1px solid #ddd; border-radius: 12px 12px 12px 2px; }
     .msg.generating { color: #888; font-style: italic; }
     .msg.contradiction-exhausted { border-color: #faa; }
+    .msg.journal {
+      align-self: flex-start; max-width: 70%;
+      background: #f7f3ea; border: 1px dashed #c9b97a;
+      border-radius: 12px 12px 12px 2px;
+      font-style: italic; color: #5a4e2d;
+    }
+    .msg.journal .journal-header {
+      font-size: 11px; font-style: normal; font-weight: 600;
+      color: #8a7440; margin-bottom: 6px; letter-spacing: 0.03em;
+    }
 
     .thinking-block {
       align-self: flex-start; max-width: 70%;
@@ -398,8 +408,14 @@
         <div class="chat-messages-inner">
         <template v-for="(msg, i) in messages" :key="i">
 
+          <!-- Previous-session journal reflection -->
+          <div v-if="msg.role === 'journal'" class="msg journal">
+            <div class="journal-header">💭 {{ msg.name }}'s thoughts before this session</div>
+            {{ msg.content }}
+          </div>
+
           <!-- Thinking block -->
-          <div v-if="msg.role === 'thinking'" class="thinking-block">
+          <div v-else-if="msg.role === 'thinking'" class="thinking-block">
             <div class="thinking-header" @click="msg._open = !msg._open">
               <span>&#129504; Thinking</span>
               <span>{{ msg._open ? '▲' : '▼' }}</span>

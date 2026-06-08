@@ -28,14 +28,63 @@ def _make_session_end_chat(
     return httpx.Response(200, content=make_ollama_ndjson(json.dumps(data)))
 
 
+async def _create_session(client: AsyncClient, char_id: int) -> int:
+    """Helper: POST /api/sessions/ and return the new session id."""
+    r = await client.post("/api/sessions/", json={"character_id": char_id})
+    return r.json()["session"]["id"]
+
+
+async def _create_char(client: AsyncClient, name: str = "Alice") -> int:
+    r = await client.post("/api/characters/", json={"name": name, "modelfile_base": "qwen3:7b"})
+    return r.json()["id"]
+
+
 async def test_start_session_201(client: AsyncClient) -> None:
-    char_resp = await client.post(
-        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
-    )
-    char_id = char_resp.json()["id"]
+    char_id = await _create_char(client)
     response = await client.post("/api/sessions/", json={"character_id": char_id})
     assert response.status_code == 201
-    assert "id" in response.json()
+    data = response.json()
+    assert "session" in data
+    assert "id" in data["session"]
+    assert "previous_journal" in data
+
+
+async def test_start_session_no_previous_journal_is_null(client: AsyncClient) -> None:
+    char_id = await _create_char(client)
+    response = await client.post("/api/sessions/", json={"character_id": char_id})
+    assert response.json()["previous_journal"] is None
+
+
+async def test_start_session_returns_previous_journal_when_present(
+    client: AsyncClient,
+) -> None:
+    char_id = await _create_char(client)
+    first_session_id = await _create_session(client, char_id)
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(return_value=_make_session_end_chat("Great first session!"))
+        await client.post(f"/api/sessions/{first_session_id}/end")
+    response = await client.post("/api/sessions/", json={"character_id": char_id})
+    assert response.json()["previous_journal"] == "Great first session!"
+
+
+async def test_start_session_skips_empty_sessions_for_previous_journal(
+    client: AsyncClient,
+) -> None:
+    char_id = await _create_char(client)
+    first_session_id = await _create_session(client, char_id)
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(return_value=_make_session_end_chat("Anchored journal."))
+        await client.post(f"/api/sessions/{first_session_id}/end")
+    # Second session ends without a journal (e.g. evaluator failure)
+    second_session_id = await _create_session(client, char_id)
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            return_value=httpx.Response(200, content=make_ollama_ndjson("not json"))
+        )
+        await client.post(f"/api/sessions/{second_session_id}/end")
+    # Third session should get the first session's journal (second has none)
+    response = await client.post("/api/sessions/", json={"character_id": char_id})
+    assert response.json()["previous_journal"] == "Anchored journal."
 
 
 async def test_start_session_unknown_character_404(client: AsyncClient) -> None:
@@ -44,12 +93,8 @@ async def test_start_session_unknown_character_404(client: AsyncClient) -> None:
 
 
 async def test_end_session_returns_200(client: AsyncClient) -> None:
-    char_resp = await client.post(
-        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
-    )
-    char_id = char_resp.json()["id"]
-    sess_resp = await client.post("/api/sessions/", json={"character_id": char_id})
-    session_id = sess_resp.json()["id"]
+    char_id = await _create_char(client)
+    session_id = await _create_session(client, char_id)
     with respx.mock:
         respx.post(_CHAT_URL).mock(return_value=_make_session_end_chat())
         response = await client.post(f"/api/sessions/{session_id}/end")
@@ -72,12 +117,8 @@ async def test_end_unknown_session_404(client: AsyncClient) -> None:
 
 
 async def test_end_session_response_has_session(client: AsyncClient) -> None:
-    char_resp = await client.post(
-        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
-    )
-    char_id = char_resp.json()["id"]
-    sess_resp = await client.post("/api/sessions/", json={"character_id": char_id})
-    session_id = sess_resp.json()["id"]
+    char_id = await _create_char(client)
+    session_id = await _create_session(client, char_id)
     with respx.mock:
         respx.post(_CHAT_URL).mock(return_value=_make_session_end_chat())
         response = await client.post(f"/api/sessions/{session_id}/end")
@@ -87,12 +128,8 @@ async def test_end_session_response_has_session(client: AsyncClient) -> None:
 
 
 async def test_end_session_response_has_closing_journal(client: AsyncClient) -> None:
-    char_resp = await client.post(
-        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
-    )
-    char_id = char_resp.json()["id"]
-    sess_resp = await client.post("/api/sessions/", json={"character_id": char_id})
-    session_id = sess_resp.json()["id"]
+    char_id = await _create_char(client)
+    session_id = await _create_session(client, char_id)
     with respx.mock:
         respx.post(_CHAT_URL).mock(return_value=_make_session_end_chat())
         response = await client.post(f"/api/sessions/{session_id}/end")
@@ -100,12 +137,8 @@ async def test_end_session_response_has_closing_journal(client: AsyncClient) -> 
 
 
 async def test_end_session_response_has_proposed_experiences(client: AsyncClient) -> None:
-    char_resp = await client.post(
-        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
-    )
-    char_id = char_resp.json()["id"]
-    sess_resp = await client.post("/api/sessions/", json={"character_id": char_id})
-    session_id = sess_resp.json()["id"]
+    char_id = await _create_char(client)
+    session_id = await _create_session(client, char_id)
     with respx.mock:
         respx.post(_CHAT_URL).mock(return_value=_make_session_end_chat())
         response = await client.post(f"/api/sessions/{session_id}/end")
@@ -117,12 +150,8 @@ async def test_end_session_response_has_proposed_experiences(client: AsyncClient
 async def test_end_session_stores_closing_journal_in_db(
     db: aiosqlite.Connection, client: AsyncClient
 ) -> None:
-    char_resp = await client.post(
-        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
-    )
-    char_id = char_resp.json()["id"]
-    sess_resp = await client.post("/api/sessions/", json={"character_id": char_id})
-    session_id = sess_resp.json()["id"]
+    char_id = await _create_char(client)
+    session_id = await _create_session(client, char_id)
     with respx.mock:
         respx.post(_CHAT_URL).mock(return_value=_make_session_end_chat("Great session today!"))
         await client.post(f"/api/sessions/{session_id}/end")
@@ -134,12 +163,8 @@ async def test_end_session_stores_closing_journal_in_db(
 
 
 async def test_end_session_already_ended_returns_409(client: AsyncClient) -> None:
-    char_resp = await client.post(
-        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
-    )
-    char_id = char_resp.json()["id"]
-    sess_resp = await client.post("/api/sessions/", json={"character_id": char_id})
-    session_id = sess_resp.json()["id"]
+    char_id = await _create_char(client)
+    session_id = await _create_session(client, char_id)
     with respx.mock:
         respx.post(_CHAT_URL).mock(return_value=_make_session_end_chat())
         await client.post(f"/api/sessions/{session_id}/end")
@@ -153,12 +178,8 @@ async def test_end_session_unknown_session_returns_404(client: AsyncClient) -> N
 
 
 async def test_end_session_no_messages_returns_empty_proposals(client: AsyncClient) -> None:
-    char_resp = await client.post(
-        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
-    )
-    char_id = char_resp.json()["id"]
-    sess_resp = await client.post("/api/sessions/", json={"character_id": char_id})
-    session_id = sess_resp.json()["id"]
+    char_id = await _create_char(client)
+    session_id = await _create_session(client, char_id)
     with respx.mock:
         respx.post(_CHAT_URL).mock(
             return_value=_make_session_end_chat(
@@ -172,12 +193,8 @@ async def test_end_session_no_messages_returns_empty_proposals(client: AsyncClie
 async def test_end_session_evaluator_parse_failure_returns_empty_proposals(
     client: AsyncClient,
 ) -> None:
-    char_resp = await client.post(
-        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
-    )
-    char_id = char_resp.json()["id"]
-    sess_resp = await client.post("/api/sessions/", json={"character_id": char_id})
-    session_id = sess_resp.json()["id"]
+    char_id = await _create_char(client)
+    session_id = await _create_session(client, char_id)
     with respx.mock:
         respx.post(_CHAT_URL).mock(
             return_value=httpx.Response(200, content=make_ollama_ndjson("this is not json"))
@@ -191,12 +208,8 @@ async def test_end_session_evaluator_parse_failure_returns_empty_proposals(
 async def test_end_session_evaluator_parse_failure_still_ends_session(
     client: AsyncClient,
 ) -> None:
-    char_resp = await client.post(
-        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
-    )
-    char_id = char_resp.json()["id"]
-    sess_resp = await client.post("/api/sessions/", json={"character_id": char_id})
-    session_id = sess_resp.json()["id"]
+    char_id = await _create_char(client)
+    session_id = await _create_session(client, char_id)
     with respx.mock:
         respx.post(_CHAT_URL).mock(
             return_value=httpx.Response(200, content=make_ollama_ndjson("garbage"))
@@ -206,12 +219,8 @@ async def test_end_session_evaluator_parse_failure_still_ends_session(
 
 
 async def test_end_session_calls_session_end_evaluator_ollama(client: AsyncClient) -> None:
-    char_resp = await client.post(
-        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
-    )
-    char_id = char_resp.json()["id"]
-    sess_resp = await client.post("/api/sessions/", json={"character_id": char_id})
-    session_id = sess_resp.json()["id"]
+    char_id = await _create_char(client)
+    session_id = await _create_session(client, char_id)
     with respx.mock:
         route = respx.post(_CHAT_URL).mock(return_value=_make_session_end_chat())
         await client.post(f"/api/sessions/{session_id}/end")
@@ -219,12 +228,8 @@ async def test_end_session_calls_session_end_evaluator_ollama(client: AsyncClien
 
 
 async def test_end_session_proposed_experience_has_statement(client: AsyncClient) -> None:
-    char_resp = await client.post(
-        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
-    )
-    char_id = char_resp.json()["id"]
-    sess_resp = await client.post("/api/sessions/", json={"character_id": char_id})
-    session_id = sess_resp.json()["id"]
+    char_id = await _create_char(client)
+    session_id = await _create_session(client, char_id)
     proposals = [
         {"statement": "User lives in Chicago", "source": "told_by_user", "turn_reference": 1}
     ]
@@ -237,12 +242,8 @@ async def test_end_session_proposed_experience_has_statement(client: AsyncClient
 
 
 async def test_end_session_proposed_experience_has_source(client: AsyncClient) -> None:
-    char_resp = await client.post(
-        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
-    )
-    char_id = char_resp.json()["id"]
-    sess_resp = await client.post("/api/sessions/", json={"character_id": char_id})
-    session_id = sess_resp.json()["id"]
+    char_id = await _create_char(client)
+    session_id = await _create_session(client, char_id)
     proposals = [
         {"statement": "Chicago statement", "source": "told_by_user", "turn_reference": 1},
         {"statement": "Observed behavior", "source": "observed", "turn_reference": 2},
@@ -268,12 +269,8 @@ async def test_end_session_clears_active_experiences_for_session(
 
 
 async def test_get_session_messages_initially_empty(client: AsyncClient) -> None:
-    char_resp = await client.post(
-        "/api/characters/", json={"name": "Alice", "modelfile_base": "qwen3:7b"}
-    )
-    char_id = char_resp.json()["id"]
-    sess_resp = await client.post("/api/sessions/", json={"character_id": char_id})
-    session_id = sess_resp.json()["id"]
+    char_id = await _create_char(client)
+    session_id = await _create_session(client, char_id)
     response = await client.get(f"/api/sessions/{session_id}/messages")
     assert response.status_code == 200
     assert response.json() == []
