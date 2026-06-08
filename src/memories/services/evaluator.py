@@ -65,6 +65,30 @@ class EvaluatorResult(BaseModel):
     max_retries_exceeded: bool = False
 
 
+def _violation_duplicates_existing_fact(
+    suggested_fact: dict[str, str] | None, facts: list[Fact]
+) -> bool:
+    """Return True when suggested_fact is already captured by an existing Fact.
+
+    Catches two cases:
+    - Exact match: the evaluator re-proposes a key+value that already exists verbatim.
+    - Subset match: the suggested value is a component of a composite fact value
+      (e.g. 'oak desk' ⊆ 'oak desk, ergonomic chair, couch').
+    """
+    if not suggested_fact:
+        return False
+    key = suggested_fact.get("key", "").strip().lower()
+    value = suggested_fact.get("value", "").strip().lower()
+    if not key or not value:
+        return False
+    for fact in facts:
+        if fact.key.strip().lower() == key:
+            existing = fact.value.strip().lower()
+            if value == existing or value in existing:
+                return True
+    return False
+
+
 def build_evaluator_prompt(
     character: Character,
     facts: list[Fact],
@@ -232,6 +256,12 @@ Verdict definitions (evaluate in this priority order):
 5. pass: ONLY when every specific claim in the response is a direct Fact or a
    strict logical derivation — NOT merely "consistent with" or "plausible for"
 
+BEFORE flagging any implication: check the Established Facts list again. If the
+key AND value you are about to suggest already appear there — verbatim, or as a
+component of a composite value — do NOT flag it. The character is correctly
+referencing an established fact. Only surface implications for details that are
+genuinely new.
+
 pass is the LAST resort. When in doubt, prefer implication or new_inference_*.
 
 Return only the JSON object, no other text."""
@@ -308,6 +338,23 @@ async def run_evaluator(
             inf[field] = [v for v in raw if isinstance(v, int)]
 
     try:
-        return EvaluatorResult.model_validate(data)
+        result = EvaluatorResult.model_validate(data)
     except ValidationError as exc:
         raise EvaluatorParseError(f"Failed to validate evaluator result: {exc}") from exc
+
+    # Strip any implication violation whose suggested_fact is already an
+    # established Fact (exact match or subset of a composite value).  The
+    # evaluator LLM occasionally re-proposes existing facts, especially when
+    # the character response merely repeats a detail that is already grounded.
+    if result.verdict == "implication" and result.violations:
+        filtered = [
+            v
+            for v in result.violations
+            if not _violation_duplicates_existing_fact(v.suggested_fact, facts)
+        ]
+        if len(filtered) < len(result.violations):
+            result.violations = filtered
+            if not filtered:
+                result.verdict = "pass"
+
+    return result

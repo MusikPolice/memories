@@ -200,10 +200,19 @@ async def test_accept_implication_duplicate_key_updates_existing_fact(
             json={"key": "siblings", "value": "one sister"},
         )
 
-    # Trigger a second implication turn so we have a new ungrounded message
+    # Trigger a second implication turn where the evaluator proposes a CHANGED
+    # value for the same key.  The filter only strips violations whose suggested
+    # value already matches an existing fact; a different value must still surface.
+    changed_violation = {
+        "type": "implication",
+        "description": "Character now mentions two brothers instead",
+        "suggested_fact": {"key": "siblings", "value": "two brothers"},
+    }
     second_turn_side_effect = [
-        httpx.Response(200, content=make_ollama_ndjson("She's two years older.")),
-        httpx.Response(200, content=make_evaluator_ndjson("implication", violations=[_VIOLATION])),
+        httpx.Response(200, content=make_ollama_ndjson("Actually I have two brothers.")),
+        httpx.Response(
+            200, content=make_evaluator_ndjson("implication", violations=[changed_violation])
+        ),
     ]
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(side_effect=second_turn_side_effect)

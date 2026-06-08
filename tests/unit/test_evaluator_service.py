@@ -240,6 +240,158 @@ async def test_evaluator_contradiction_priority_overrides_implication(
 
 
 # ---------------------------------------------------------------------------
+# run_evaluator — duplicate-fact filtering (regression for evaluator re-proposing
+# existing facts as new implications)
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_evaluator_strips_implication_whose_suggested_fact_is_exact_duplicate(
+    ollama: OllamaClient,
+) -> None:
+    """Violation whose key+value exactly matches an existing Fact must be dropped."""
+    violations = [
+        {
+            "type": "implication",
+            "description": "Character stated their occupation",
+            "suggested_fact": {"key": "occupation", "value": "surgeon"},
+        }
+    ]
+    # occupation=surgeon is already in _FACTS
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=_eval_json("implication", violations=violations))
+    )
+    result = await run_evaluator(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, ollama)
+    assert result.verdict == "pass"
+    assert result.violations == []
+
+
+@respx.mock
+async def test_evaluator_strips_implication_whose_suggested_fact_is_subset_of_composite(
+    ollama: OllamaClient,
+) -> None:
+    """Violation whose value is a substring of an existing composite fact value is dropped."""
+    composite_facts = [
+        Fact(
+            id=10,
+            character_id=1,
+            key="furniture",
+            value="oak desk, ergonomic chair, two visitor chairs",
+            created_at=__import__("datetime").datetime(2024, 1, 1),
+        )
+    ]
+    violations = [
+        {
+            "type": "implication",
+            "description": "Character mentioned oak desk",
+            "suggested_fact": {"key": "furniture", "value": "oak desk"},
+        }
+    ]
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=_eval_json("implication", violations=violations))
+    )
+    result = await run_evaluator(_CHARACTER, composite_facts, _USER_MSG, _CHAR_RESPONSE, ollama)
+    assert result.verdict == "pass"
+    assert result.violations == []
+
+
+@respx.mock
+async def test_evaluator_does_not_strip_implication_for_genuinely_new_fact(
+    ollama: OllamaClient,
+) -> None:
+    """A violation whose key+value does not appear in the facts list must be kept."""
+    violations = [
+        {
+            "type": "implication",
+            "description": "Character mentioned having a sibling not in facts",
+            "suggested_fact": {"key": "siblings", "value": "one sister"},
+        }
+    ]
+    # siblings is NOT in _FACTS
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=_eval_json("implication", violations=violations))
+    )
+    result = await run_evaluator(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, ollama)
+    assert result.verdict == "implication"
+    assert len(result.violations) == 1
+
+
+@respx.mock
+async def test_evaluator_does_not_strip_implication_for_changed_value_of_existing_key(
+    ollama: OllamaClient,
+) -> None:
+    """A violation for the same key but a DIFFERENT value is a genuine change — keep it."""
+    violations = [
+        {
+            "type": "implication",
+            "description": "Character implied occupation changed",
+            "suggested_fact": {"key": "occupation", "value": "retired surgeon"},
+        }
+    ]
+    # occupation key exists but value is "surgeon", not "retired surgeon"
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=_eval_json("implication", violations=violations))
+    )
+    result = await run_evaluator(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, ollama)
+    assert result.verdict == "implication"
+    assert len(result.violations) == 1
+
+
+@respx.mock
+async def test_evaluator_partial_filter_keeps_genuine_violations(
+    ollama: OllamaClient,
+) -> None:
+    """When some violations are duplicates and some are genuine, only duplicates are dropped."""
+    violations = [
+        {
+            "type": "implication",
+            "description": "Re-proposed existing occupation fact",
+            "suggested_fact": {"key": "occupation", "value": "surgeon"},
+        },
+        {
+            "type": "implication",
+            "description": "Mentioned new sibling detail not in facts",
+            "suggested_fact": {"key": "siblings", "value": "one sister"},
+        },
+    ]
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=_eval_json("implication", violations=violations))
+    )
+    result = await run_evaluator(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, ollama)
+    assert result.verdict == "implication"
+    assert len(result.violations) == 1
+    assert result.violations[0].suggested_fact == {"key": "siblings", "value": "one sister"}
+
+
+@respx.mock
+async def test_evaluator_duplicate_filter_does_not_apply_to_contradiction_verdict(
+    ollama: OllamaClient,
+) -> None:
+    """The duplicate filter only fires for implication verdicts, not contradictions."""
+    violations = [
+        {
+            "type": "contradiction",
+            "description": "Character stated a different birthplace",
+            "suggested_fact": {"key": "birthplace", "value": "Reykjavik"},
+        }
+    ]
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=_eval_json("contradiction", violations=violations))
+    )
+    result = await run_evaluator(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE, ollama)
+    # verdict is contradiction regardless; filter does not strip contradictions
+    assert result.verdict == "contradiction"
+    assert len(result.violations) == 1
+
+
+@respx.mock
+async def test_evaluator_prompt_warns_against_re_proposing_existing_facts() -> None:
+    """The evaluator prompt must instruct the model to check facts before flagging implications."""
+    prompt = build_evaluator_prompt(_CHARACTER, _FACTS, _USER_MSG, _CHAR_RESPONSE)
+    assert "already appear" in prompt.lower() or "already appear" in prompt
+
+
+# ---------------------------------------------------------------------------
 # run_evaluator — error handling
 # ---------------------------------------------------------------------------
 
