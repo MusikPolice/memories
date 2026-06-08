@@ -6,7 +6,10 @@ export default defineConfig({
     include: ['tests/frontend/**/*.test.js'],
     coverage: {
       provider: 'v8',
-      include: ['src/memories/frontend/chat.js'],
+      include: [
+        'src/memories/frontend/chat.js',
+        'src/memories/frontend/chat-component.js',
+      ],
       thresholds: {
         lines: 80,
         functions: 80,

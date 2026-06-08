@@ -107,8 +107,9 @@ src/memories/
                           #   cascade_on_fact_edit(), cascade_on_fact_delete(), compute_depth()
     chat_service.py    # run_turn(): full per-turn orchestration
                        # run_contradiction_loop(): character + evaluator, retries until clean
-  frontend/index.html  # Vue 3 CDN app (no build step); two-panel chat + facts/inferences sidechannel
-  frontend/chat.js     # Extracted pure logic (SSE parsing, notification builder, API helpers); tested
+  frontend/index.html          # Vue 3 CDN app (no build step); template + thin bootstrap; uses importmap for vue ESM
+  frontend/chat-component.js  # Vue component setup() — all reactive state, methods, SSE handlers; tested
+  frontend/chat.js             # Pure functions (SSE parsing, notification builder, API helpers); tested
 ```
 
 ### Key patterns
@@ -152,14 +153,21 @@ tests/
     test_*_repo.py         # one file per DB repository
     test_api_*.py          # one file per router (including test_api_inference_generation.py, test_api_implication.py)
   frontend/
-    chat.test.js           # Vitest tests for chat.js pure logic
+    chat.test.js           # Vitest tests for chat.js pure logic (SSE parsing, API helpers, notification building)
+    chat-component.test.js # Vitest tests for chat-component.js reactive state (setup() called directly)
 ```
 
 **Python tests**: Integration tests override both `get_db` (in-memory aiosqlite) and `get_ollama` (client pointing to `http://test-ollama-integration:11434`). Ollama HTTP calls are mocked with `respx`. Use `make_ollama_ndjson()` for character responses and `make_evaluator_ndjson()` for evaluator responses. Coverage threshold is 80% overall; `frontend/` is excluded.
 
-**Frontend tests**: Vitest + jsdom, targeting `tests/frontend/**/*.test.js`. Cover SSE block parsing, status label mapping, notification object construction, and API call shape/URL.
+**Frontend tests**: Vitest + jsdom, targeting `tests/frontend/**/*.test.js`. `chat.test.js` covers SSE block parsing, status label mapping, notification object construction, and API call shape/URL. `chat-component.test.js` covers reactive state management via `ChatComponent.setup()` called directly (no mount).
 
 **Rule:** any new logic added to `chat.js` must have corresponding tests in `tests/frontend/`. When adding new SSE event types, notification types, or API endpoints, update both `chat.js` and `chat.test.js` in the same commit.
+
+**Rule:** any new SSE sidechannel type requires four things in the same commit:
+1. A case in `buildNotificationFromSidechannel` in `chat.js` — with tests in `chat.test.js`
+2. A `v-else-if="msg.scType === '...'"` notification card in `index.html`
+3. A handler in the `sendMessage` SSE loop in `chat-component.js`
+4. A test in `chat-component.test.js` covering the handler behaviour
 
 ### Configurable limits (environment variables)
 

@@ -366,12 +366,6 @@ describe('Phase 3 inference API helpers', () => {
     );
   });
 
-  it('apiGenerateInferences_uses_post_method', async () => {
-    await apiGenerateInferences(7);
-    const [, opts] = fetch.mock.calls[0];
-    expect(opts.method).toBe('POST');
-  });
-
   it('apiRevalidateInferences_posts_to_correct_url', async () => {
     await apiRevalidateInferences(7, 42);
     expect(fetch).toHaveBeenCalledWith(
@@ -599,16 +593,6 @@ describe('Phase 4 buildNotificationFromSidechannel — mutability implication', 
 // ---------------------------------------------------------------------------
 
 describe('Phase 5 buildNotificationFromSidechannel — experience_update', () => {
-  it('buildNotificationFromSidechannel_handles_experience_update_type', () => {
-    const payload = {
-      type: 'experience_update',
-      turn_id: 4,
-      experience_updates: [{ contradicted_experience_id: 5, description: 'Character is now in New York' }],
-    };
-    const notif = buildNotificationFromSidechannel(payload);
-    expect(notif).not.toBeNull();
-  });
-
   it('buildNotificationFromSidechannel_experience_update_has_scType', () => {
     const payload = { type: 'experience_update', turn_id: 4, experience_updates: [] };
     const notif = buildNotificationFromSidechannel(payload);
@@ -675,12 +659,6 @@ describe('Phase 5 apiEndSession', () => {
       '/api/sessions/7/end',
       expect.objectContaining({ method: 'POST' })
     );
-  });
-
-  it('apiEndSession_uses_post_method', async () => {
-    await apiEndSession(7);
-    const [, opts] = fetch.mock.calls[0];
-    expect(opts.method).toBe('POST');
   });
 
   it('apiEndSession_sends_no_body', async () => {
@@ -789,11 +767,6 @@ describe('Phase 5 apiDeleteExperience', () => {
     );
   });
 
-  it('apiDeleteExperience_uses_delete_method', async () => {
-    await apiDeleteExperience(7, 42);
-    const [, opts] = fetch.mock.calls[0];
-    expect(opts.method).toBe('DELETE');
-  });
 });
 
 // ---------------------------------------------------------------------------
