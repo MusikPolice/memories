@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from memories.database import (
@@ -23,8 +24,13 @@ from memories.database import (
 )
 from memories.deps import get_db, get_ollama
 from memories.exceptions import NotFoundError
+from memories.models import Fact, Session
 from memories.services.chat_service import MAX_CONTRADICTION_RETRIES, run_contradiction_loop
-from memories.services.inference_service import MAX_INFERENCE_DEPTH, compute_depth
+from memories.services.inference_service import (
+    MAX_INFERENCE_DEPTH,
+    cascade_on_fact_edit,
+    compute_depth,
+)
 from memories.services.ollama_client import OllamaClient
 from memories.services.prompt_builder import build_system_prompt
 
@@ -219,3 +225,130 @@ async def ignore_inference(
     session = await get_session(db, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 endpoints — extraction resolution
+# ---------------------------------------------------------------------------
+
+
+class _UndoFactBody(BaseModel):
+    fact_id: int
+    restore_value: str
+
+
+class _AcceptImplicitBody(BaseModel):
+    key: str
+    value: str
+    category: Literal["user", "character", "setting"]
+    mutability: Literal["immutable", "low", "high"]
+    existing_fact_id: int | None = None
+
+
+class _IgnoreImplicitBody(BaseModel):
+    key: str
+
+
+async def _get_active_session(db: aiosqlite.Connection, session_id: int) -> Session:
+    """Return session or raise 404/409."""
+    session = await get_session(db, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    if session.ended_at is not None:
+        raise HTTPException(status_code=409, detail="Session has ended")
+    return session
+
+
+async def _find_owned_fact(db: aiosqlite.Connection, character_id: int, fact_id: int) -> Fact:
+    """Return fact or raise 404 if not found or not owned by character."""
+    facts = await get_facts(db, character_id)
+    fact = next((f for f in facts if f.id == fact_id), None)
+    if fact is None:
+        raise HTTPException(status_code=404, detail=f"Fact {fact_id} not found")
+    return fact
+
+
+@router.post("/{session_id}/turns/{turn_id}/undo-user-fact")
+async def undo_user_fact(
+    session_id: int,
+    turn_id: int,
+    body: _UndoFactBody,
+    db: _DB,
+    ollama: _Ollama,
+) -> dict[str, Any]:
+    """Restore a Tier 2 auto-applied fact to a previous value."""
+    session = await _get_active_session(db, session_id)
+    fact = await _find_owned_fact(db, session.character_id, body.fact_id)
+
+    await update_fact(db, fact_id=fact.id, value=body.restore_value)
+
+    stale = await cascade_on_fact_edit(db, session.character_id, fact.id, ollama)
+
+    # Re-fetch updated fact for the response
+    updated_facts = await get_facts(db, session.character_id)
+    updated_fact = next(f for f in updated_facts if f.id == fact.id)
+
+    return {
+        "fact": updated_fact.model_dump(mode="json"),
+        "stale_inferences": [i.model_dump(mode="json") for i in stale],
+    }
+
+
+@router.post("/{session_id}/turns/{turn_id}/accept-implicit-fact")
+async def accept_implicit_fact(
+    session_id: int,
+    turn_id: int,
+    body: _AcceptImplicitBody,
+    db: _DB,
+    ollama: _Ollama,
+) -> JSONResponse:
+    """Accept a Tier 3 or Tier 4 implicit fact proposal."""
+    session = await _get_active_session(db, session_id)
+
+    if body.existing_fact_id is not None:
+        # Tier 4: update existing fact
+        fact = await _find_owned_fact(db, session.character_id, body.existing_fact_id)
+        await update_fact(db, fact_id=fact.id, value=body.value)
+
+        stale = await cascade_on_fact_edit(db, session.character_id, fact.id, ollama)
+
+        updated_facts = await get_facts(db, session.character_id)
+        updated_fact = next(f for f in updated_facts if f.id == fact.id)
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "fact": updated_fact.model_dump(mode="json"),
+                "stale_inferences": [i.model_dump(mode="json") for i in stale],
+            },
+        )
+    else:
+        # Tier 3: create new fact
+        new_fact = await create_fact(
+            db,
+            character_id=session.character_id,
+            key=body.key,
+            value=body.value,
+            category=body.category,
+            mutability=body.mutability,
+        )
+
+        return JSONResponse(
+            status_code=201,
+            content={
+                "fact": new_fact.model_dump(mode="json"),
+                "stale_inferences": [],
+            },
+        )
+
+
+@router.post("/{session_id}/turns/{turn_id}/ignore-implicit-fact")
+async def ignore_implicit_fact(
+    session_id: int,
+    turn_id: int,
+    body: _IgnoreImplicitBody,
+    db: _DB,
+) -> dict[str, Any]:
+    """Dismiss a Tier 3/4 implicit fact proposal without writing to DB."""
+    await _get_active_session(db, session_id)
+    return {}

@@ -232,7 +232,7 @@ async def revalidate_single_inference(
         {
             "role": "system",
             "content": (
-                "You are a logical fact-checker. " "Return only the JSON object as instructed."
+                "You are a logical fact-checker. Return only the JSON object as instructed."
             ),
         },
         {"role": "user", "content": prompt},
@@ -241,6 +241,9 @@ async def revalidate_single_inference(
     try:
         content, _ = await ollama.chat(model, messages, think=False, format="json")
         data = json.loads(_strip_fences(content))
+        # Accept both {"holds": false} and {"verdict": "stale"} as "does not hold"
+        if data.get("verdict") == "stale":
+            return False
         return bool(data.get("holds", True))
     except (json.JSONDecodeError, ValueError, KeyError):
         # Conservative: don't mark stale on parse ambiguity.

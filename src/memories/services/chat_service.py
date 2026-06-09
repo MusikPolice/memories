@@ -9,6 +9,7 @@ from typing import Any
 import aiosqlite
 
 from memories.database import (
+    create_fact,
     create_inference,
     delete_experience,
     get_active_segment,
@@ -20,6 +21,7 @@ from memories.database import (
     next_turn_id,
     store_decision,
     store_message,
+    update_fact,
 )
 from memories.exceptions import NotFoundError, SessionEndedError
 from memories.models import Character, Experience, Fact, Inference
@@ -37,8 +39,13 @@ from memories.services.experience_service import (
     remove_active_experience,
     retrieve_experiences,
 )
+from memories.services.extraction_service import (
+    ExtractionParseError,
+    ExtractionResult,
+    run_fact_extractor,
+)
 from memories.services.inference_service import MAX_INFERENCE_DEPTH, compute_depth
-from memories.services.ollama_client import OllamaClient
+from memories.services.ollama_client import OllamaClient, OllamaConnectionError
 from memories.services.prompt_builder import build_system_prompt
 
 _log = logging.getLogger(__name__)
@@ -133,10 +140,11 @@ async def run_turn(
     user_content: str,
     ollama: OllamaClient,
     think: bool = False,
-) -> tuple[str, str, int, EvaluatorResult, dict[int, float]]:
+) -> tuple[str, str, int, EvaluatorResult, dict[int, float], ExtractionResult]:
     """Execute one conversation turn.
 
-    Returns ``(response_content, thinking_text, turn_id, evaluator_result, experience_scores)``.
+    Returns ``(response_content, thinking_text, turn_id, evaluator_result,
+    experience_scores, extraction_result)``.
     The assistant message is stored only after the evaluator confirms the
     response is not a contradiction (or retries are exhausted).
     """
@@ -176,6 +184,38 @@ async def run_turn(
     if new_experiences:
         add_active_experiences(session_id, new_experiences)
         _log.info("session=%d retrieved %d new experience(s)", session_id, len(new_experiences))
+
+    # --- Fact extraction (Phase 6) ---
+    extraction_result = ExtractionResult()
+    try:
+        extraction_result = await run_fact_extractor(
+            user_content, character, facts, inferences, ollama
+        )
+        for extracted in extraction_result.new_facts:
+            try:
+                created = await create_fact(
+                    db,
+                    character_id=session.character_id,
+                    key=extracted.key,
+                    value=extracted.value,
+                    category=extracted.category,
+                    mutability=extracted.mutability,
+                )
+                extracted.fact_id = created.id
+            except aiosqlite.IntegrityError:
+                _log.debug("extraction tier1: skipping duplicate fact key=%s", extracted.key)
+        for fact_upd in extraction_result.fact_updates:
+            try:
+                await update_fact(db, fact_id=fact_upd.fact_id, value=fact_upd.new_value)
+            except NotFoundError:
+                _log.warning(
+                    "extraction tier2: fact_id=%d not found, skipping update", fact_upd.fact_id
+                )
+        if extraction_result.new_facts or extraction_result.fact_updates:
+            facts = await get_facts(db, session.character_id)
+    except (ExtractionParseError, OllamaConnectionError) as exc:
+        _log.warning("fact extraction failed: %s", exc)
+        extraction_result = ExtractionResult()
 
     active = get_active_experiences(session_id)
     system_prompt = build_system_prompt(character, facts, inferences, active or None)
@@ -301,4 +341,4 @@ async def run_turn(
         eval_result.verdict,
         len(eval_result.violations),
     )
-    return char_content, char_thinking, turn_id, eval_result, experience_scores
+    return char_content, char_thinking, turn_id, eval_result, experience_scores, extraction_result

@@ -226,8 +226,8 @@ async def get_facts(db: aiosqlite.Connection, character_id: int) -> list[Fact]:
 
 async def update_fact(
     db: aiosqlite.Connection,
-    *,
     fact_id: int,
+    *,
     value: str,
     category: str | None = None,
     mutability: str | None = None,
