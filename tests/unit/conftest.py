@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import aiosqlite
@@ -133,5 +134,7 @@ async def fact(db: aiosqlite.Connection, character: Character) -> Fact:
 
 
 @pytest.fixture
-def ollama() -> OllamaClient:
-    return OllamaClient(base_url=OLLAMA_BASE_URL)
+async def ollama() -> AsyncGenerator[OllamaClient, None]:
+    client = OllamaClient(base_url=OLLAMA_BASE_URL)
+    yield client
+    await client.aclose()

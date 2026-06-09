@@ -30,11 +30,10 @@ from memories.services.ollama_client import OllamaClient, OllamaConnectionError,
 _log = logging.getLogger(__name__)
 
 
-async def _warmup_models(db: aiosqlite.Connection) -> None:
+async def _warmup_models(db: aiosqlite.Connection, ollama: OllamaClient) -> None:
     """Preload every model referenced by an existing character into Ollama's memory."""
     chars = await list_characters(db)
     models = {c.current_model_name or c.modelfile_base for c in chars}
-    ollama = OllamaClient()
     for model in models:
         _log.info("warming up model: %s", model)
         try:
@@ -53,12 +52,16 @@ async def _warmup_models(db: aiosqlite.Connection) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     db_path = os.getenv("MEMORIES_DB_PATH", "memories.db")
+    ollama = OllamaClient()
+    deps.set_ollama(ollama)
     async with aiosqlite.connect(db_path) as conn:
         await init_db(conn)
         deps.set_db(conn)
-        await _warmup_models(conn)
+        await _warmup_models(conn, ollama)
         yield
     deps.set_db(None)
+    deps.set_ollama(None)
+    await ollama.aclose()
 
 
 app = FastAPI(title="Memories", lifespan=lifespan)

@@ -9,6 +9,7 @@ import aiosqlite
 from memories.services.ollama_client import OllamaClient
 
 _db: aiosqlite.Connection | None = None
+_ollama: OllamaClient | None = None
 
 
 def set_db(conn: aiosqlite.Connection | None) -> None:
@@ -22,5 +23,12 @@ async def get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
     yield _db
 
 
+def set_ollama(client: OllamaClient | None) -> None:
+    global _ollama
+    _ollama = client
+
+
 def get_ollama() -> OllamaClient:
-    return OllamaClient()
+    if _ollama is None:
+        raise RuntimeError("Ollama client not initialized")
+    return _ollama

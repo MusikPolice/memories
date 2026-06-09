@@ -32,6 +32,12 @@ class OllamaClient:
 
     def __init__(self, base_url: str | None = None) -> None:
         self.base_url = base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        self._http = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0)
+        )
+
+    async def aclose(self) -> None:
+        await self._http.aclose()
 
     async def chat(
         self,
@@ -59,12 +65,7 @@ class OllamaClient:
         if format is not None:
             payload["format"] = format
         try:
-            async with (
-                httpx.AsyncClient(
-                    timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0)
-                ) as http,
-                http.stream("POST", url, json=payload) as response,
-            ):
+            async with self._http.stream("POST", url, json=payload) as response:
                 if response.status_code != 200:
                     raise OllamaResponseError(f"Ollama returned HTTP {response.status_code}")
                 parts: list[str] = []
@@ -98,18 +99,15 @@ class OllamaClient:
         url = f"{self.base_url}/api/embed"
         payload = {"model": model, "input": text}
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
-            ) as http:
-                response = await http.post(url, json=payload)
-                if response.status_code != 200:
-                    raise OllamaResponseError(f"Ollama returned HTTP {response.status_code}")
-                data = response.json()
-                embeddings = data.get("embeddings", [])
-                if not embeddings:
-                    raise OllamaResponseError("Ollama embed response contained no embeddings")
-                vec: list[float] = embeddings[0]
-                return vec
+            response = await self._http.post(url, json=payload)
+            if response.status_code != 200:
+                raise OllamaResponseError(f"Ollama returned HTTP {response.status_code}")
+            data = response.json()
+            embeddings = data.get("embeddings", [])
+            if not embeddings:
+                raise OllamaResponseError("Ollama embed response contained no embeddings")
+            vec: list[float] = embeddings[0]
+            return vec
         except httpx.ConnectError as exc:
             raise OllamaConnectionError(str(exc)) from exc
 
@@ -122,12 +120,9 @@ class OllamaClient:
         """
         url = f"{self.base_url}/api/generate"
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
-            ) as http:
-                response = await http.post(url, json={"model": model, "keep_alive": "10m"})
-                if response.status_code != 200:
-                    raise OllamaResponseError(f"Ollama returned HTTP {response.status_code}")
+            response = await self._http.post(url, json={"model": model, "keep_alive": "10m"})
+            if response.status_code != 200:
+                raise OllamaResponseError(f"Ollama returned HTTP {response.status_code}")
         except httpx.ConnectError as exc:
             raise OllamaConnectionError(str(exc)) from exc
 
@@ -139,13 +134,10 @@ class OllamaClient:
         """
         url = f"{self.base_url}/api/embed"
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
-            ) as http:
-                response = await http.post(
-                    url, json={"model": model, "input": "", "keep_alive": "10m"}
-                )
-                if response.status_code != 200:
-                    raise OllamaResponseError(f"Ollama returned HTTP {response.status_code}")
+            response = await self._http.post(
+                url, json={"model": model, "input": "", "keep_alive": "10m"}
+            )
+            if response.status_code != 200:
+                raise OllamaResponseError(f"Ollama returned HTTP {response.status_code}")
         except httpx.ConnectError as exc:
             raise OllamaConnectionError(str(exc)) from exc

@@ -36,14 +36,17 @@ def _clear_embedding_cache() -> Any:
 
 @pytest.fixture
 async def client(db: aiosqlite.Connection) -> AsyncGenerator[AsyncClient, None]:
+    ollama_client = OllamaClient(base_url=OLLAMA_BASE_URL)
+
     async def _get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
         yield db
 
     app.dependency_overrides[get_db] = _get_db
-    app.dependency_overrides[get_ollama] = lambda: OllamaClient(base_url=OLLAMA_BASE_URL)
+    app.dependency_overrides[get_ollama] = lambda: ollama_client
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
     app.dependency_overrides.clear()
+    await ollama_client.aclose()
 
 
 @pytest.fixture

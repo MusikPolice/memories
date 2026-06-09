@@ -135,7 +135,7 @@ The dot-product loop ([`experience_service.py:71`](../src/memories/services/expe
 
 ---
 
-## 7. Reuse the httpx client across Ollama calls — LOW/MEDIUM impact
+## 7. ~~Reuse the httpx client across Ollama calls~~ — DONE
 
 **What's happening**
 
@@ -220,7 +220,7 @@ This is a partial index; SQLite will use it for the exact query pattern used in 
 | 4 | Skip extraction on trivial messages | [`chat_service.py:192`](../src/memories/services/chat_service.py), [`extraction_service.py`](../src/memories/services/extraction_service.py) | Med | Low |
 | 5 | Window message history (last N turns) | [`chat_service.py:236`](../src/memories/services/chat_service.py) | High (long sessions) | Trivial |
 | 6 | ~~Cache experience embeddings in memory~~ ✓ | [`experience_service.py:140`](../src/memories/services/experience_service.py), [`database.py:673`](../src/memories/database.py) | Med | Low |
-| 7 | Reuse httpx client across calls | [`ollama_client.py:33–133`](../src/memories/services/ollama_client.py) | Low | Low |
+| 7 | ~~Reuse httpx client across calls~~ ✓ | [`ollama_client.py:33–133`](../src/memories/services/ollama_client.py) | Low | Low |
 | 8 | Replace status poll busy-wait | [`chat.py:54–59`](../src/memories/routers/chat.py) | Low | Low |
 | 9 | Partial index on experiences | [`database.py:87`](../src/memories/database.py) | Low now, high later | Trivial |
 
