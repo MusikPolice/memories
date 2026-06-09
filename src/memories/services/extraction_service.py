@@ -115,7 +115,7 @@ Return a JSON object with this exact structure:
     {
       "key": "...",
       "value": "...",
-      "category": "user | character | setting",
+      "category": "user | setting",
       "mutability": "immutable | low | high",
       "source_quote": "exact phrase from the message"
     }
@@ -133,7 +133,7 @@ Return a JSON object with this exact structure:
     {
       "key": "...",
       "value": "...",
-      "category": "user | character | setting",
+      "category": "user | setting",
       "mutability": "immutable | low | high",
       "source_quote": "exact phrase from the message",
       "existing_fact_id": <integer id or null>,
