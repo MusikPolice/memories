@@ -200,6 +200,37 @@ def test_retrieve_top_k_handles_k_greater_than_candidates() -> None:
     assert len(result) == 3
 
 
+def test_retrieve_top_k_excludes_candidates_below_min_score() -> None:
+    candidates = _candidates(3, scores=[0.9, 0.5, 0.1])
+    query = [1.0, 0.0]
+    result = retrieve_top_k(query, candidates, k=3, min_score=0.3)
+    ids = {e.id for e in result}
+    assert 1 in ids and 2 in ids  # scores 0.9 and 0.5 pass
+    assert 3 not in ids  # score 0.1 is below threshold
+
+
+def test_retrieve_top_k_returns_empty_when_all_below_min_score() -> None:
+    candidates = _candidates(3, scores=[0.1, 0.2, 0.05])
+    query = [1.0, 0.0]
+    result = retrieve_top_k(query, candidates, k=3, min_score=0.5)
+    assert result == []
+
+
+def test_retrieve_top_k_min_score_zero_includes_zero_scoring_candidates() -> None:
+    candidates = _candidates(2, scores=[0.5, 0.0])
+    query = [1.0, 0.0]
+    result = retrieve_top_k(query, candidates, k=2, min_score=0.0)
+    assert len(result) == 2  # score=0.0 passes the >= 0.0 threshold
+
+
+def test_retrieve_top_k_min_score_excludes_negative_scoring_candidates() -> None:
+    candidates = _candidates(2, scores=[0.5, -0.3])
+    query = [1.0, 0.0]
+    result = retrieve_top_k(query, candidates, k=2, min_score=0.0)
+    assert len(result) == 1
+    assert result[0].id == 1  # only the 0.5-scorer passes
+
+
 # ---------------------------------------------------------------------------
 # Active experience tracking
 # ---------------------------------------------------------------------------

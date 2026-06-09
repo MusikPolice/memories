@@ -23,6 +23,7 @@ _log = logging.getLogger(__name__)
 
 EMBED_MODEL: str = os.getenv("EMBED_MODEL", "nomic-embed-text")
 TOP_K_EXPERIENCES: int = int(os.getenv("TOP_K_EXPERIENCES", "5"))
+MIN_EXPERIENCE_SCORE: float = float(os.getenv("MIN_EXPERIENCE_SCORE", "0.0"))
 
 
 # ---------------------------------------------------------------------------
@@ -64,9 +65,11 @@ def retrieve_top_k(
     candidates: list[tuple[Experience, list[float]]],
     k: int,
     exclude_ids: set[int] | None = None,
+    min_score: float = 0.0,
 ) -> list[Experience]:
     exclude_ids = exclude_ids or set()
     scored = [(exp, _dot(query, vec)) for exp, vec in candidates if exp.id not in exclude_ids]
+    scored = [(exp, score) for exp, score in scored if score >= min_score]
     scored.sort(key=lambda pair: pair[1], reverse=True)
     return [exp for exp, _ in scored[:k]]
 
@@ -127,6 +130,7 @@ async def retrieve_experiences(
     ollama: OllamaClient,
     top_k: int = TOP_K_EXPERIENCES,
     exclude_ids: set[int] | None = None,
+    min_score: float = MIN_EXPERIENCE_SCORE,
 ) -> tuple[list[Experience], dict[int, float]]:
     """Return (new_experiences, all_scores).
 
@@ -142,7 +146,7 @@ async def retrieve_experiences(
         _log.warning("embed call failed — skipping experience retrieval: %s", exc)
         return [], {}
     all_scores = {exp.id: _dot(query_vec, vec) for exp, vec in candidates}
-    new_exps = retrieve_top_k(query_vec, candidates, top_k, exclude_ids)
+    new_exps = retrieve_top_k(query_vec, candidates, top_k, exclude_ids, min_score)
     return new_exps, all_scores
 
 
@@ -152,6 +156,7 @@ async def cold_start_retrieve(
     session_id: int,
     ollama: OllamaClient,
     top_k: int = TOP_K_EXPERIENCES,
+    min_score: float = MIN_EXPERIENCE_SCORE,
 ) -> list[Experience]:
     """Embed the previous session's closing journal and retrieve top-k experiences."""
     prev = await get_previous_session(db, character_id, before_session_id=session_id)
@@ -165,7 +170,7 @@ async def cold_start_retrieve(
     candidates = await get_experiences_with_embeddings(db, character_id)
     if not candidates:
         return []
-    return retrieve_top_k(journal_vec, candidates, top_k)
+    return retrieve_top_k(journal_vec, candidates, top_k, min_score=min_score)
 
 
 async def embed_and_store(

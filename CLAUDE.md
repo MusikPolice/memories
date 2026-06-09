@@ -190,6 +190,7 @@ tests/
 | `MEMORIES_DB_PATH` | `memories.db` | SQLite database file path |
 | `EMBED_MODEL` | `nomic-embed-text` | Ollama model used for Experience embedding and retrieval |
 | `TOP_K_EXPERIENCES` | `5` | Experiences retrieved per turn via similarity search |
+| `MIN_EXPERIENCE_SCORE` | `0.0` | Minimum cosine similarity score for an experience to be injected into context |
 
 ### What's deferred
 
