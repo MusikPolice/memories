@@ -9,6 +9,7 @@ import aiosqlite
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from memories import database
 from memories.database import create_character, create_fact, create_session
 from memories.deps import get_db, get_ollama
 from memories.main import app
@@ -24,6 +25,13 @@ def _clear_active_experiences() -> Any:
     experience_service._session_active_experiences.clear()
     yield
     experience_service._session_active_experiences.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_embedding_cache() -> Any:
+    database._experience_embedding_cache.clear()
+    yield
+    database._experience_embedding_cache.clear()
 
 
 @pytest.fixture

@@ -8,6 +8,7 @@ from typing import Any
 import aiosqlite
 import pytest
 
+from memories import database
 from memories.database import create_character, create_fact, create_session
 from memories.models import Character, Fact, Session
 from memories.services import experience_service
@@ -107,6 +108,13 @@ def _clear_active_experiences() -> Any:
     experience_service._session_active_experiences.clear()
     yield
     experience_service._session_active_experiences.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_embedding_cache() -> Any:
+    database._experience_embedding_cache.clear()
+    yield
+    database._experience_embedding_cache.clear()
 
 
 @pytest.fixture

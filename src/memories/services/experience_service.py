@@ -8,6 +8,7 @@ import os
 from typing import Any, Literal
 
 import aiosqlite
+import numpy as np
 from pydantic import BaseModel
 
 from memories.database import (
@@ -52,7 +53,7 @@ class SessionEndParseError(Exception):
 
 
 def _dot(a: list[float], b: list[float]) -> float:
-    return sum(x * y for x, y in zip(a, b, strict=True))
+    return float(np.dot(a, b))
 
 
 # ---------------------------------------------------------------------------

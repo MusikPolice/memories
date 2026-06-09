@@ -8,6 +8,7 @@ it sets row_factory and creates all tables.
 from __future__ import annotations
 
 import json
+import struct
 from typing import Any
 
 import aiosqlite
@@ -616,12 +617,21 @@ async def delete_inference(db: aiosqlite.Connection, inference_id: int) -> None:
 
 
 def _embedding_to_blob(embedding: list[float]) -> bytes:
-    return json.dumps(embedding).encode()
+    return struct.pack(f"{len(embedding)}d", *embedding)
 
 
 def _blob_to_embedding(blob: bytes) -> list[float]:
-    result: list[float] = json.loads(blob.decode())
-    return result
+    if blob[:1] == b"[":  # legacy JSON-encoded blob — transparent migration path
+        result: list[float] = json.loads(blob.decode())
+        return result
+    n = len(blob) // 8
+    return list(struct.unpack(f"{n}d", blob))
+
+
+# Module-level embedding cache: character_id → {experience_id → (Experience, vec)}
+# Populated lazily on first get_experiences_with_embeddings call per character.
+# Write-through on create (only when already loaded); evicted by ID on delete.
+_experience_embedding_cache: dict[int, dict[int, tuple[Experience, list[float]]]] = {}
 
 
 def _parse_experience(row: aiosqlite.Row) -> Experience:
@@ -651,7 +661,10 @@ async def create_experience(
         await db.execute("SELECT * FROM experiences WHERE id = ?", (cursor.lastrowid,))
     ).fetchone()
     assert row is not None
-    return _parse_experience(row)
+    exp = _parse_experience(row)
+    if character_id in _experience_embedding_cache:
+        _experience_embedding_cache[character_id][exp.id] = (exp, _blob_to_embedding(embedding))
+    return exp
 
 
 async def get_experience(db: aiosqlite.Connection, experience_id: int) -> Experience | None:
@@ -673,6 +686,8 @@ async def get_experiences(db: aiosqlite.Connection, character_id: int) -> list[E
 async def get_experiences_with_embeddings(
     db: aiosqlite.Connection, character_id: int
 ) -> list[tuple[Experience, list[float]]]:
+    if character_id in _experience_embedding_cache:
+        return list(_experience_embedding_cache[character_id].values())
     cursor = await db.execute(
         "SELECT * FROM experiences"
         " WHERE character_id = ? AND embedding IS NOT NULL"
@@ -680,13 +695,14 @@ async def get_experiences_with_embeddings(
         (character_id,),
     )
     rows = await cursor.fetchall()
-    result = []
+    result: list[tuple[Experience, list[float]]] = []
     for row in rows:
         d = _row(row)
         blob: bytes = d.pop("embedding")
         exp = Experience.model_validate(d)
         vec = _blob_to_embedding(blob)
         result.append((exp, vec))
+    _experience_embedding_cache[character_id] = {exp.id: (exp, vec) for exp, vec in result}
     return result
 
 
@@ -695,6 +711,8 @@ async def delete_experience(db: aiosqlite.Connection, experience_id: int) -> Non
     await db.commit()
     if cursor.rowcount == 0:
         raise NotFoundError(f"Experience {experience_id} not found")
+    for char_cache in _experience_embedding_cache.values():
+        char_cache.pop(experience_id, None)
 
 
 async def update_session_closing_journal(

@@ -7,6 +7,7 @@ import pytest
 
 from memories.database import (
     _embedding_to_blob,
+    _experience_embedding_cache,
     create_experience,
     create_session,
     delete_experience,
@@ -293,6 +294,107 @@ async def test_get_experiences_with_embeddings_skips_null_embedding(
     await db.commit()
     results = await get_experiences_with_embeddings(db, character.id)
     assert results == []
+
+
+# ---------------------------------------------------------------------------
+# Embedding cache behaviour
+# ---------------------------------------------------------------------------
+
+
+async def test_cache_populated_after_first_load(
+    db: aiosqlite.Connection, character: Character, session: Session, embed_bytes: bytes
+) -> None:
+    await create_experience(
+        db,
+        character_id=character.id,
+        session_id=session.id,
+        statement="Cached exp",
+        source="told_by_user",
+        embedding=embed_bytes,
+    )
+    await get_experiences_with_embeddings(db, character.id)
+    assert character.id in _experience_embedding_cache
+    assert len(_experience_embedding_cache[character.id]) == 1
+
+
+async def test_cache_serves_result_without_db_on_second_call(
+    db: aiosqlite.Connection, character: Character, session: Session, embed_bytes: bytes
+) -> None:
+    exp = await create_experience(
+        db,
+        character_id=character.id,
+        session_id=session.id,
+        statement="Should be cached",
+        source="told_by_user",
+        embedding=embed_bytes,
+    )
+    await get_experiences_with_embeddings(db, character.id)
+    # Delete the row directly so a real DB query would return nothing
+    await db.execute("DELETE FROM experiences WHERE id = ?", (exp.id,))
+    await db.commit()
+    # Evict delete's own cache update by re-inserting into cache manually is NOT needed —
+    # we want to test that the *get* path uses the cache, so we bypass delete eviction
+    # by restoring the cache entry that delete just removed.
+    _experience_embedding_cache[character.id][exp.id] = (exp, [0.1, 0.2, 0.3, 0.4])
+    results = await get_experiences_with_embeddings(db, character.id)
+    assert len(results) == 1
+    assert results[0][0].id == exp.id
+
+
+async def test_cache_empty_dict_stored_when_no_experiences(
+    db: aiosqlite.Connection, character: Character, session: Session
+) -> None:
+    await get_experiences_with_embeddings(db, character.id)
+    assert character.id in _experience_embedding_cache
+    assert _experience_embedding_cache[character.id] == {}
+
+
+async def test_create_experience_writes_through_to_loaded_cache(
+    db: aiosqlite.Connection, character: Character, session: Session, embed_bytes: bytes
+) -> None:
+    # Pre-warm the cache (will be empty for this character)
+    await get_experiences_with_embeddings(db, character.id)
+    exp = await create_experience(
+        db,
+        character_id=character.id,
+        session_id=session.id,
+        statement="Write-through test",
+        source="told_by_user",
+        embedding=embed_bytes,
+    )
+    assert exp.id in _experience_embedding_cache[character.id]
+
+
+async def test_create_experience_does_not_populate_cache_before_first_load(
+    db: aiosqlite.Connection, character: Character, session: Session, embed_bytes: bytes
+) -> None:
+    # Cache has never been loaded for this character
+    assert character.id not in _experience_embedding_cache
+    await create_experience(
+        db,
+        character_id=character.id,
+        session_id=session.id,
+        statement="No cache yet",
+        source="told_by_user",
+        embedding=embed_bytes,
+    )
+    assert character.id not in _experience_embedding_cache
+
+
+async def test_delete_experience_evicts_from_cache(
+    db: aiosqlite.Connection, character: Character, session: Session, experience: Experience
+) -> None:
+    await get_experiences_with_embeddings(db, character.id)
+    assert experience.id in _experience_embedding_cache[character.id]
+    await delete_experience(db, experience.id)
+    assert experience.id not in _experience_embedding_cache.get(character.id, {})
+
+
+async def test_delete_experience_no_op_when_cache_not_loaded(
+    db: aiosqlite.Connection, experience: Experience
+) -> None:
+    # Cache was never loaded; delete should not raise
+    await delete_experience(db, experience.id)
 
 
 # ---------------------------------------------------------------------------

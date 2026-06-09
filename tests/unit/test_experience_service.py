@@ -119,6 +119,21 @@ def test_blob_to_embedding_returns_list_of_floats() -> None:
     assert all(isinstance(v, float) for v in result)
 
 
+def test_blob_to_embedding_reads_legacy_json_format() -> None:
+    """Blobs written with the old json.dumps format are still decoded correctly."""
+    import json
+
+    legacy_blob = json.dumps([1.0, 2.0, 3.0]).encode()
+    assert _blob_to_embedding(legacy_blob) == [1.0, 2.0, 3.0]
+
+
+def test_embedding_to_blob_uses_binary_struct_format() -> None:
+    """New blobs are compact binary (8 bytes per float), not JSON text."""
+    blob = _embedding_to_blob([1.0, 2.0])
+    assert blob[:1] != b"["  # not JSON
+    assert len(blob) == 16  # 2 * 8 bytes
+
+
 # ---------------------------------------------------------------------------
 # Dot product / similarity
 # ---------------------------------------------------------------------------
