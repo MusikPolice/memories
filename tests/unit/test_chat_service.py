@@ -26,14 +26,12 @@ from memories.database import (
     create_experience,
     create_fact,
     create_inference,
-    create_session,
     end_session,
     get_decisions,
     get_experiences,
     get_facts,
     get_inferences,
     get_messages,
-    update_session_closing_journal,
 )
 from memories.exceptions import NotFoundError, SessionEndedError
 from memories.models import Character, Session
@@ -838,96 +836,30 @@ async def test_run_turn_includes_active_experiences_in_system_prompt(
     assert "User lives in Chicago" in system_content
 
 
-async def test_run_turn_cold_start_embeds_previous_journal(
+async def test_run_turn_embed_query_uses_user_message(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
-    await update_session_closing_journal(db, session.id, "A memorable conversation.")
-    session2 = await create_session(db, character_id=character.id)
-    await _insert_experience(db, character.id, session.id)
-
-    with respx.mock:
-        embed_route = respx.post(_EMBED_URL).mock(
-            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
-        )
-        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
-        await run_turn(db, session2.id, "Hi there", ollama)
-
-    # Should be called at least once for cold-start journal embedding
-    assert embed_route.called
-    bodies = [json.loads(c.request.content) for c in embed_route.calls]
-    inputs = [b.get("input", "") for b in bodies]
-    assert any("A memorable conversation." in inp for inp in inputs)
-
-
-async def test_run_turn_cold_start_seeds_active_experiences(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    await update_session_closing_journal(db, session.id, "Journal.")
-    session2 = await create_session(db, character_id=character.id)
-    await _insert_experience(db, character.id, session.id)
-
-    with respx.mock:
-        respx.post(_EMBED_URL).mock(
-            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
-        )
-        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
-        await run_turn(db, session2.id, "First message", ollama)
-
-    active = get_active_experiences(session2.id)
-    assert len(active) > 0
-
-
-async def test_run_turn_no_cold_start_when_no_previous_session(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    # No previous session with closing journal — cold-start should not fire
+    """The embed call uses the user's message as the query, not a journal or other text."""
     await _insert_experience(db, character.id, session.id)
     with respx.mock:
         embed_route = respx.post(_EMBED_URL).mock(
             return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
         )
         respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
-        await run_turn(db, session.id, "Hello", ollama)
+        await run_turn(db, session.id, "Hello there", ollama)
 
-    # embed IS called for user-message retrieval, but NOT for cold start journal
-    call_inputs = [json.loads(c.request.content).get("input", "") for c in embed_route.calls]
-    assert not any("journal" in inp.lower() for inp in call_inputs)
-
-
-async def test_run_turn_cold_start_only_fires_on_first_turn(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    await update_session_closing_journal(db, session.id, "Previous session journal.")
-    session2 = await create_session(db, character_id=character.id)
-    await _insert_experience(db, character.id, session.id)
-
-    with respx.mock:
-        respx.post(_EMBED_URL).mock(
-            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
-        )
-        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
-        await run_turn(db, session2.id, "Turn one", ollama)
-
-    with respx.mock:
-        embed_route2 = respx.post(_EMBED_URL).mock(
-            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
-        )
-        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
-        await run_turn(db, session2.id, "Turn two", ollama)
-
-    # On the second turn, embed is called at most once (for user message), not twice
-    for call in embed_route2.calls:
-        body = json.loads(call.request.content)
-        assert "Previous session journal." not in body.get("input", "")
+    inputs = [json.loads(c.request.content).get("input", "") for c in embed_route.calls]
+    assert any("Hello there" in inp for inp in inputs)
 
 
-async def test_run_turn_active_set_accumulates_across_turns(
+async def test_run_turn_active_set_reflects_current_turn_only(
     db: aiosqlite.Connection,
     character: Character,
     session: Session,
     ollama: OllamaClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Active set after each turn contains only what scored well that turn, not prior turns."""
     blob = _embedding_to_blob([1.0, 0.0, 0.0, 0.0])
     exp1 = await create_experience(
         db,
@@ -947,12 +879,9 @@ async def test_run_turn_active_set_accumulates_across_turns(
         embedding=blob2,
     )
 
-    # Limit to 1 retrieval per turn so each turn fetches a distinct experience.
-    # Patching the name inside chat_service (where it was imported) is required
-    # because TOP_K_EXPERIENCES is a module-level constant evaluated at import time.
     monkeypatch.setattr("memories.services.chat_service.TOP_K_EXPERIENCES", 1)
 
-    # Turn 1: query vector aligns with exp1 → retrieves exp1
+    # Turn 1: query aligns with exp1
     with respx.mock:
         respx.post(_EMBED_URL).mock(
             return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
@@ -960,7 +889,7 @@ async def test_run_turn_active_set_accumulates_across_turns(
         respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
         await run_turn(db, session.id, "First", ollama)
 
-    # Turn 2: query vector aligns with exp2 → exp1 already active, retrieves exp2
+    # Turn 2: query aligns with exp2 — active set should be replaced, not accumulated
     with respx.mock:
         respx.post(_EMBED_URL).mock(
             return_value=httpx.Response(200, content=make_embed_response([0.0, 1.0, 0.0, 0.0]))
@@ -968,9 +897,9 @@ async def test_run_turn_active_set_accumulates_across_turns(
         respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
         await run_turn(db, session.id, "Second", ollama)
 
-    active = get_active_experiences(session.id)
-    active_ids = {e.id for e in active}
-    assert exp1.id in active_ids and exp2.id in active_ids
+    active_ids = {e.id for e in get_active_experiences(session.id)}
+    assert exp2.id in active_ids  # aligns with this turn's query
+    assert exp1.id not in active_ids  # does not align — not carried over from turn 1
 
 
 async def test_run_turn_experience_update_deletes_experience_from_db(

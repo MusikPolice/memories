@@ -35,8 +35,7 @@ from memories.services.evaluator import (
 from memories.services.experience_service import (
     TOP_K_EXPERIENCES,
     add_active_experiences,
-    cold_start_retrieve,
-    get_active_experiences,
+    clear_active_experiences,
     remove_active_experience,
     retrieve_experiences,
 )
@@ -172,27 +171,20 @@ async def run_turn(
     # --- Experience retrieval ---
     turn_id = await next_turn_id(db, session_id)
 
-    if turn_id == 1:
-        seed_experiences = await cold_start_retrieve(db, session.character_id, session_id, ollama)
-        if seed_experiences:
-            add_active_experiences(session_id, seed_experiences)
-            _log.info(
-                "session=%d cold-start loaded %d experience(s)", session_id, len(seed_experiences)
-            )
-
-    active = get_active_experiences(session_id)
-    already_active_ids = {e.id for e in active}
-    new_experiences, experience_scores = await retrieve_experiences(
+    # Re-evaluate all experiences every turn against the current user message.
+    # The active set for this turn is exactly what scores above MIN_EXPERIENCE_SCORE;
+    # nothing carries over from previous turns.
+    active, experience_scores = await retrieve_experiences(
         db,
         session.character_id,
         user_content,
         ollama,
         top_k=TOP_K_EXPERIENCES,
-        exclude_ids=already_active_ids,
     )
-    if new_experiences:
-        add_active_experiences(session_id, new_experiences)
-        _log.info("session=%d retrieved %d new experience(s)", session_id, len(new_experiences))
+    clear_active_experiences(session_id)
+    if active:
+        add_active_experiences(session_id, active)
+        _log.info("session=%d turn=%d retrieved %d experience(s)", session_id, turn_id, len(active))
 
     # --- Fact extraction (Phase 6) ---
     extraction_result = ExtractionResult()
@@ -226,7 +218,6 @@ async def run_turn(
         _log.warning("fact extraction failed: %s", exc)
         extraction_result = ExtractionResult()
 
-    active = get_active_experiences(session_id)
     system_prompt = build_system_prompt(character, facts, inferences, active or None)
     history = await get_messages(db, session_id)
     segment = await get_active_segment(db, session_id)

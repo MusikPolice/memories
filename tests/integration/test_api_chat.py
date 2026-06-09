@@ -19,9 +19,7 @@ from memories.database import (
     get_facts,
     get_inferences,
     get_messages,
-    update_session_closing_journal,
 )
-from memories.database import create_session as _create_session
 from memories.models import Character, Session
 from tests.unit.conftest import make_evaluator_ndjson, make_extractor_ndjson, make_ollama_ndjson
 
@@ -1128,52 +1126,6 @@ async def test_send_message_experience_update_delivers_message(
     assert json.loads(msg_events[0]["data"])["content"] == "Good to be in New York."
 
 
-async def test_send_message_cold_start_embeds_previous_journal(
-    db: aiosqlite.Connection, client: AsyncClient, character: Character, session: Session
-) -> None:
-    """Session 2 for same character; session 1 has a closing journal → embed called with journal."""
-    # End session 1 by writing closing_journal directly to DB
-    await update_session_closing_journal(db, session.id, "Previous journal entry.")
-    # Also mark session 1 as ended
-    await db.execute("UPDATE sessions SET ended_at = CURRENT_TIMESTAMP WHERE id = ?", (session.id,))
-    await db.commit()
-    # Create session 2
-    session2 = await _create_session(db, character_id=character.id)
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
-        embed_route = respx.post(_EMBED_URL).mock(return_value=_mock_embed_ok())
-        await client.post(f"/api/sessions/{session2.id}/messages", json={"content": "Hello"})
-    assert embed_route.called
-    all_inputs = [json.loads(c.request.content)["input"] for c in embed_route.calls]
-    assert "Previous journal entry." in all_inputs
-
-
-async def test_send_message_cold_start_seeds_active_set(
-    db: aiosqlite.Connection, client: AsyncClient, character: Character, session: Session
-) -> None:
-    """After cold start, system prompt contains experience from previous session."""
-    blob = _embedding_to_blob(_EMBED_VEC)
-    await create_experience(
-        db,
-        character_id=character.id,
-        session_id=session.id,
-        statement="User is afraid of spiders",
-        source="observed",
-        embedding=blob,
-    )
-    await update_session_closing_journal(db, session.id, "Emotional session about fears.")
-    await db.execute("UPDATE sessions SET ended_at = CURRENT_TIMESTAMP WHERE id = ?", (session.id,))
-    await db.commit()
-    session2 = await _create_session(db, character_id=character.id)
-    with respx.mock:
-        chat_route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
-        respx.post(_EMBED_URL).mock(return_value=_mock_embed_ok())
-        await client.post(f"/api/sessions/{session2.id}/messages", json={"content": "Hello"})
-    body = json.loads(chat_route.calls[1].request.content)
-    system_content = body["messages"][0]["content"]
-    assert "User is afraid of spiders" in system_content
-
-
 async def test_send_message_message_event_includes_active_experience_ids(
     db: aiosqlite.Connection, client: AsyncClient, character: Character, session: Session
 ) -> None:
@@ -1245,10 +1197,10 @@ async def test_send_message_active_experience_ids_empty_when_no_experiences(
     assert data.get("active_experience_ids", []) == []
 
 
-async def test_send_message_active_experience_ids_accumulates_across_turns(
+async def test_send_message_active_experience_ids_present_across_turns(
     db: aiosqlite.Connection, client: AsyncClient, character: Character, session: Session
 ) -> None:
-    """Second turn retrieves different experience → active_experience_ids grows."""
+    """Experiences that score above threshold appear in active_experience_ids on every turn."""
     blob = _embedding_to_blob(_EMBED_VEC)
     exp1 = await create_experience(
         db,
@@ -1266,8 +1218,7 @@ async def test_send_message_active_experience_ids_accumulates_across_turns(
         source="told_by_user",
         embedding=blob,
     )
-    # First turn — retrieves exp1 (top-1 with TOP_K_EXPERIENCES=1 override not available here)
-    # Both are equally similar, so both may be retrieved if top_k >= 2
+    # Both experiences use _EMBED_VEC so both score 1.0 and are retrieved every turn.
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn("First reply."))
         respx.post(_EMBED_URL).mock(return_value=_mock_embed_ok())
@@ -1282,7 +1233,6 @@ async def test_send_message_active_experience_ids_accumulates_across_turns(
     events = _parse_sse(response.text)
     msg_event = next(e for e in events if e.get("event") == "message")
     active_ids = json.loads(msg_event["data"]).get("active_experience_ids", [])
-    # Active set should include IDs from both turns
     assert exp1.id in active_ids or exp2.id in active_ids
 
 
