@@ -455,6 +455,33 @@ async def test_ignore_implicit_fact_does_not_modify_db(
     assert home.value == "Reykjavik"
 
 
+async def test_accept_implicit_fact_tier3_duplicate_key_updates_existing(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+    fact,
+) -> None:
+    """Tier 3 accept with a key that already exists → 200 with updated value (not 500)."""
+    # The 'fact' fixture creates home_city=Reykjavik with category='user'
+    response = await client.post(
+        f"/api/sessions/{session.id}/turns/1/accept-implicit-fact",
+        json={
+            "key": "home_city",
+            "value": "Chicago",
+            "category": "user",
+            "mutability": "low",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["fact"]["value"] == "Chicago"
+
+    facts = await get_facts(db, character.id)
+    home = next(f for f in facts if f.key == "home_city")
+    assert home.value == "Chicago"
+
+
 async def test_ignore_implicit_fact_ended_session_returns_409(
     client: AsyncClient,
     character: Character,

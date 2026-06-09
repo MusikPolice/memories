@@ -323,15 +323,36 @@ async def accept_implicit_fact(
             },
         )
     else:
-        # Tier 3: create new fact
-        new_fact = await create_fact(
-            db,
-            character_id=session.character_id,
-            key=body.key,
-            value=body.value,
-            category=body.category,
-            mutability=body.mutability,
-        )
+        # Tier 3: create new fact; fall back to update if the key already exists.
+        try:
+            new_fact = await create_fact(
+                db,
+                character_id=session.character_id,
+                key=body.key,
+                value=body.value,
+                category=body.category,
+                mutability=body.mutability,
+            )
+        except aiosqlite.IntegrityError:
+            existing = await get_fact_by_category_key(
+                db,
+                character_id=session.character_id,
+                category=body.category,
+                key=body.key,
+            )
+            if existing is None:
+                raise
+            await update_fact(db, fact_id=existing.id, value=body.value)
+            stale = await cascade_on_fact_edit(db, session.character_id, existing.id, ollama)
+            updated_facts = await get_facts(db, session.character_id)
+            updated_fact = next(f for f in updated_facts if f.id == existing.id)
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "fact": updated_fact.model_dump(mode="json"),
+                    "stale_inferences": [i.model_dump(mode="json") for i in stale],
+                },
+            )
 
         return JSONResponse(
             status_code=201,
