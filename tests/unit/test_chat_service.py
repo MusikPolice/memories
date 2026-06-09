@@ -14,6 +14,11 @@ All tests that complete a turn successfully must therefore mock all three calls.
 The embed call (/api/embed, mocked via _EMBED_URL) fires concurrently with calls[0]
 via asyncio.gather when experiences are stored in the DB.  Tests that need the embed
 call must mock _EMBED_URL separately.
+
+DB reads (character, facts, inferences, history, segment, turn_id) are all fetched in
+a single asyncio.gather after session validation.  history and segment are therefore
+loaded before the current user message is stored — the current turn's user content
+reaches the LLM only via the manually appended base_messages entry, not via history.
 """
 
 from __future__ import annotations

@@ -163,13 +163,18 @@ async def run_turn(
     if session.ended_at is not None:
         raise SessionEndedError(f"Session {session_id} has ended")
 
-    character = await get_character(db, session.character_id)
+    # Parallelize all DB reads that depend only on session, not on each other.
+    # history and segment are loaded here rather than after extraction so they
+    # share the same gather pass; both are read-only and unaffected by extraction writes.
+    character, facts, inferences, history, segment, turn_id = await asyncio.gather(
+        get_character(db, session.character_id),
+        get_facts(db, session.character_id),
+        get_inferences(db, session.character_id),
+        get_messages(db, session_id),
+        get_active_segment(db, session_id),
+        next_turn_id(db, session_id),
+    )
     assert character is not None
-
-    facts = await get_facts(db, session.character_id)
-    inferences = await get_inferences(db, session.character_id)
-
-    turn_id = await next_turn_id(db, session_id)
 
     # --- Parallel: experience retrieval (embed) + fact extraction (LLM) ---
     # Neither depends on the other: embed only needs user_content; extraction
@@ -219,8 +224,6 @@ async def run_turn(
         facts = await get_facts(db, session.character_id)
 
     system_prompt = build_system_prompt(character, facts, inferences, active or None)
-    history = await get_messages(db, session_id)
-    segment = await get_active_segment(db, session_id)
 
     await store_message(
         db,
