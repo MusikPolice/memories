@@ -104,8 +104,8 @@ export function buildNotificationFromSidechannel(payload) {
       role: 'notification',
       scType: 'extraction_applied',
       turn_id: payload.turn_id,
-      added: (payload.added || []).map(f => ({ ...f })),
-      updated: (payload.updated || []).map(u => ({ ...u })),
+      added: (payload.added || []).map(f => ({ ...f, _loading: false })),
+      updated: (payload.updated || []).map(u => ({ ...u, _loading: false })),
     };
   }
 

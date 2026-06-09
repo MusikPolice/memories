@@ -125,6 +125,14 @@
     .notification-card.contradiction .notification-title { background: #fff0ee; color: #a00000; }
     .notification-card.experience-update { border-color: #4080c0; }
     .notification-card.experience-update .notification-title { background: #eef4ff; color: #1a50a0; }
+    .notification-card.extraction-applied { border-color: #6060b0; }
+    .notification-card.extraction-applied .notification-title { background: #f0eeff; color: #302080; }
+    .notification-card.implicit-proposed { border-color: #b06020; }
+    .notification-card.implicit-proposed .notification-title { background: #fff5ee; color: #804010; }
+    .extraction-fact { margin: 6px 0; padding: 6px 0; border-bottom: 1px solid #eee; }
+    .extraction-fact:last-child { border-bottom: none; }
+    .extraction-fact .fact-kv { font-size: 13px; margin-bottom: 2px; }
+    .extraction-fact .fact-quote { font-size: 11px; color: #888; font-style: italic; margin-bottom: 4px; }
 
     .violation-desc { color: #555; margin: 8px 0 4px; line-height: 1.4; }
     .violation-fact { margin: 4px 0 8px; }
@@ -522,6 +530,76 @@
               </div>
               <div class="notification-actions">
                 <button class="btn-ignore" @click="dismissNotification(msg)">Dismiss</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Extraction applied notification (Tier 1 new facts + Tier 2 updates) -->
+          <div v-else-if="msg.role === 'notification' && msg.scType === 'extraction_applied'"
+               class="notification-card extraction-applied">
+            <div class="notification-title">📝 Facts auto-applied from your message</div>
+            <div class="notification-body">
+              <div v-for="(f, i) in msg.added" :key="'a'+i" class="extraction-fact">
+                <div class="fact-kv"><strong>{{ f.key }}</strong>: {{ f.value }}</div>
+                <div v-if="f.source_quote" class="fact-quote">"{{ f.source_quote }}"</div>
+                <div class="notification-actions">
+                  <button class="btn-ignore"
+                          :disabled="f._loading"
+                          @click="deleteExtractedFact(msg, f)">
+                    {{ f._loading ? 'Deleting…' : 'Delete' }}
+                  </button>
+                </div>
+              </div>
+              <div v-for="(u, i) in msg.updated" :key="'u'+i" class="extraction-fact">
+                <div class="fact-kv"><strong>{{ u.key }}</strong>: {{ u.old_value }} → {{ u.new_value }}</div>
+                <div v-if="u.source_quote" class="fact-quote">"{{ u.source_quote }}"</div>
+                <div class="notification-actions">
+                  <button class="btn-ignore"
+                          :disabled="u._loading"
+                          @click="undoUserFact(msg, u)">
+                    {{ u._loading ? 'Undoing…' : 'Undo' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Implicit fact proposal notification (Tier 3 new + Tier 4 updates) -->
+          <div v-else-if="msg.role === 'notification' && msg.scType === 'implicit_fact_proposed'"
+               class="notification-card implicit-proposed">
+            <div class="notification-title">🔍 Implied facts — confirm or ignore</div>
+            <div class="notification-body">
+              <div v-for="(p, i) in msg.new_proposals" :key="'np'+i" class="extraction-fact">
+                <div class="fact-kv"><strong>{{ p.key }}</strong>: {{ p.value }}</div>
+                <div v-if="p.source_quote" class="fact-quote">"{{ p.source_quote }}"</div>
+                <div class="notification-actions">
+                  <button class="btn-accept"
+                          :disabled="p._loading"
+                          @click="acceptImplicitFact(msg, p)">
+                    {{ p._loading ? 'Saving…' : 'Accept' }}
+                  </button>
+                  <button class="btn-ignore"
+                          :disabled="p._loading"
+                          @click="ignoreImplicitFact(msg, p)">
+                    Ignore
+                  </button>
+                </div>
+              </div>
+              <div v-for="(p, i) in msg.update_proposals" :key="'up'+i" class="extraction-fact">
+                <div class="fact-kv"><strong>{{ p.key }}</strong>: {{ p.old_value }} → {{ p.value }}</div>
+                <div v-if="p.source_quote" class="fact-quote">"{{ p.source_quote }}"</div>
+                <div class="notification-actions">
+                  <button class="btn-accept"
+                          :disabled="p._loading"
+                          @click="acceptImplicitFact(msg, p)">
+                    {{ p._loading ? 'Saving…' : 'Accept' }}
+                  </button>
+                  <button class="btn-ignore"
+                          :disabled="p._loading"
+                          @click="ignoreImplicitFact(msg, p)">
+                    Ignore
+                  </button>
+                </div>
               </div>
             </div>
           </div>

@@ -792,3 +792,186 @@ describe('Phase 6 SSE extraction events', () => {
     expect(factsRefreshed).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 6 — undoUserFact handler
+// ---------------------------------------------------------------------------
+
+describe('undoUserFact', () => {
+  let vm;
+
+  beforeEach(() => {
+    vm = setupComponent();
+    vm.sessionId.value = 5;
+    vm.currentCharacter.value = { id: 7, name: 'Alice' };
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('undoUserFact_calls_undo_endpoint', async () => {
+    const fact = { fact_id: 10, key: 'city', old_value: 'Oslo', new_value: 'Chicago', _loading: false };
+    const notif = { turn_id: 1, added: [], updated: [fact] };
+    vm.messages.value = [notif];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    await vm.undoUserFact(notif, fact);
+    const urls = fetch.mock.calls.map(c => c[0]);
+    expect(urls.some(u => u && u.includes('undo-user-fact'))).toBe(true);
+  });
+
+  it('undoUserFact_removes_fact_from_updated_list_on_success', async () => {
+    const fact = { fact_id: 10, key: 'city', old_value: 'Oslo', new_value: 'Chicago', _loading: false };
+    const notif = { turn_id: 1, added: [], updated: [fact] };
+    vm.messages.value = [notif];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    await vm.undoUserFact(notif, fact);
+    expect(notif.updated).toHaveLength(0);
+  });
+
+  it('undoUserFact_dismisses_notification_when_last_item_removed', async () => {
+    const fact = { fact_id: 10, key: 'city', old_value: 'Oslo', new_value: 'Chicago', _loading: false };
+    const notif = { turn_id: 1, added: [], updated: [fact] };
+    vm.messages.value = [notif];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    await vm.undoUserFact(notif, fact);
+    expect(vm.messages.value.find(m => m === notif)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6 — deleteExtractedFact handler
+// ---------------------------------------------------------------------------
+
+describe('deleteExtractedFact', () => {
+  let vm;
+
+  beforeEach(() => {
+    vm = setupComponent();
+    vm.sessionId.value = 5;
+    vm.currentCharacter.value = { id: 7, name: 'Alice' };
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('deleteExtractedFact_calls_delete_endpoint', async () => {
+    const fact = { fact_id: 20, key: 'location', value: 'Chicago', _loading: false };
+    const notif = { turn_id: 1, added: [fact], updated: [] };
+    vm.messages.value = [notif];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    await vm.deleteExtractedFact(notif, fact);
+    const urls = fetch.mock.calls.map(c => c[0]);
+    expect(urls.some(u => u && u.includes('/facts/20'))).toBe(true);
+  });
+
+  it('deleteExtractedFact_removes_fact_from_added_list_on_success', async () => {
+    const fact = { fact_id: 20, key: 'location', value: 'Chicago', _loading: false };
+    const notif = { turn_id: 1, added: [fact], updated: [] };
+    vm.messages.value = [notif];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    await vm.deleteExtractedFact(notif, fact);
+    expect(notif.added).toHaveLength(0);
+  });
+
+  it('deleteExtractedFact_dismisses_notification_when_last_item_removed', async () => {
+    const fact = { fact_id: 20, key: 'location', value: 'Chicago', _loading: false };
+    const notif = { turn_id: 1, added: [fact], updated: [] };
+    vm.messages.value = [notif];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    await vm.deleteExtractedFact(notif, fact);
+    expect(vm.messages.value.find(m => m === notif)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6 — acceptImplicitFact handler
+// ---------------------------------------------------------------------------
+
+describe('acceptImplicitFact', () => {
+  let vm;
+
+  beforeEach(() => {
+    vm = setupComponent();
+    vm.sessionId.value = 5;
+    vm.currentCharacter.value = { id: 7, name: 'Alice' };
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('acceptImplicitFact_calls_accept_endpoint', async () => {
+    const p = { key: 'mood', value: 'anxious', category: 'user', mutability: 'high', source_quote: '', _loading: false };
+    const notif = { turn_id: 1, new_proposals: [p], update_proposals: [] };
+    vm.messages.value = [notif];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    await vm.acceptImplicitFact(notif, p);
+    const urls = fetch.mock.calls.map(c => c[0]);
+    expect(urls.some(u => u && u.includes('accept-implicit-fact'))).toBe(true);
+  });
+
+  it('acceptImplicitFact_removes_proposal_from_new_proposals_on_success', async () => {
+    const p = { key: 'mood', value: 'anxious', category: 'user', mutability: 'high', _loading: false };
+    const notif = { turn_id: 1, new_proposals: [p], update_proposals: [] };
+    vm.messages.value = [notif];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    await vm.acceptImplicitFact(notif, p);
+    expect(notif.new_proposals).toHaveLength(0);
+  });
+
+  it('acceptImplicitFact_removes_proposal_from_update_proposals_when_existing_fact_id_set', async () => {
+    const p = { key: 'city', value: 'Chicago', category: 'setting', mutability: 'low', existing_fact_id: 3, _loading: false };
+    const notif = { turn_id: 1, new_proposals: [], update_proposals: [p] };
+    vm.messages.value = [notif];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    await vm.acceptImplicitFact(notif, p);
+    expect(notif.update_proposals).toHaveLength(0);
+  });
+
+  it('acceptImplicitFact_dismisses_notification_when_all_proposals_gone', async () => {
+    const p = { key: 'mood', value: 'anxious', category: 'user', mutability: 'high', _loading: false };
+    const notif = { turn_id: 1, new_proposals: [p], update_proposals: [] };
+    vm.messages.value = [notif];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    await vm.acceptImplicitFact(notif, p);
+    expect(vm.messages.value.find(m => m === notif)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6 — ignoreImplicitFact handler
+// ---------------------------------------------------------------------------
+
+describe('ignoreImplicitFact', () => {
+  let vm;
+
+  beforeEach(() => {
+    vm = setupComponent();
+    vm.sessionId.value = 5;
+    vm.currentCharacter.value = { id: 7, name: 'Alice' };
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('ignoreImplicitFact_calls_ignore_endpoint', async () => {
+    const p = { key: 'mood', value: 'anxious', category: 'user', mutability: 'high', _loading: false };
+    const notif = { turn_id: 1, new_proposals: [p], update_proposals: [] };
+    vm.messages.value = [notif];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    await vm.ignoreImplicitFact(notif, p);
+    const urls = fetch.mock.calls.map(c => c[0]);
+    expect(urls.some(u => u && u.includes('ignore-implicit-fact'))).toBe(true);
+  });
+
+  it('ignoreImplicitFact_removes_proposal_from_new_proposals', async () => {
+    const p1 = { key: 'mood', value: 'anxious', category: 'user', mutability: 'high', _loading: false };
+    const p2 = { key: 'energy', value: 'low', category: 'user', mutability: 'high', _loading: false };
+    const notif = { turn_id: 1, new_proposals: [p1, p2], update_proposals: [] };
+    vm.messages.value = [notif];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    await vm.ignoreImplicitFact(notif, p1);
+    expect(notif.new_proposals).toHaveLength(1);
+    expect(notif.new_proposals[0]).toBe(p2);
+  });
+
+  it('ignoreImplicitFact_dismisses_notification_when_all_proposals_gone', async () => {
+    const p = { key: 'mood', value: 'anxious', category: 'user', mutability: 'high', _loading: false };
+    const notif = { turn_id: 1, new_proposals: [p], update_proposals: [] };
+    vm.messages.value = [notif];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    await vm.ignoreImplicitFact(notif, p);
+    expect(vm.messages.value.find(m => m === notif)).toBeUndefined();
+  });
+});

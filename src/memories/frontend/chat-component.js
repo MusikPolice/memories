@@ -19,6 +19,10 @@ import {
   buildProposalList,
   removeContradictedExperiences,
   sortExperiences,
+  apiUndoUserFact,
+  apiAcceptImplicitFact,
+  apiIgnoreImplicitFact,
+  apiDeleteFact,
 } from './chat.js';
 
 export const ChatComponent = {
@@ -400,6 +404,75 @@ export const ChatComponent = {
       if (idx !== -1) messages.value.splice(idx, 1);
     }
 
+    // ── Phase 6 extraction resolution ──
+
+    async function undoUserFact(notif, fact) {
+      fact._loading = true;
+      try {
+        const r = await apiUndoUserFact(sessionId.value, notif.turn_id, fact.fact_id, fact.old_value);
+        if (r.ok) {
+          const idx = notif.updated.indexOf(fact);
+          if (idx !== -1) notif.updated.splice(idx, 1);
+          if (notif.added.length === 0 && notif.updated.length === 0) dismissNotification(notif);
+          await loadFacts();
+        }
+      } finally {
+        fact._loading = false;
+      }
+    }
+
+    async function deleteExtractedFact(notif, fact) {
+      fact._loading = true;
+      try {
+        const r = await apiDeleteFact(currentCharacter.value.id, fact.fact_id);
+        if (r.ok || r.status === 204) {
+          const idx = notif.added.indexOf(fact);
+          if (idx !== -1) notif.added.splice(idx, 1);
+          if (notif.added.length === 0 && notif.updated.length === 0) dismissNotification(notif);
+          await loadFacts();
+        }
+      } finally {
+        fact._loading = false;
+      }
+    }
+
+    async function acceptImplicitFact(notif, proposal) {
+      proposal._loading = true;
+      try {
+        const r = await apiAcceptImplicitFact(
+          sessionId.value, notif.turn_id,
+          proposal.key, proposal.value, proposal.category, proposal.mutability,
+          proposal.existing_fact_id ?? null,
+        );
+        if (r.ok) {
+          const list = proposal.existing_fact_id != null ? notif.update_proposals : notif.new_proposals;
+          const idx = list.indexOf(proposal);
+          if (idx !== -1) list.splice(idx, 1);
+          if (notif.new_proposals.length === 0 && notif.update_proposals.length === 0) {
+            dismissNotification(notif);
+          }
+          await loadFacts();
+        }
+      } finally {
+        proposal._loading = false;
+      }
+    }
+
+    async function ignoreImplicitFact(notif, proposal) {
+      proposal._loading = true;
+      try {
+        await apiIgnoreImplicitFact(sessionId.value, notif.turn_id, proposal.key);
+        const list = proposal.existing_fact_id != null ? notif.update_proposals : notif.new_proposals;
+        const idx = list.indexOf(proposal);
+        if (idx !== -1) list.splice(idx, 1);
+        if (notif.new_proposals.length === 0 && notif.update_proposals.length === 0) {
+          dismissNotification(notif);
+        }
+      } finally {
+        proposal._loading = false;
+      }
+    }
+
     // ── Chat ──
 
     async function sendMessage() {
@@ -522,6 +595,7 @@ export const ChatComponent = {
       endSession, newSession, sendMessage,
       acceptImplication, ignoreImplication, acceptInference, ignoreInference,
       dismissNotification,
+      undoUserFact, deleteExtractedFact, acceptImplicitFact, ignoreImplicitFact,
       acceptProposal, confirmEditProposal, discardProposal, deleteExperience,
     };
   },
