@@ -303,6 +303,58 @@ def test_parse_extraction_result_missing_required_fields_raises_error() -> None:
         parse_extraction_result(json.dumps(data))
 
 
+def test_implicit_proposal_category_mutability_defaults_when_omitted() -> None:
+    # LLM omits category/mutability — should use defaults, not raise
+    data = {
+        "new_facts": [],
+        "fact_updates": [],
+        "implicit_proposals": [
+            {"key": "outfit", "value": "red dress", "source_quote": "she wore a red dress"}
+        ],
+    }
+    result = parse_extraction_result(json.dumps(data))
+    assert len(result.implicit_proposals) == 1
+    assert result.implicit_proposals[0].category == "character"
+    assert result.implicit_proposals[0].mutability == "low"
+
+
+def test_implicit_proposal_category_inferred_from_key_prefix() -> None:
+    # LLM encodes category as key prefix (e.g. "user/state_of_mind")
+    data = {
+        "new_facts": [],
+        "fact_updates": [],
+        "implicit_proposals": [
+            {"key": "user/state_of_mind", "value": "distracted", "source_quote": "q1"},
+            {"key": "setting/time_of_day", "value": "morning", "source_quote": "q2"},
+        ],
+    }
+    result = parse_extraction_result(json.dumps(data))
+    p0, p1 = result.implicit_proposals
+    assert p0.category == "user"
+    assert p0.key == "state_of_mind"
+    assert p1.category == "setting"
+    assert p1.key == "time_of_day"
+
+
+def test_implicit_proposal_explicit_category_not_overridden_by_key_prefix() -> None:
+    # LLM provides both a category field and a prefixed key — explicit category wins
+    data = {
+        "new_facts": [],
+        "fact_updates": [],
+        "implicit_proposals": [
+            {
+                "key": "setting/mood",
+                "value": "tense",
+                "category": "character",
+                "source_quote": "q",
+            }
+        ],
+    }
+    result = parse_extraction_result(json.dumps(data))
+    assert result.implicit_proposals[0].category == "character"
+    assert result.implicit_proposals[0].key == "mood"
+
+
 # ---------------------------------------------------------------------------
 # run_fact_extractor — full Ollama interaction
 # ---------------------------------------------------------------------------

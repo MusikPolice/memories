@@ -235,7 +235,7 @@ Return a JSON object with this exact structure:
     {
       "type": "contradiction | implication",
       "description": "what was wrong or what new fact was implied",
-      "suggested_fact": {"key": "...", "value": "..."} or null
+      "suggested_fact": {"key": "...", "value": "...", "category": "user|character|setting"} or null
     }
   ],
   "experience_updates": [

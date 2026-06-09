@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, model_validator
 
 from memories.models import Character, Fact, Inference
 from memories.services.ollama_client import OllamaClient
@@ -50,11 +50,24 @@ class ImplicitProposal(BaseModel):
 
     key: str
     value: str
-    category: str
-    mutability: str
+    category: str = "character"
+    mutability: str = "low"
     source_quote: str = ""
     existing_fact_id: int | None = None
     old_value: str | None = None
+
+    @model_validator(mode="after")
+    def _infer_category_from_key(self) -> ImplicitProposal:
+        """If the LLM encodes category as a key prefix (e.g. 'user/state_of_mind'),
+        strip the prefix and use it as category when category wasn't explicitly set."""
+        _VALID = {"user", "character", "setting"}
+        if "/" in self.key:
+            prefix, rest = self.key.split("/", 1)
+            if prefix in _VALID:
+                if "category" not in self.model_fields_set:
+                    self.category = prefix
+                self.key = rest
+        return self
 
 
 class ExtractionResult(BaseModel):
