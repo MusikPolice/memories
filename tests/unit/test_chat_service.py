@@ -5,11 +5,15 @@ fixture) and a mocked Ollama HTTP layer (via respx).  They test the
 orchestration contract of run_turn — what it reads, what it writes, and in
 what order — not the HTTP or SQL layers themselves.
 
-Every successful run_turn call makes THREE Ollama requests:
+Every successful run_turn call makes THREE /api/chat requests (mocked via _CHAT_URL):
   calls[0] — extractor LLM (Phase 6 fact extraction)
   calls[1] — character LLM
   calls[2] — evaluator LLM
 All tests that complete a turn successfully must therefore mock all three calls.
+
+The embed call (/api/embed, mocked via _EMBED_URL) fires concurrently with calls[0]
+via asyncio.gather when experiences are stored in the DB.  Tests that need the embed
+call must mock _EMBED_URL separately.
 """
 
 from __future__ import annotations
@@ -850,6 +854,21 @@ async def test_run_turn_embed_query_uses_user_message(
 
     inputs = [json.loads(c.request.content).get("input", "") for c in embed_route.calls]
     assert any("Hello there" in inp for inp in inputs)
+
+
+async def test_run_turn_embed_and_extractor_both_called_when_experiences_present(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """With experiences in DB, embed (retrieve) and extractor (LLM) both fire before character."""
+    await _insert_experience(db, character.id, session.id)
+    with respx.mock:
+        embed_route = respx.post(_EMBED_URL).mock(
+            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
+        )
+        chat_route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Hello", ollama)
+    assert embed_route.called
+    assert len(chat_route.calls) == 3  # extractor + character + evaluator
 
 
 async def test_run_turn_active_set_reflects_current_turn_only(

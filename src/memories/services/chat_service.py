@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable
@@ -168,55 +169,54 @@ async def run_turn(
     facts = await get_facts(db, session.character_id)
     inferences = await get_inferences(db, session.character_id)
 
-    # --- Experience retrieval ---
     turn_id = await next_turn_id(db, session_id)
 
-    # Re-evaluate all experiences every turn against the current user message.
-    # The active set for this turn is exactly what scores above MIN_EXPERIENCE_SCORE;
-    # nothing carries over from previous turns.
-    active, experience_scores = await retrieve_experiences(
-        db,
-        session.character_id,
-        user_content,
-        ollama,
-        top_k=TOP_K_EXPERIENCES,
+    # --- Parallel: experience retrieval (embed) + fact extraction (LLM) ---
+    # Neither depends on the other: embed only needs user_content; extraction
+    # needs facts/inferences which are already loaded above.
+    async def _run_extraction_safe() -> ExtractionResult:
+        try:
+            return await run_fact_extractor(user_content, character, facts, inferences, ollama)
+        except (ExtractionParseError, OllamaConnectionError) as exc:
+            _log.warning("fact extraction failed: %s", exc)
+            return ExtractionResult()
+
+    (active, experience_scores), extraction_result = await asyncio.gather(
+        retrieve_experiences(
+            db, session.character_id, user_content, ollama, top_k=TOP_K_EXPERIENCES
+        ),
+        _run_extraction_safe(),
     )
+
+    # Process experience results
     clear_active_experiences(session_id)
     if active:
         add_active_experiences(session_id, active)
         _log.info("session=%d turn=%d retrieved %d experience(s)", session_id, turn_id, len(active))
 
-    # --- Fact extraction (Phase 6) ---
-    extraction_result = ExtractionResult()
-    try:
-        extraction_result = await run_fact_extractor(
-            user_content, character, facts, inferences, ollama
-        )
-        for extracted in extraction_result.new_facts:
-            try:
-                created = await create_fact(
-                    db,
-                    character_id=session.character_id,
-                    key=extracted.key,
-                    value=extracted.value,
-                    category=extracted.category,
-                    mutability=extracted.mutability,
-                )
-                extraction_result.applied_fact_ids[extracted.key] = created.id
-            except aiosqlite.IntegrityError:
-                _log.debug("extraction tier1: skipping duplicate fact key=%s", extracted.key)
-        for fact_upd in extraction_result.fact_updates:
-            try:
-                await update_fact(db, fact_id=fact_upd.fact_id, value=fact_upd.new_value)
-            except NotFoundError:
-                _log.warning(
-                    "extraction tier2: fact_id=%d not found, skipping update", fact_upd.fact_id
-                )
-        if extraction_result.new_facts or extraction_result.fact_updates:
-            facts = await get_facts(db, session.character_id)
-    except (ExtractionParseError, OllamaConnectionError) as exc:
-        _log.warning("fact extraction failed: %s", exc)
-        extraction_result = ExtractionResult()
+    # Process extraction results (DB writes happen sequentially after gather)
+    for extracted in extraction_result.new_facts:
+        try:
+            created = await create_fact(
+                db,
+                character_id=session.character_id,
+                key=extracted.key,
+                value=extracted.value,
+                category=extracted.category,
+                mutability=extracted.mutability,
+            )
+            extraction_result.applied_fact_ids[extracted.key] = created.id
+        except aiosqlite.IntegrityError:
+            _log.debug("extraction tier1: skipping duplicate fact key=%s", extracted.key)
+    for fact_upd in extraction_result.fact_updates:
+        try:
+            await update_fact(db, fact_id=fact_upd.fact_id, value=fact_upd.new_value)
+        except NotFoundError:
+            _log.warning(
+                "extraction tier2: fact_id=%d not found, skipping update", fact_upd.fact_id
+            )
+    if extraction_result.new_facts or extraction_result.fact_updates:
+        facts = await get_facts(db, session.character_id)
 
     system_prompt = build_system_prompt(character, facts, inferences, active or None)
     history = await get_messages(db, session_id)
