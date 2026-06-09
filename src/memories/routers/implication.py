@@ -363,13 +363,12 @@ async def accept_implicit_fact(
         )
 
 
-@router.post("/{session_id}/turns/{turn_id}/ignore-implicit-fact")
+@router.post("/{session_id}/turns/{turn_id}/ignore-implicit-fact", status_code=204)
 async def ignore_implicit_fact(
     session_id: int,
     turn_id: int,
     body: _IgnoreImplicitBody,
     db: _DB,
-) -> dict[str, Any]:
+) -> None:
     """Dismiss a Tier 3/4 implicit fact proposal without writing to DB."""
     await _get_active_session(db, session_id)
-    return {}

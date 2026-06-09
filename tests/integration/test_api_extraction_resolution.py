@@ -423,17 +423,17 @@ async def test_accept_implicit_fact_ended_session_returns_409(
 # ---------------------------------------------------------------------------
 
 
-async def test_ignore_implicit_fact_returns_200(
+async def test_ignore_implicit_fact_returns_204(
     client: AsyncClient,
     character: Character,
     session: Session,
 ) -> None:
-    """POST .../ignore-implicit-fact → 200."""
+    """POST .../ignore-implicit-fact → 204."""
     response = await client.post(
         f"/api/sessions/{session.id}/turns/1/ignore-implicit-fact",
         json={"key": "current_mood"},
     )
-    assert response.status_code == 200
+    assert response.status_code == 204
 
 
 async def test_ignore_implicit_fact_does_not_modify_db(
@@ -448,7 +448,7 @@ async def test_ignore_implicit_fact_does_not_modify_db(
         f"/api/sessions/{session.id}/turns/1/ignore-implicit-fact",
         json={"key": "home_city"},
     )
-    assert response.status_code == 200
+    assert response.status_code == 204
 
     facts = await get_facts(db, character.id)
     home = next(f for f in facts if f.id == fact.id)
