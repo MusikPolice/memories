@@ -29,7 +29,6 @@ class ExtractedFact(BaseModel):
     category: str = "setting"
     mutability: str = "low"
     source_quote: str = ""
-    fact_id: int | None = None
 
 
 class FactUpdate(BaseModel):
@@ -64,6 +63,7 @@ class ExtractionResult(BaseModel):
     new_facts: list[ExtractedFact] = []
     fact_updates: list[FactUpdate] = []
     implicit_proposals: list[ImplicitProposal] = []
+    applied_fact_ids: dict[str, int] = {}  # key → DB fact id for successfully inserted Tier 1 facts
 
 
 def build_extractor_prompt(

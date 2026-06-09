@@ -129,13 +129,13 @@ async def send_message(
             yield f"event: sidechannel\ndata: {json.dumps(exp_sc_payload)}\n\n"
 
         # Emit extraction_applied sidechannel for Tier 1/2 auto-applied facts
-        if extraction_result.new_facts or extraction_result.fact_updates:
+        if extraction_result.applied_fact_ids or extraction_result.fact_updates:
             ext_payload: dict[str, object] = {
                 "type": "extraction_applied",
                 "turn_id": turn_id,
                 "added": [
                     {
-                        "fact_id": f.fact_id,
+                        "fact_id": extraction_result.applied_fact_ids[f.key],
                         "key": f.key,
                         "value": f.value,
                         "category": f.category,
@@ -143,7 +143,7 @@ async def send_message(
                         "source_quote": f.source_quote,
                     }
                     for f in extraction_result.new_facts
-                    if f.fact_id is not None
+                    if f.key in extraction_result.applied_fact_ids
                 ],
                 "updated": [
                     {

@@ -210,7 +210,7 @@ async def run_turn(
                     category=extracted.category,
                     mutability=extracted.mutability,
                 )
-                extracted.fact_id = created.id
+                extraction_result.applied_fact_ids[extracted.key] = created.id
             except aiosqlite.IntegrityError:
                 _log.debug("extraction tier1: skipping duplicate fact key=%s", extracted.key)
         for fact_upd in extraction_result.fact_updates:
