@@ -111,9 +111,9 @@ src/memories/
     evaluator.py       # build_evaluator_prompt(), run_evaluator() → EvaluatorResult
     inference_service.py  # run_eager_pass(), revalidate_single_inference(),
                           #   cascade_on_fact_edit(), cascade_on_fact_delete(), compute_depth()
-    experience_service.py # retrieve_experiences(), cold_start_retrieve(), embed_and_store()
+    experience_service.py # retrieve_experiences(), embed_and_store(), cold_start_retrieve() (unused in chat path)
                           #   run_session_end_evaluator() → closing journal + Experience proposals
-                          #   get/add/remove active experience sets (in-memory, keyed by session_id)
+                          #   clear/add/get/remove active experience sets (in-memory, keyed by session_id; replaced each turn)
     chat_service.py    # run_turn(): full per-turn orchestration
                        # run_contradiction_loop(): character + evaluator, retries until clean
   frontend/index.html          # Vue 3 CDN app (no build step); template + thin bootstrap; uses importmap for vue ESM
@@ -129,7 +129,7 @@ src/memories/
 
 **Every session starts with a segment**: `create_session()` also inserts a `segments` row with `boundary_reason="session_start"`. All messages link to their segment via `segment_id`.
 
-**Facts, Inferences, and Experiences are loaded per turn**: `run_turn()` reloads Facts and Inferences from DB on every call. Active Experiences are retrieved by embedding the current user message and querying for the top-k most similar stored Experiences; newly retrieved ones are added to the session's in-memory active set (managed in `experience_service.py`) and stay in context for the remainder of the session.
+**Facts, Inferences, and Experiences are loaded per turn**: `run_turn()` reloads Facts and Inferences from DB on every call. Active Experiences are retrieved by embedding the current user message and querying for all stored Experiences; those scoring at or above `MIN_EXPERIENCE_SCORE` (up to `TOP_K_EXPERIENCES`) are the active set for that turn. The active set is replaced on every turn — nothing carries over from previous turns.
 
 **Inference depth cap**: `MAX_INFERENCE_DEPTH=5` (env-overridable). `compute_depth()` in `inference_service.py` resolves depth from source inference ids at write time. Inferences exceeding the cap are silently discarded. The same cap applies to lazy discovery in `run_turn()`.
 
