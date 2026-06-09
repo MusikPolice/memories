@@ -4,7 +4,7 @@ Every turn in this app makes **at minimum four sequential Ollama calls** — emb
 
 ---
 
-## 1. Parallelize embed and extraction LLM calls — HIGH impact
+## 1. ~~Parallelize embed and extraction LLM calls~~ — DONE
 
 **What's happening**
 
@@ -214,7 +214,7 @@ This is a partial index; SQLite will use it for the exact query pattern used in 
 
 | # | Change | Files affected | Impact | Effort |
 |---|--------|---------------|--------|--------|
-| 1 | Parallelize embed + extraction | [`chat_service.py:177–219`](../src/memories/services/chat_service.py) | High | Low |
+| 1 | ~~Parallelize embed + extraction~~ ✓ | [`chat_service.py:177–219`](../src/memories/services/chat_service.py) | High | Low |
 | 2 | Parallelize DB reads at turn start | [`chat_service.py:159–223`](../src/memories/services/chat_service.py) | Med–High | Low |
 | 3 | Stream character tokens, evaluate async | [`ollama_client.py`](../src/memories/services/ollama_client.py), [`chat_service.py`](../src/memories/services/chat_service.py), [`chat.py`](../src/memories/routers/chat.py) | High | High |
 | 4 | Skip extraction on trivial messages | [`chat_service.py:192`](../src/memories/services/chat_service.py), [`extraction_service.py`](../src/memories/services/extraction_service.py) | Med | Low |
