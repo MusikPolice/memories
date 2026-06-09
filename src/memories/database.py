@@ -86,6 +86,8 @@ CREATE TABLE IF NOT EXISTS experiences (
     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_experiences_character ON experiences(character_id);
+CREATE INDEX IF NOT EXISTS idx_experiences_character_embedding
+    ON experiences(character_id) WHERE embedding IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS decisions (
     id               INTEGER PRIMARY KEY,

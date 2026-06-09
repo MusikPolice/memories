@@ -161,7 +161,7 @@ Then call `await ollama.aclose()` in the FastAPI lifespan cleanup. With localhos
 
 ---
 
-## 8. Replace the status-poll busy-wait in the SSE generator — LOW impact
+## 8. ~~Replace the status-poll busy-wait in the SSE generator~~ — DONE
 
 **What's happening**
 
@@ -193,7 +193,7 @@ This eliminates the exception-per-tick pattern and delivers status updates promp
 
 ---
 
-## 9. Add a partial index on experiences — LOW impact (future-proof)
+## 9. ~~Add a partial index on experiences~~ — DONE
 
 **What's happening**
 
@@ -221,7 +221,7 @@ This is a partial index; SQLite will use it for the exact query pattern used in 
 | 5 | Window message history (last N turns) | [`chat_service.py:236`](../src/memories/services/chat_service.py) | High (long sessions) | Trivial |
 | 6 | ~~Cache experience embeddings in memory~~ ✓ | [`experience_service.py:140`](../src/memories/services/experience_service.py), [`database.py:673`](../src/memories/database.py) | Med | Low |
 | 7 | ~~Reuse httpx client across calls~~ ✓ | [`ollama_client.py:33–133`](../src/memories/services/ollama_client.py) | Low | Low |
-| 8 | Replace status poll busy-wait | [`chat.py:54–59`](../src/memories/routers/chat.py) | Low | Low |
-| 9 | Partial index on experiences | [`database.py:87`](../src/memories/database.py) | Low now, high later | Trivial |
+| 8 | ~~Replace status poll busy-wait~~ ✓ | [`chat.py:54–59`](../src/memories/routers/chat.py) | Low | Low |
+| 9 | ~~Partial index on experiences~~ ✓ | [`database.py:87`](../src/memories/database.py) | Low now, high later | Trivial |
 
 Items 1, 2, 5, and 8 can all be done in under an hour with no architectural risk. Item 3 (streaming + async eval) is the biggest UX win but requires the most care — it changes the observable contract between the server and frontend.

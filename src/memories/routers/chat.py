@@ -53,10 +53,10 @@ async def send_message(
 
         while not _task.done():
             try:
-                state = _q.get_nowait()
+                state = await asyncio.wait_for(_q.get(), timeout=0.05)
                 yield f'event: status\ndata: {{"state": "{state}"}}\n\n'
-            except asyncio.QueueEmpty:
-                await asyncio.sleep(0)
+            except TimeoutError:
+                pass
 
         while not _q.empty():
             yield f'event: status\ndata: {{"state": "{_q.get_nowait()}"}}\n\n'
