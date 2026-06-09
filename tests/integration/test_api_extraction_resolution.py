@@ -94,7 +94,7 @@ async def test_undo_user_fact_restores_value_in_db(
 ) -> None:
     """After undo, GET /facts shows restore_value."""
     # First update the fact to simulate a Tier 2 auto-update
-    await update_fact(db, fact.id, value="Chicago")
+    await update_fact(db, fact_id=fact.id, value="Chicago")
 
     response = await client.post(
         f"/api/sessions/{session.id}/turns/1/undo-user-fact",
@@ -155,7 +155,7 @@ async def test_undo_user_fact_triggers_cascade(
     """Fact with downstream inferences → stale_inferences non-empty in response."""
     fact, inference = fact_with_inference
     # Change the fact value first so the cascade has something to find
-    await update_fact(db, fact.id, value="Chicago")
+    await update_fact(db, fact_id=fact.id, value="Chicago")
 
     with respx.mock:
         # Cascade requires an LLM call per inference; stub with holds=false
