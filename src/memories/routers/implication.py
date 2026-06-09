@@ -306,46 +306,25 @@ async def accept_implicit_fact(
     session = await _get_active_session(db, session_id)
 
     if body.existing_fact_id is not None:
-        # Tier 4: update existing fact
-        fact = await _find_owned_fact(db, session.character_id, body.existing_fact_id)
-        await update_fact(db, fact_id=fact.id, value=body.value)
-
-        stale = await cascade_on_fact_edit(db, session.character_id, fact.id, ollama)
-
-        updated_facts = await get_facts(db, session.character_id)
-        updated_fact = next(f for f in updated_facts if f.id == fact.id)
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "fact": updated_fact.model_dump(mode="json"),
-                "stale_inferences": [i.model_dump(mode="json") for i in stale],
-            },
-        )
-    else:
-        # Tier 3: create new fact; fall back to update if the key already exists.
-        try:
-            new_fact = await create_fact(
-                db,
-                character_id=session.character_id,
-                key=body.key,
-                value=body.value,
-                category=body.category,
-                mutability=body.mutability,
-            )
-        except aiosqlite.IntegrityError:
-            existing = await get_fact_by_category_key(
-                db,
-                character_id=session.character_id,
-                category=body.category,
-                key=body.key,
-            )
-            if existing is None:
-                raise
-            await update_fact(db, fact_id=existing.id, value=body.value)
-            stale = await cascade_on_fact_edit(db, session.character_id, existing.id, ollama)
+        fact = await get_fact(db, session.character_id, body.existing_fact_id)
+        if fact is None:
+            # The fact may have been deleted since the proposal was generated.
+            # If it still exists but belongs to a different character, reject; otherwise
+            # fall through to Tier 3 create so the user's intent is still honoured.
+            alien = await (
+                await db.execute("SELECT id FROM facts WHERE id = ?", (body.existing_fact_id,))
+            ).fetchone()
+            if alien is not None:
+                raise HTTPException(
+                    status_code=404, detail=f"Fact {body.existing_fact_id} not found"
+                )
+            # fact was deleted — fall through to Tier 3 create below
+        else:
+            # Tier 4: fact still exists, update it
+            await update_fact(db, fact_id=fact.id, value=body.value)
+            stale = await cascade_on_fact_edit(db, session.character_id, fact.id, ollama)
             updated_facts = await get_facts(db, session.character_id)
-            updated_fact = next(f for f in updated_facts if f.id == existing.id)
+            updated_fact = next(f for f in updated_facts if f.id == fact.id)
             return JSONResponse(
                 status_code=200,
                 content={
@@ -354,13 +333,45 @@ async def accept_implicit_fact(
                 },
             )
 
+    # Tier 3: create new fact; fall back to update if the key already exists.
+    # Also reached when existing_fact_id was provided but the fact has since been deleted.
+    try:
+        new_fact = await create_fact(
+            db,
+            character_id=session.character_id,
+            key=body.key,
+            value=body.value,
+            category=body.category,
+            mutability=body.mutability,
+        )
+    except aiosqlite.IntegrityError:
+        existing = await get_fact_by_category_key(
+            db,
+            character_id=session.character_id,
+            category=body.category,
+            key=body.key,
+        )
+        if existing is None:
+            raise
+        await update_fact(db, fact_id=existing.id, value=body.value)
+        stale = await cascade_on_fact_edit(db, session.character_id, existing.id, ollama)
+        updated_facts = await get_facts(db, session.character_id)
+        updated_fact = next(f for f in updated_facts if f.id == existing.id)
         return JSONResponse(
-            status_code=201,
+            status_code=200,
             content={
-                "fact": new_fact.model_dump(mode="json"),
-                "stale_inferences": [],
+                "fact": updated_fact.model_dump(mode="json"),
+                "stale_inferences": [i.model_dump(mode="json") for i in stale],
             },
         )
+
+    return JSONResponse(
+        status_code=201,
+        content={
+            "fact": new_fact.model_dump(mode="json"),
+            "stale_inferences": [],
+        },
+    )
 
 
 @router.post("/{session_id}/turns/{turn_id}/ignore-implicit-fact", status_code=204)

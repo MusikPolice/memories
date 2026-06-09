@@ -367,6 +367,37 @@ async def test_accept_implicit_fact_tier4_triggers_cascade(
     assert len(body.get("stale_inferences", [])) > 0
 
 
+async def test_accept_implicit_fact_tier4_deleted_fact_falls_back_to_create(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+    fact,
+) -> None:
+    """Tier 4 accept when the referenced fact was deleted → 201 (Tier 3 fallback, not 404)."""
+    from memories.database import delete_fact
+
+    await delete_fact(db, fact_id=fact.id)
+
+    response = await client.post(
+        f"/api/sessions/{session.id}/turns/1/accept-implicit-fact",
+        json={
+            "key": "home_city",
+            "value": "Chicago",
+            "category": "user",
+            "mutability": "low",
+            "existing_fact_id": fact.id,
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["fact"]["key"] == "home_city"
+    assert body["fact"]["value"] == "Chicago"
+
+    facts = await get_facts(db, character.id)
+    assert any(f.key == "home_city" and f.value == "Chicago" for f in facts)
+
+
 async def test_accept_implicit_fact_tier4_wrong_character_returns_404(
     db: aiosqlite.Connection,
     client: AsyncClient,
