@@ -14,6 +14,7 @@ routing-level 404.
 from __future__ import annotations
 
 import aiosqlite
+import httpx
 import pytest
 import respx
 from httpx import AsyncClient
@@ -25,6 +26,7 @@ from memories.database import (
     update_fact,
 )
 from memories.models import Character, Session
+from tests.unit.conftest import make_ollama_ndjson
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -156,14 +158,10 @@ async def test_undo_user_fact_triggers_cascade(
     await update_fact(db, fact.id, value="Chicago")
 
     with respx.mock:
-        # Cascade requires an LLM call per inference; stub with a "stale" verdict
-        import httpx
-
-        from tests.unit.conftest import make_ollama_ndjson
-
+        # Cascade requires an LLM call per inference; stub with holds=false
         stale_eval = httpx.Response(
             200,
-            content=make_ollama_ndjson('{"verdict":"stale","reasoning":"location changed"}'),
+            content=make_ollama_ndjson('{"holds": false, "reason": "location changed"}'),
         )
         respx.post("http://test-ollama-integration:11434/api/chat").mock(return_value=stale_eval)
         response = await client.post(
@@ -348,13 +346,9 @@ async def test_accept_implicit_fact_tier4_triggers_cascade(
     fact, inference = fact_with_inference
 
     with respx.mock:
-        import httpx
-
-        from tests.unit.conftest import make_ollama_ndjson
-
         stale_eval = httpx.Response(
             200,
-            content=make_ollama_ndjson('{"verdict":"stale","reasoning":"city changed"}'),
+            content=make_ollama_ndjson('{"holds": false, "reason": "city changed"}'),
         )
         respx.post("http://test-ollama-integration:11434/api/chat").mock(return_value=stale_eval)
         response = await client.post(
