@@ -13,6 +13,7 @@ from memories.database import (
     create_fact,
     create_inference,
     get_character,
+    get_fact,
     get_fact_by_category_key,
     get_facts,
     get_inferences,
@@ -261,8 +262,7 @@ async def _get_active_session(db: aiosqlite.Connection, session_id: int) -> Sess
 
 async def _find_owned_fact(db: aiosqlite.Connection, character_id: int, fact_id: int) -> Fact:
     """Return fact or raise 404 if not found or not owned by character."""
-    facts = await get_facts(db, character_id)
-    fact = next((f for f in facts if f.id == fact_id), None)
+    fact = await get_fact(db, character_id, fact_id)
     if fact is None:
         raise HTTPException(status_code=404, detail=f"Fact {fact_id} not found")
     return fact

@@ -224,6 +224,17 @@ async def get_facts(db: aiosqlite.Connection, character_id: int) -> list[Fact]:
     return [Fact.model_validate(_row(r)) for r in rows]
 
 
+async def get_fact(db: aiosqlite.Connection, character_id: int, fact_id: int) -> Fact | None:
+    """Return a single fact owned by character_id, or None if not found."""
+    row = await (
+        await db.execute(
+            "SELECT * FROM facts WHERE id = ? AND character_id = ?",
+            (fact_id, character_id),
+        )
+    ).fetchone()
+    return Fact.model_validate(_row(row)) if row is not None else None
+
+
 async def update_fact(
     db: aiosqlite.Connection,
     *,
