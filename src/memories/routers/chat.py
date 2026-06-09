@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 from typing import Annotated
@@ -39,9 +40,31 @@ async def send_message(
         raise HTTPException(status_code=409, detail="Session has ended")
 
     async def _stream() -> AsyncGenerator[str, None]:
+        _q: asyncio.Queue[str] = asyncio.Queue()
+
+        async def _on_status(state: str) -> None:
+            await _q.put(state)
+
         yield 'event: status\ndata: {"state": "extracting"}\n\n'
-        yield 'event: status\ndata: {"state": "generating"}\n\n'
-        yield 'event: status\ndata: {"state": "reviewing"}\n\n'
+
+        _task = asyncio.ensure_future(
+            run_turn(db, session_id, body.content, ollama, think=body.think, on_status=_on_status)
+        )
+
+        while not _task.done():
+            try:
+                state = _q.get_nowait()
+                yield f'event: status\ndata: {{"state": "{state}"}}\n\n'
+            except asyncio.QueueEmpty:
+                await asyncio.sleep(0)
+
+        while not _q.empty():
+            yield f'event: status\ndata: {{"state": "{_q.get_nowait()}"}}\n\n'
+
+        exc = _task.exception()
+        if exc is not None:
+            raise exc
+
         (
             content,
             thinking,
@@ -49,7 +72,7 @@ async def send_message(
             eval_result,
             experience_scores,
             extraction_result,
-        ) = await run_turn(db, session_id, body.content, ollama, think=body.think)
+        ) = _task.result()
 
         # Emit contradiction loop events (Option B: after run_turn returns).
         # Each notification represents one contradiction found during the loop;

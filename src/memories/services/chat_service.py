@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import aiosqlite
@@ -52,6 +53,8 @@ _log = logging.getLogger(__name__)
 
 MAX_CONTRADICTION_RETRIES: int = int(os.getenv("MAX_CONTRADICTION_RETRIES", "3"))
 
+StatusCallback = Callable[[str], Awaitable[None]] | None
+
 
 async def run_contradiction_loop(
     model: str,
@@ -64,6 +67,7 @@ async def run_contradiction_loop(
     max_retries: int = MAX_CONTRADICTION_RETRIES,
     inferences: list[Inference] | None = None,
     experiences: list[Experience] | None = None,
+    on_status: StatusCallback = None,
 ) -> tuple[str, str, EvaluatorResult]:
     """Run the character LLM + evaluator, retrying until no contradictions remain.
 
@@ -88,10 +92,14 @@ async def run_contradiction_loop(
             )
             messages.append({"role": "user", "content": note})
 
+        if attempt == 0 and on_status is not None:
+            await on_status("generating")
         raw_content, metadata = await ollama.chat(model, messages, think=think)
         content = raw_content
         thinking = str(metadata.get("thinking", ""))
 
+        if attempt == 0 and on_status is not None:
+            await on_status("reviewing")
         try:
             ev = await run_evaluator(
                 character,
@@ -140,6 +148,7 @@ async def run_turn(
     user_content: str,
     ollama: OllamaClient,
     think: bool = False,
+    on_status: StatusCallback = None,
 ) -> tuple[str, str, int, EvaluatorResult, dict[int, float], ExtractionResult]:
     """Execute one conversation turn.
 
@@ -249,6 +258,7 @@ async def run_turn(
         think=think,
         inferences=inferences,
         experiences=active or None,
+        on_status=on_status,
     )
 
     # Handle experience_update verdict: delete contradicted experiences
