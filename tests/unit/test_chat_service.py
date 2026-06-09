@@ -5,10 +5,11 @@ fixture) and a mocked Ollama HTTP layer (via respx).  They test the
 orchestration contract of run_turn — what it reads, what it writes, and in
 what order — not the HTTP or SQL layers themselves.
 
-Phase 2: every successful run_turn call makes TWO Ollama requests:
-  calls[0] — character LLM
-  calls[1] — evaluator LLM
-All tests that complete a turn successfully must therefore mock both calls.
+Every successful run_turn call makes THREE Ollama requests:
+  calls[0] — extractor LLM (Phase 6 fact extraction)
+  calls[1] — character LLM
+  calls[2] — evaluator LLM
+All tests that complete a turn successfully must therefore mock all three calls.
 """
 
 from __future__ import annotations
@@ -24,21 +25,29 @@ from memories.database import (
     _embedding_to_blob,
     create_experience,
     create_fact,
+    create_inference,
+    create_session,
+    end_session,
     get_decisions,
     get_experiences,
+    get_facts,
     get_inferences,
     get_messages,
+    update_session_closing_journal,
 )
 from memories.exceptions import NotFoundError, SessionEndedError
 from memories.models import Character, Session
-from memories.services.chat_service import run_turn
+from memories.services.chat_service import MAX_CONTRADICTION_RETRIES, run_turn
 from memories.services.evaluator import EvaluatorResult
 from memories.services.experience_service import get_active_experiences
+from memories.services.extraction_service import ExtractionResult
+from memories.services.inference_service import MAX_INFERENCE_DEPTH
 from memories.services.ollama_client import OllamaClient, OllamaConnectionError
 from tests.unit.conftest import (
     OLLAMA_BASE_URL,
     make_embed_response,
     make_evaluator_ndjson,
+    make_extractor_ndjson,
     make_ollama_ndjson,
 )
 
@@ -58,18 +67,27 @@ def _mock_eval(
     return httpx.Response(200, content=make_evaluator_ndjson(verdict, new_inferences, violations))
 
 
+def _mock_extractor() -> httpx.Response:
+    """Return an empty-extraction response for the Phase 6 extractor call (calls[0])."""
+    return httpx.Response(200, content=make_extractor_ndjson())
+
+
 def _mock_turn(
     character_content: str = "I am fine, thank you.",
     evaluator_verdict: str = "pass",
     new_inferences: list[dict] | None = None,
     violations: list[dict] | None = None,
 ) -> list[httpx.Response]:
-    """Return side_effect list for one complete turn (character + evaluator)."""
-    return [_mock_ok(character_content), _mock_eval(evaluator_verdict, new_inferences, violations)]
+    """Return side_effect list for one complete turn (extractor + character + evaluator)."""
+    return [
+        _mock_extractor(),
+        _mock_ok(character_content),
+        _mock_eval(evaluator_verdict, new_inferences, violations),
+    ]
 
 
 # ---------------------------------------------------------------------------
-# Tests: what run_turn sends to the character LLM (calls[0])
+# Tests: what run_turn sends to the character LLM (calls[1])
 # ---------------------------------------------------------------------------
 
 
@@ -80,7 +98,7 @@ async def test_system_message_is_first_in_ollama_request(
         route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
         await run_turn(db, session.id, "Hello", ollama)
 
-    body = json.loads(route.calls[0].request.content)
+    body = json.loads(route.calls[1].request.content)
     assert body["messages"][0]["role"] == "system"
 
 
@@ -95,7 +113,7 @@ async def test_history_included_in_ollama_request(
         route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn("Second response."))
         await run_turn(db, session.id, "Turn two", ollama)
 
-    body = json.loads(route.calls[0].request.content)
+    body = json.loads(route.calls[1].request.content)
     roles = [m["role"] for m in body["messages"]]
     assert "user" in roles
     assert "assistant" in roles
@@ -112,7 +130,7 @@ async def test_history_ordered_by_turn_id(
         route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn("Reply two."))
         await run_turn(db, session.id, "Second message", ollama)
 
-    body = json.loads(route.calls[0].request.content)
+    body = json.loads(route.calls[1].request.content)
     conversation = [m for m in body["messages"] if m["role"] != "system"]
     assert conversation[0]["content"] == "First message"
     assert conversation[1]["content"] == "Reply one."
@@ -126,7 +144,7 @@ async def test_new_user_message_appended_last(
         route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
         await run_turn(db, session.id, "My specific question", ollama)
 
-    body = json.loads(route.calls[0].request.content)
+    body = json.loads(route.calls[1].request.content)
     assert body["messages"][-1]["role"] == "user"
     assert body["messages"][-1]["content"] == "My specific question"
 
@@ -140,7 +158,7 @@ async def test_facts_reflected_in_system_message(
         route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
         await run_turn(db, session.id, "Where are you from?", ollama)
 
-    body = json.loads(route.calls[0].request.content)
+    body = json.loads(route.calls[1].request.content)
     system_content: str = body["messages"][0]["content"]
     assert "birthplace" in system_content
     assert "Reykjavik" in system_content
@@ -208,8 +226,6 @@ async def test_run_turn_raises_on_unknown_session(
 async def test_run_turn_raises_on_ended_session(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
-    from memories.database import end_session
-
     await end_session(db, session.id)
     with pytest.raises(SessionEndedError):
         await run_turn(db, session.id, "Hello", ollama)
@@ -226,8 +242,8 @@ async def test_evaluator_called_after_character_response(
     with respx.mock:
         route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn("Character response"))
         await run_turn(db, session.id, "Hello", ollama)
-    # Two calls: character then evaluator
-    assert len(route.calls) == 2
+    # Three calls: extractor then character then evaluator
+    assert len(route.calls) == 3
 
 
 async def test_evaluator_called_with_character_response(
@@ -236,8 +252,8 @@ async def test_evaluator_called_with_character_response(
     with respx.mock:
         route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn("Character says hi"))
         await run_turn(db, session.id, "Hello", ollama)
-    # The evaluator prompt (calls[1]) should contain the character's response
-    eval_body = json.loads(route.calls[1].request.content)
+    # The evaluator prompt (calls[2]) should contain the character's response
+    eval_body = json.loads(route.calls[2].request.content)
     user_msgs = [m for m in eval_body["messages"] if m["role"] == "user"]
     assert any("Character says hi" in m["content"] for m in user_msgs)
 
@@ -247,7 +263,7 @@ async def test_run_turn_returns_evaluator_result(
 ) -> None:
     with respx.mock:
         respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
-        _, _, _, eval_result, _ = await run_turn(db, session.id, "Hello", ollama)
+        _, _, _, eval_result, *_ = await run_turn(db, session.id, "Hello", ollama)
     assert isinstance(eval_result, EvaluatorResult)
 
 
@@ -256,7 +272,7 @@ async def test_pass_verdict_response_stored_and_returned(
 ) -> None:
     with respx.mock:
         respx.post(_CHAT_URL).mock(side_effect=_mock_turn("Clean reply."))
-        content, _, _turn_id, _, _ = await run_turn(db, session.id, "Hello", ollama)
+        content, _, _turn_id, *_ = await run_turn(db, session.id, "Hello", ollama)
     assert content == "Clean reply."
     msgs = await get_messages(db, session.id)
     assert any(m.role == "assistant" and m.content == "Clean reply." for m in msgs)
@@ -287,6 +303,7 @@ async def test_contradiction_response_not_stored_on_first_attempt(
     with respx.mock:
         respx.post(_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),  # extractor (call 0)
                 _mock_ok("I'm from London."),  # character (contradicts)
                 _mock_eval("contradiction", violations=contradiction_violation),
                 _mock_ok("I'm from Reykjavik."),  # character regenerated (clean)
@@ -309,6 +326,7 @@ async def test_contradiction_triggers_second_character_call(
     with respx.mock:
         route = respx.post(_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),  # extractor (call 0)
                 _mock_ok("Wrong answer."),
                 _mock_eval("contradiction", violations=contradiction_violation),
                 _mock_ok("Correct answer."),
@@ -316,8 +334,8 @@ async def test_contradiction_triggers_second_character_call(
             ]
         )
         await run_turn(db, session.id, "Hello", ollama)
-    # 4 calls total: char1, eval1, char2, eval2
-    assert len(route.calls) == 4
+    # 5 calls total: extractor, char1, eval1, char2, eval2
+    assert len(route.calls) == 5
 
 
 async def test_contradiction_second_call_messages_include_system_note(
@@ -329,6 +347,7 @@ async def test_contradiction_second_call_messages_include_system_note(
     with respx.mock:
         route = respx.post(_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),  # extractor (call 0)
                 _mock_ok("Wrong."),
                 _mock_eval("contradiction", violations=contradiction_violation),
                 _mock_ok("Right."),
@@ -336,8 +355,8 @@ async def test_contradiction_second_call_messages_include_system_note(
             ]
         )
         await run_turn(db, session.id, "Hello", ollama)
-    # calls[2] is the second character call (after contradiction)
-    body = json.loads(route.calls[2].request.content)
+    # calls[3] is the second character call (after contradiction)
+    body = json.loads(route.calls[3].request.content)
     all_content = " ".join(m["content"] for m in body["messages"])
     assert "wrong city" in all_content.lower() or "contradiction" in all_content.lower()
 
@@ -351,16 +370,17 @@ async def test_contradiction_loop_exits_on_pass(
     with respx.mock:
         route = respx.post(_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),  # extractor (call 0)
                 _mock_ok("Bad."),
                 _mock_eval("contradiction", violations=contradiction_violation),
                 _mock_ok("Good."),
                 _mock_eval("pass"),
             ]
         )
-        content, _, _, eval_result, _ = await run_turn(db, session.id, "Hello", ollama)
+        content, _, _, eval_result, *_ = await run_turn(db, session.id, "Hello", ollama)
     assert content == "Good."
     assert eval_result.verdict == "pass"
-    assert len(route.calls) == 4
+    assert len(route.calls) == 5
 
 
 async def test_contradiction_loop_final_response_is_stored(
@@ -372,6 +392,7 @@ async def test_contradiction_loop_final_response_is_stored(
     with respx.mock:
         respx.post(_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),  # extractor (call 0)
                 _mock_ok("Bad."),
                 _mock_eval("contradiction", violations=contradiction_violation),
                 _mock_ok("Clean response."),
@@ -387,21 +408,18 @@ async def test_contradiction_max_retries_exceeded_delivers_anyway(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """After MAX_CONTRADICTION_RETRIES the response is delivered regardless."""
-    from memories.services import chat_service
-
-    max_retries = chat_service.MAX_CONTRADICTION_RETRIES
     contradiction_violation = [
         {"type": "contradiction", "description": "always wrong", "suggested_fact": None}
     ]
-    # Need (max_retries + 1) pairs of [character, evaluator] calls
-    side_effects: list[httpx.Response] = []
-    for _ in range(max_retries + 1):
+    # One extractor call + (max_retries + 1) pairs of [character, evaluator] calls
+    side_effects: list[httpx.Response] = [_mock_extractor()]
+    for _ in range(MAX_CONTRADICTION_RETRIES + 1):
         side_effects.append(_mock_ok("Still wrong."))
         side_effects.append(_mock_eval("contradiction", violations=contradiction_violation))
 
     with respx.mock:
         respx.post(_CHAT_URL).mock(side_effect=side_effects)
-        content, _, _, eval_result, _ = await run_turn(db, session.id, "Hello", ollama)
+        content, _, _, eval_result, *_ = await run_turn(db, session.id, "Hello", ollama)
 
     assert content == "Still wrong."
     assert eval_result.max_retries_exceeded is True
@@ -416,6 +434,7 @@ async def test_contradiction_notifications_collected_per_iteration(
     with respx.mock:
         respx.post(_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),  # extractor (call 0)
                 _mock_ok("Wrong 1."),
                 _mock_eval("contradiction", violations=contradiction_violation),
                 _mock_ok("Wrong 2."),
@@ -424,7 +443,7 @@ async def test_contradiction_notifications_collected_per_iteration(
                 _mock_eval("pass"),
             ]
         )
-        _, _, _, eval_result, _ = await run_turn(db, session.id, "Hello", ollama)
+        _, _, _, eval_result, *_ = await run_turn(db, session.id, "Hello", ollama)
     assert len(eval_result.contradiction_notifications) == 2
 
 
@@ -565,9 +584,13 @@ async def test_run_turn_falls_back_to_pass_on_evaluator_parse_error(
     malformed_eval = make_ollama_ndjson('{"verdict": "pass", "decision_log": "height 5\'6" tall"}')
     with respx.mock:
         respx.post(_CHAT_URL).mock(
-            side_effect=[_mock_ok("I am fine."), httpx.Response(200, content=malformed_eval)]
+            side_effect=[
+                _mock_extractor(),
+                _mock_ok("I am fine."),
+                httpx.Response(200, content=malformed_eval),
+            ]
         )
-        content, _, _, result, _ = await run_turn(db, session.id, "How are you?", ollama)
+        content, _, _, result, _, _ = await run_turn(db, session.id, "How are you?", ollama)
 
     assert content == "I am fine."
     assert result.verdict == "pass"
@@ -585,8 +608,6 @@ async def test_run_turn_loads_inferences_for_character(
 ) -> None:
     """When active inferences exist, run_turn includes them in the system message."""
     await create_fact(db, character_id=character.id, key="age", value="33")
-    from memories.database import create_inference
-
     await create_inference(
         db,
         character_id=character.id,
@@ -597,8 +618,8 @@ async def test_run_turn_loads_inferences_for_character(
         route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
         await run_turn(db, session.id, "Hello", ollama)
 
-    # First call (calls[0]) is the character LLM — check its system message
-    body = json.loads(route.calls[0].request.content)
+    # calls[1] is the character LLM — check its system message
+    body = json.loads(route.calls[1].request.content)
     system_content = body["messages"][0]["content"]
     assert "Alice was born in 1993" in system_content
 
@@ -607,8 +628,6 @@ async def test_run_turn_system_message_includes_inference_text(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """System message content contains a known inference statement."""
-    from memories.database import create_inference
-
     await create_inference(
         db,
         character_id=character.id,
@@ -619,7 +638,7 @@ async def test_run_turn_system_message_includes_inference_text(
         route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
         await run_turn(db, session.id, "Work-life balance?", ollama)
 
-    body = json.loads(route.calls[0].request.content)
+    body = json.loads(route.calls[1].request.content)
     system_msg = body["messages"][0]["content"]
     assert "Alice likely works weekends" in system_msg
 
@@ -628,8 +647,6 @@ async def test_lazy_inference_depth_computed_before_storing(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """Lazy-discovered logical inference with an existing source at depth 2 is stored at depth 3."""
-    from memories.database import create_inference
-
     existing = await create_inference(
         db,
         character_id=character.id,
@@ -664,9 +681,6 @@ async def test_lazy_inference_at_max_depth_is_stored(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """Inference at exactly MAX_INFERENCE_DEPTH is stored (not discarded)."""
-    from memories.database import create_inference
-    from memories.services.inference_service import MAX_INFERENCE_DEPTH
-
     existing = await create_inference(
         db,
         character_id=character.id,
@@ -699,9 +713,6 @@ async def test_lazy_inference_exceeding_depth_cap_not_stored(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """Inference whose depth would exceed MAX_INFERENCE_DEPTH is silently discarded."""
-    from memories.database import create_inference
-    from memories.services.inference_service import MAX_INFERENCE_DEPTH
-
     existing = await create_inference(
         db,
         character_id=character.id,
@@ -733,9 +744,7 @@ async def test_lazy_inference_exceeding_depth_cap_not_stored(
 async def test_evaluator_called_with_inferences(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
-    """The second Ollama call (evaluator) includes active inference statements in its prompt."""
-    from memories.database import create_inference
-
+    """The third Ollama call (evaluator) includes active inference statements in its prompt."""
     await create_inference(
         db,
         character_id=character.id,
@@ -746,8 +755,8 @@ async def test_evaluator_called_with_inferences(
         route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
         await run_turn(db, session.id, "Tell me about yourself", ollama)
 
-    # calls[1] is the evaluator call
-    eval_body = json.loads(route.calls[1].request.content)
+    # calls[2] is the evaluator call
+    eval_body = json.loads(route.calls[2].request.content)
     eval_prompt = eval_body["messages"][1]["content"]  # user message has the evaluator prompt
     assert "Alice is probably left-handed" in eval_prompt
 
@@ -824,7 +833,7 @@ async def test_run_turn_includes_active_experiences_in_system_prompt(
         )
         route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
         await run_turn(db, session.id, "Hello", ollama)
-    body = json.loads(route.calls[0].request.content)
+    body = json.loads(route.calls[1].request.content)
     system_content = body["messages"][0]["content"]
     assert "User lives in Chicago" in system_content
 
@@ -832,11 +841,8 @@ async def test_run_turn_includes_active_experiences_in_system_prompt(
 async def test_run_turn_cold_start_embeds_previous_journal(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
-    from memories.database import create_session as _cs
-    from memories.database import update_session_closing_journal
-
     await update_session_closing_journal(db, session.id, "A memorable conversation.")
-    session2 = await _cs(db, character_id=character.id)
+    session2 = await create_session(db, character_id=character.id)
     await _insert_experience(db, character.id, session.id)
 
     with respx.mock:
@@ -856,11 +862,8 @@ async def test_run_turn_cold_start_embeds_previous_journal(
 async def test_run_turn_cold_start_seeds_active_experiences(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
-    from memories.database import create_session as _cs
-    from memories.database import update_session_closing_journal
-
     await update_session_closing_journal(db, session.id, "Journal.")
-    session2 = await _cs(db, character_id=character.id)
+    session2 = await create_session(db, character_id=character.id)
     await _insert_experience(db, character.id, session.id)
 
     with respx.mock:
@@ -894,11 +897,8 @@ async def test_run_turn_no_cold_start_when_no_previous_session(
 async def test_run_turn_cold_start_only_fires_on_first_turn(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
-    from memories.database import create_session as _cs
-    from memories.database import update_session_closing_journal
-
     await update_session_closing_journal(db, session.id, "Previous session journal.")
-    session2 = await _cs(db, character_id=character.id)
+    session2 = await create_session(db, character_id=character.id)
     await _insert_experience(db, character.id, session.id)
 
     with respx.mock:
@@ -985,6 +985,7 @@ async def test_run_turn_experience_update_deletes_experience_from_db(
         )
         respx.post(_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),
                 _mock_ok("We are in New York."),
                 httpx.Response(
                     200,
@@ -1012,6 +1013,7 @@ async def test_run_turn_experience_update_removes_from_active_set(
         )
         respx.post(_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),
                 _mock_ok("Now in New York."),
                 httpx.Response(
                     200,
@@ -1036,6 +1038,7 @@ async def test_run_turn_experience_update_invalid_id_logs_warning_but_does_not_r
         respx.post(_EMBED_URL).mock(return_value=httpx.Response(200, content=make_embed_response()))
         respx.post(_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),
                 _mock_ok("Response."),
                 httpx.Response(
                     200,
@@ -1060,8 +1063,8 @@ async def test_run_turn_passes_active_experiences_to_evaluator(
         route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
         await run_turn(db, session.id, "Hello", ollama)
 
-    # calls[1] is the evaluator call
-    eval_body = json.loads(route.calls[1].request.content)
+    # calls[2] is the evaluator call
+    eval_body = json.loads(route.calls[2].request.content)
     eval_prompt = eval_body["messages"][1]["content"]
     assert "User lives in Chicago" in eval_prompt
 
@@ -1087,6 +1090,7 @@ async def test_run_turn_experience_update_promotes_logical_inferences(
         )
         respx.post(_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),
                 _mock_ok("Now in New York."),
                 httpx.Response(
                     200,
@@ -1126,6 +1130,7 @@ async def test_run_turn_experience_update_does_not_promote_probabilistic_inferen
         )
         respx.post(_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),
                 _mock_ok("Now in New York."),
                 httpx.Response(
                     200,
@@ -1151,8 +1156,8 @@ async def test_run_turn_returns_five_tuple_with_scores_dict(
         respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
         result = await run_turn(db, session.id, "Hello", ollama)
 
-    assert len(result) == 5
-    *_, scores = result
+    assert len(result) == 6
+    *_, scores, _ = result
     assert isinstance(scores, dict)
 
 
@@ -1165,8 +1170,6 @@ async def test_run_turn_calls_extractor_before_character_llm(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """Extractor Ollama call precedes character Ollama call (respx call order)."""
-    from tests.unit.conftest import make_extractor_ndjson
-
     with respx.mock:
         route = respx.post(_CHAT_URL).mock(
             side_effect=[
@@ -1185,8 +1188,6 @@ async def test_run_turn_auto_adds_tier1_facts(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """new_facts in extractor result → create_fact called for each before character call."""
-    from tests.unit.conftest import make_extractor_ndjson
-
     new_fact = {
         "key": "meeting_location",
         "value": "Chicago",
@@ -1204,8 +1205,6 @@ async def test_run_turn_auto_adds_tier1_facts(
         )
         await run_turn(db, session.id, "We're meeting in Chicago!", ollama)
 
-    from memories.database import get_facts
-
     facts = await get_facts(db, character.id)
     assert any(f.key == "meeting_location" and f.value == "Chicago" for f in facts)
 
@@ -1214,9 +1213,6 @@ async def test_run_turn_auto_updates_tier2_facts(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """fact_updates in extractor result → update_fact called for each before character call."""
-    from memories.database import create_fact, get_facts
-    from tests.unit.conftest import make_extractor_ndjson
-
     existing = await create_fact(db, character_id=character.id, key="home_city", value="Reykjavik")
     update = {
         "fact_id": existing.id,
@@ -1244,10 +1240,6 @@ async def test_run_turn_does_not_write_implicit_proposals_to_db(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """implicit_proposals in extractor result → no create_fact or update_fact called for them."""
-    from memories.database import get_facts
-    from memories.services.extraction_service import ExtractionResult
-    from tests.unit.conftest import make_extractor_ndjson
-
     proposal = {
         "key": "mood",
         "value": "anxious",
@@ -1275,8 +1267,6 @@ async def test_run_turn_passes_tier1_and_tier2_facts_to_character(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """Character system prompt includes extracted/updated fact values."""
-    from tests.unit.conftest import make_extractor_ndjson
-
     new_fact = {
         "key": "meeting_location",
         "value": "Chicago",
@@ -1305,9 +1295,6 @@ async def test_run_turn_character_prompt_does_not_include_implicit_proposals(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """System prompt does not contain proposed-but-unconfirmed values from implicit_proposals."""
-    from memories.services.extraction_service import ExtractionResult
-    from tests.unit.conftest import make_extractor_ndjson
-
     proposal = {
         "key": "current_feeling",
         "value": "very anxious",
@@ -1338,9 +1325,6 @@ async def test_run_turn_returns_extraction_result(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """run_turn return value includes the full ExtractionResult."""
-    from memories.services.extraction_service import ExtractionResult
-    from tests.unit.conftest import make_extractor_ndjson
-
     with respx.mock:
         respx.post(_CHAT_URL).mock(
             side_effect=[
@@ -1358,8 +1342,6 @@ async def test_run_turn_on_extraction_failure_continues_with_empty_result(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """ExtractionParseError → turn completes; extraction result is empty."""
-    from memories.services.extraction_service import ExtractionResult
-
     # First response is invalid JSON (triggers ExtractionParseError in extractor)
     invalid_extractor = make_ollama_ndjson("not valid extraction json")
     with respx.mock:
@@ -1383,8 +1365,6 @@ async def test_run_turn_on_ollama_connection_error_during_extraction_continues(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """Ollama connection failure during extraction → turn continues; warning logged."""
-    from memories.services.extraction_service import ExtractionResult
-
     with respx.mock:
         respx.post(_CHAT_URL).mock(
             side_effect=[
@@ -1404,9 +1384,6 @@ async def test_run_turn_deduplicates_tier1_facts_that_already_exist(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """Extractor proposes a new fact with existing key/category → IntegrityError caught silently."""
-    from memories.database import create_fact, get_facts
-    from tests.unit.conftest import make_extractor_ndjson
-
     # Pre-existing fact with same key
     await create_fact(db, character_id=character.id, key="occupation", value="surgeon")
 
@@ -1428,8 +1405,6 @@ async def test_run_turn_deduplicates_tier1_facts_that_already_exist(
         # Should not raise; IntegrityError on the duplicate should be swallowed
         result = await run_turn(db, session.id, "Were you a surgeon?", ollama)
 
-    from memories.services.extraction_service import ExtractionResult
-
     facts = await get_facts(db, character.id)
     # Original fact must still be there; duplicate (different value) was suppressed
     occupation_facts = [f for f in facts if f.key == "occupation"]
@@ -1442,10 +1417,6 @@ async def test_run_turn_empty_extraction_result_does_not_change_facts(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """All three extraction lists empty → no fact writes; turn proceeds normally."""
-    from memories.database import create_fact, get_facts
-    from memories.services.extraction_service import ExtractionResult
-    from tests.unit.conftest import make_extractor_ndjson
-
     await create_fact(db, character_id=character.id, key="occupation", value="surgeon")
 
     with respx.mock:

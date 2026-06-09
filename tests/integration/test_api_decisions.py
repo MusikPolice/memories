@@ -8,13 +8,14 @@ import respx
 from httpx import AsyncClient
 
 from memories.models import Character, Session
-from tests.unit.conftest import make_evaluator_ndjson, make_ollama_ndjson
+from tests.unit.conftest import make_evaluator_ndjson, make_extractor_ndjson, make_ollama_ndjson
 
 _OLLAMA_CHAT_URL = "http://test-ollama-integration:11434/api/chat"
 
 
 def _mock_turn(character_content: str = "I am fine.") -> list[httpx.Response]:
     return [
+        httpx.Response(200, content=make_extractor_ndjson()),
         httpx.Response(200, content=make_ollama_ndjson(character_content)),
         httpx.Response(200, content=make_evaluator_ndjson()),
     ]
@@ -95,6 +96,7 @@ async def test_get_decisions_includes_violations_for_implication(
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(
             side_effect=[
+                httpx.Response(200, content=make_extractor_ndjson()),
                 httpx.Response(200, content=make_ollama_ndjson("I have a sister.")),
                 httpx.Response(
                     200, content=make_evaluator_ndjson("implication", violations=violations)

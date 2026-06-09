@@ -18,7 +18,7 @@ from memories.database import (
     get_messages,
 )
 from memories.models import Character, Session
-from tests.unit.conftest import make_evaluator_ndjson, make_ollama_ndjson
+from tests.unit.conftest import make_evaluator_ndjson, make_extractor_ndjson, make_ollama_ndjson
 
 _OLLAMA_CHAT_URL = "http://test-ollama-integration:11434/api/chat"
 
@@ -39,6 +39,7 @@ def _implication_turn(
 ) -> list[httpx.Response]:
     """Mock a turn that produces an implication verdict."""
     return [
+        httpx.Response(200, content=make_extractor_ndjson()),
         httpx.Response(200, content=make_ollama_ndjson(character_content)),
         httpx.Response(
             200,
@@ -209,6 +210,7 @@ async def test_accept_implication_duplicate_key_updates_existing_fact(
         "suggested_fact": {"key": "siblings", "value": "two brothers"},
     }
     second_turn_side_effect = [
+        httpx.Response(200, content=make_extractor_ndjson()),
         httpx.Response(200, content=make_ollama_ndjson("Actually I have two brothers.")),
         httpx.Response(
             200, content=make_evaluator_ndjson("implication", violations=[changed_violation])
@@ -453,6 +455,7 @@ async def test_accept_second_implication_on_same_turn_succeeds(
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(
             side_effect=[
+                httpx.Response(200, content=make_extractor_ndjson()),
                 httpx.Response(200, content=make_ollama_ndjson("I have brown eyes and a sister.")),
                 httpx.Response(
                     200,
@@ -513,6 +516,7 @@ async def probabilistic_session(
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(
             side_effect=[
+                httpx.Response(200, content=make_extractor_ndjson()),
                 httpx.Response(200, content=make_ollama_ndjson("I work very long hours.")),
                 httpx.Response(
                     200,

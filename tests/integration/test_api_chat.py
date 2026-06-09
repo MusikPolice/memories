@@ -23,7 +23,7 @@ from memories.database import (
 )
 from memories.database import create_session as _create_session
 from memories.models import Character, Session
-from tests.unit.conftest import make_evaluator_ndjson, make_ollama_ndjson
+from tests.unit.conftest import make_evaluator_ndjson, make_extractor_ndjson, make_ollama_ndjson
 
 _OLLAMA_CHAT_URL = "http://test-ollama-integration:11434/api/chat"
 _EMBED_URL = "http://test-ollama-integration:11434/api/embed"
@@ -32,6 +32,10 @@ _EMBED_VEC = [1.0, 0.0, 0.0, 0.0]
 
 def _mock_ok(content: str = "I am fine.") -> httpx.Response:
     return httpx.Response(200, content=make_ollama_ndjson(content))
+
+
+def _mock_extractor() -> httpx.Response:
+    return httpx.Response(200, content=make_extractor_ndjson())
 
 
 def _mock_eval(
@@ -48,8 +52,12 @@ def _mock_turn(
     new_inferences: list[dict] | None = None,
     violations: list[dict] | None = None,
 ) -> list[httpx.Response]:
-    """Return a side_effect list for one complete turn (character + evaluator)."""
-    return [_mock_ok(character_content), _mock_eval(evaluator_verdict, new_inferences, violations)]
+    """Return a side_effect list for one complete turn (extractor + character + evaluator)."""
+    return [
+        _mock_extractor(),
+        _mock_ok(character_content),
+        _mock_eval(evaluator_verdict, new_inferences, violations),
+    ]
 
 
 def _parse_sse(text: str) -> list[dict[str, str]]:
@@ -94,7 +102,7 @@ async def test_send_message_emits_status_event_first(
         )
     events = _parse_sse(response.text)
     assert events[0]["event"] == "status"
-    assert json.loads(events[0]["data"])["state"] == "generating"
+    assert json.loads(events[0]["data"])["state"] == "extracting"
 
 
 async def test_send_message_emits_message_event(
@@ -163,7 +171,7 @@ async def test_ollama_receives_system_message_with_facts(
         await client.post(
             f"/api/sessions/{session.id}/messages", json={"content": "Where am I from?"}
         )
-    body = json.loads(route.calls[0].request.content)
+    body = json.loads(route.calls[1].request.content)
     system_content: str = body["messages"][0]["content"]
     assert "birthplace" in system_content
     assert "Reykjavik" in system_content
@@ -182,7 +190,7 @@ async def test_ollama_receives_prior_history(
             f"/api/sessions/{session.id}/messages", json={"content": "Second message"}
         )
 
-    body = json.loads(route.calls[0].request.content)
+    body = json.loads(route.calls[1].request.content)
     roles = [m["role"] for m in body["messages"]]
     assert "user" in roles
     assert "assistant" in roles
@@ -194,6 +202,7 @@ async def test_thinking_event_emitted_when_model_thinks(
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),
                 httpx.Response(
                     200,
                     content=make_ollama_ndjson(
@@ -382,6 +391,7 @@ async def test_send_message_contradiction_emits_sidechannel_before_message(
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),
                 _mock_ok("I'm from London."),
                 _mock_eval("contradiction", violations=contradiction_violation),
                 _mock_ok("I'm from Reykjavik."),
@@ -408,6 +418,7 @@ async def test_send_message_contradiction_delivers_after_regeneration(
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),
                 _mock_ok("I'm from London."),
                 _mock_eval("contradiction", violations=contradiction_violation),
                 _mock_ok("I'm from Reykjavik."),
@@ -433,6 +444,7 @@ async def test_send_message_contradiction_response_not_premature(
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),
                 _mock_ok("London."),
                 _mock_eval("contradiction", violations=contradiction_violation),
                 _mock_ok("Reykjavik."),
@@ -457,7 +469,7 @@ async def test_send_message_max_retries_exceeded_flag_in_message(
     contradiction_violation = [
         {"type": "contradiction", "description": "always wrong", "suggested_fact": None}
     ]
-    side_effects: list[httpx.Response] = []
+    side_effects: list[httpx.Response] = [_mock_extractor()]
     for _ in range(max_retries + 1):
         side_effects.append(_mock_ok("Still wrong."))
         side_effects.append(_mock_eval("contradiction", violations=contradiction_violation))
@@ -534,11 +546,12 @@ async def test_send_message_status_event_order_for_pass(
             f"/api/sessions/{session.id}/messages", json={"content": "Hello"}
         )
     events = _parse_sse(response.text)
-    # generating → reviewing → message → done
+    # extracting → generating → reviewing → message → done
     status_events = [e for e in events if e.get("event") == "status"]
     states = [json.loads(e["data"])["state"] for e in status_events]
-    assert states[0] == "generating"
-    assert states[1] == "reviewing"
+    assert states[0] == "extracting"
+    assert states[1] == "generating"
+    assert states[2] == "reviewing"
     generating_idx = next(
         i
         for i, e in enumerate(events)
@@ -597,7 +610,7 @@ async def test_send_message_system_message_includes_inferences(
         route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
         await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
 
-    body = json.loads(route.calls[0].request.content)
+    body = json.loads(route.calls[1].request.content)
     system_content = body["messages"][0]["content"]
     assert "Alice was born in 1993" in system_content
 
@@ -610,7 +623,7 @@ async def test_send_message_no_inferences_section_when_none_exist(
         route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
         await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
 
-    body = json.loads(route.calls[0].request.content)
+    body = json.loads(route.calls[1].request.content)
     system_content = body["messages"][0]["content"]
     assert "## Your Inferences" not in system_content
 
@@ -798,7 +811,7 @@ async def test_chat_system_prompt_groups_user_and_character_facts(
         route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
         await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
 
-    char_call_body = json.loads(route.calls[0].request.content)
+    char_call_body = json.loads(route.calls[1].request.content)
     system_prompt = char_call_body["messages"][0]["content"]
     assert "User" in system_prompt
     assert "Character" in system_prompt
@@ -819,7 +832,7 @@ async def test_chat_system_prompt_omits_empty_setting_section(
         route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
         await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
 
-    char_call_body = json.loads(route.calls[0].request.content)
+    char_call_body = json.loads(route.calls[1].request.content)
     system_prompt = char_call_body["messages"][0]["content"]
     lines = system_prompt.split("\n")
     setting_headers = [ln for ln in lines if ln.startswith("##") and "Setting" in ln]
@@ -840,7 +853,7 @@ async def test_chat_system_prompt_annotates_high_mutability_fact(
         route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
         await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
 
-    char_call_body = json.loads(route.calls[0].request.content)
+    char_call_body = json.loads(route.calls[1].request.content)
     system_prompt = char_call_body["messages"][0]["content"]
     assert "[fluid" in system_prompt
 
@@ -859,7 +872,7 @@ async def test_chat_system_prompt_annotates_low_mutability_fact(
         route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
         await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
 
-    char_call_body = json.loads(route.calls[0].request.content)
+    char_call_body = json.loads(route.calls[1].request.content)
     system_prompt = char_call_body["messages"][0]["content"]
     assert "[low-mutability" in system_prompt
 
@@ -882,6 +895,7 @@ def _mock_turn_with_embed(
 ) -> tuple[list[httpx.Response], httpx.Response]:
     """Return (chat_side_effects, embed_response) for a turn that triggers embed."""
     chat_responses = [
+        _mock_extractor(),
         httpx.Response(200, content=make_ollama_ndjson(character_content)),
         httpx.Response(
             200,
@@ -946,7 +960,7 @@ async def test_send_message_experience_appears_in_system_prompt(
         chat_route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
         respx.post(_EMBED_URL).mock(return_value=_mock_embed_ok())
         await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
-    body = json.loads(chat_route.calls[0].request.content)
+    body = json.loads(chat_route.calls[1].request.content)
     system_content = body["messages"][0]["content"]
     assert "User lives in Chicago" in system_content
 
@@ -1155,7 +1169,7 @@ async def test_send_message_cold_start_seeds_active_set(
         chat_route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
         respx.post(_EMBED_URL).mock(return_value=_mock_embed_ok())
         await client.post(f"/api/sessions/{session2.id}/messages", json={"content": "Hello"})
-    body = json.loads(chat_route.calls[0].request.content)
+    body = json.loads(chat_route.calls[1].request.content)
     system_content = body["messages"][0]["content"]
     assert "User is afraid of spiders" in system_content
 
@@ -1208,7 +1222,7 @@ async def test_send_message_active_experience_ids_matches_retrieved(
     events = _parse_sse(response.text)
     msg_event = next(e for e in events if e.get("event") == "message")
     active_ids = json.loads(msg_event["data"]).get("active_experience_ids", [])
-    body = json.loads(chat_route.calls[0].request.content)
+    body = json.loads(chat_route.calls[1].request.content)
     system_content = body["messages"][0]["content"]
     # Experience was retrieved and injected into system prompt
     assert exp.id in active_ids
@@ -1395,6 +1409,7 @@ async def test_accept_implication_on_high_mutability_fact_preserves_mutability(
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(
             side_effect=[
+                _mock_extractor(),
                 httpx.Response(200, content=make_ollama_ndjson("I feel anxious today.")),
                 httpx.Response(
                     200, content=make_evaluator_ndjson("implication", violations=[_VIOLATION])
