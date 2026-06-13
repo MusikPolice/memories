@@ -81,11 +81,11 @@ is the post-generation fallback for cases the character did not catch before gen
 its response. Both paths surface the same blocking card; the difference is timing.
 
 Note: the World Builder has author-level authority to overwrite any fact including
-immutable ones. It does this via a separate tool, `author_set_fact(path, value)`, which
+immutable ones. It does this via a separate tool, `author_set_facts(facts)`, which
 bypasses all mutability checks. The Character Evaluator and Character LLM use
 `set_fact(path, value)`, which enforces mutability. Tool-list scoping is the primary
 enforcement mechanism — each pass is given only the tools listed in its system prompt,
-so the Character LLM never sees `author_set_fact` and cannot call it.
+so the Character LLM never sees `author_set_facts` and cannot call it.
 
 Examples: `Character.Identity.Name`, `Character.Identity.Pronouns`,
 `Character.Appearance.Body.Height`.
@@ -356,27 +356,45 @@ non-blocking sidechannel notification informs the user of what was extracted and
 giving visibility without interrupting the flow.
 
 **Tool use.** Rather than producing a structured JSON verdict, the World Builder expresses
-its fact writes as calls to `author_set_fact`. Tool calling is the firm approach here because:
+its fact writes as a single call to `author_set_facts(facts: list[{path, value}])`. The
+tool takes the full list of extracted facts in one invocation. Tool calling is the firm
+approach here because each entry in `facts` passes through a deterministic server-side
+handler that can:
 
-- The LLM can call `author_set_fact` multiple times per turn — one call per extracted
-  fact — rather than producing a single monolithic JSON blob
-- Each `author_set_fact` call passes through a deterministic server-side handler that can:
-  - Validate the path exists in the schema
-  - Validate the value matches the declared `Type` (and `Constraint` for Enum)
-  - Trigger recalculation of any `Derived` facts that depend on the updated path
-  - Cascade invalidation to any Inferences that sourced from the changed fact
-- No mutability check is applied — the user is the author; their prose is ground truth
-- The tool call log becomes a natural audit record of what the World Builder extracted
+- Validate the path exists in the schema
+- Validate the value matches the declared `Type` (and `Constraint` for Enum)
+- Trigger recalculation of any `Derived` facts that depend on the updated path
+- Cascade invalidation to any Inferences that sourced from the changed fact
 
-`author_set_fact` is only listed in the World Builder's system prompt. The Character
+No mutability check is applied to any entry — the user is the author; their prose is
+ground truth. The tool call log (one row per `author_set_facts` invocation, with the
+full `facts` list as `tool_args`) becomes a natural audit record of what the World
+Builder extracted each turn.
+
+**Why a batch tool rather than one call per fact.** Step 0 live tests measured ~7–10s
+per round trip on local hardware. Individual calls (`author_set_fact(path, value)`)
+would cost `n × 7–10s` per turn for `n` extracted facts — potentially 30–70s for a
+message that implies 4–7 facts. The World Builder has no need for per-fact error
+feedback (it applies no validation that could require a retry), so collapsing all
+writes into one call is pure gain: one round trip regardless of fact count. The
+Character Evaluator retains individual `set_fact(path, value)` calls precisely because
+it *does* need per-call feedback — enum coercion failures and immutable-path rejections
+must return targeted errors so the model can self-correct on the next invocation. The
+Evaluator also has a prompt instruction to batch all calls in its first response where
+possible (the model already demonstrated native multi-`tool_calls` batching in Step 0
+tests).
+
+`author_set_facts` is only listed in the World Builder's system prompt. The Character
 Evaluator and Character LLM never see it and cannot call it.
 
-Example tool calls the World Builder might make from *"I crossed the room and kissed her"*:
+Example call the World Builder might make from *"I crossed the room and kissed her"*:
 
 ```
-author_set_fact("Setting.Location.Space", "Interior")
-author_set_fact("Character.State-Of-Mind.Mood", "Surprised")
-author_set_fact("User.State.Proximity-To-Character", "Close")
+author_set_facts([
+  {"path": "Setting.Location.Space",          "value": "Interior"},
+  {"path": "Character.State-Of-Mind.Mood",    "value": "Surprised"},
+  {"path": "User.State.Proximity-To-Character", "value": "Close"}
+])
 ```
 
 The schema defines what facts *can* be extracted; the World Builder decides which ones
@@ -785,7 +803,7 @@ Every tool call across all three passes is logged to the `decisions` table. Each
 records one tool invocation. The logging point and content depend on whether the tool
 requires user input:
 
-**Tools that do not require user input** (`author_set_fact`, `propose_inference`,
+**Tools that do not require user input** (`author_set_facts`, `propose_inference`,
 `report_pass`, `report_contradiction`, `set_fact` on fluid paths): logged immediately
 when the tool is called, before the result is returned to the LLM.
 
@@ -1033,29 +1051,32 @@ The legacy `facts` table can be dropped in a future cleanup.
 
 Steps in dependency order; each independently reviewable.
 
-**Step 0 — Tool-calling proof of concept (gate on all subsequent steps)**
+**Step 0 — Tool-calling proof of concept (gate on all subsequent steps)** ✅ complete
 
-Tool calling is the load-bearing mechanism for the World Builder (`author_set_fact`), the
-Character Evaluator (`set_fact`), and the Character LLM (`require_fact`). The current
-`ollama_client.py` has no tool-calling support. Before any schema, storage, or prompt
-work begins, this PoC must validate:
+Tool calling is the load-bearing mechanism for the World Builder (`author_set_facts`),
+the Character Evaluator (`set_fact`), and the Character LLM (`require_fact`). The
+`ollama_client.py` was extended with `chat_with_tools()` and `tool_gate.py` was added
+for the asyncio.Queue coordination mechanism. All unit tests pass; live tests validated
+against `jaahas/qwen3.5-uncensored:latest` on local hardware.
 
-- `OllamaClient` extended to accept a `tools` list and handle `tool_calls` responses,
-  append tool results as `tool` role messages, and re-invoke until the model returns
-  plain content
-- `qwen3:7b` (and any other target model) reliably calls a simple tool (e.g., a single
-  `set_fact(path, value)` stub) rather than hallucinating the call or embedding it in
-  prose
-- Multi-call behaviour: does the model call the tool multiple times per turn (one call
-  per fact) or attempt to batch calls? How does it behave when a tool call is rejected
-  with an error response?
-- Latency: a tool-calling World Builder may involve 3–6 round-trips per turn; measure
-  wall-clock cost on the target hardware
+**Step 0 review findings:**
 
-If the PoC reveals that `qwen3:7b` does not handle tool calling reliably, the
-World Builder and Character Evaluator must fall back to structured JSON verdicts
-(matching the current extractor/evaluator pattern), and this plan requires revision
-before implementation proceeds.
+- Tool calling works reliably — model calls tools rather than hallucinating in prose.
+- Multi-fact batching confirmed: model returned multiple `tool_calls` in a single
+  response (outfit + mood extracted in one round trip in `test_model_extracts_multiple_facts`).
+- Error recovery confirmed: model retried with a corrected call after receiving a
+  validation error in the tool result.
+- **Latency: ~7–10s per round trip** (91s across 4 tests with 2–3 rounds each).
+  This is the key finding. A World Builder making one call per fact would cost
+  `n × 7–10s` per turn — unacceptable for messages that imply 4–7 facts.
+- **Decision:** World Builder uses `author_set_facts(facts: list[{path, value}])`
+  (batch tool, one round trip always) rather than individual `author_set_fact(path,
+  value)` calls. Character Evaluator retains individual `set_fact` calls — per-call
+  error feedback is load-bearing for enum validation retries — but gets a prompt
+  instruction to batch all calls in its first response where possible.
+
+The fallback to structured JSON verdicts is not needed; tool calling is reliable on
+the target model.
 
 **Step 0b — `require_fact` suspension PoC (gate on Character LLM tool work)**
 
@@ -1152,19 +1173,20 @@ user provides the value. This avoids mid-generation suspension entirely.
 
 **Step 4 — World Builder service**
 - Refactor `extraction_service.py` → `world_builder.py`; switch from a structured JSON
-  verdict to `author_set_fact` tool calls
-- Implement the `author_set_fact` server-side handler: validates the path exists in the
-  schema, applies no mutability check, writes the value to the blob immediately, emits a
-  quiet non-blocking sidechannel notification per write
+  verdict to an `author_set_facts(facts: list[{path, value}])` tool call
+- Implement the `author_set_facts` server-side handler: iterates the `facts` list;
+  validates each path exists in the schema; applies no mutability check; writes each
+  value to the blob; emits a quiet non-blocking sidechannel notification per written fact
 - Update `run_turn()` to invoke the World Builder as its first pass before the Character
   LLM is called; the pre-turn section in `run_turn()` calls `world_builder.run_world_builder()`
   instead of the old extractor
-- `author_set_fact` is scoped to the World Builder's tool list only — the Character LLM
+- `author_set_facts` is scoped to the World Builder's tool list only — the Character LLM
   and Character Evaluator never receive it
-- Tests: `author_set_fact` writes the correct value to the blob; unknown schema path
-  returns a tool error; `run_turn()` invokes the World Builder before the Character LLM;
-  a quiet notification is emitted per write; Character LLM tool list does not include
-  `author_set_fact`
+- Tests: `author_set_facts` writes all provided facts to the blob in one call; a fact
+  with an unknown schema path returns a per-entry error (other entries in the batch still
+  apply); `run_turn()` invokes the World Builder before the Character LLM; a quiet
+  notification is emitted per written fact; Character LLM tool list does not include
+  `author_set_facts`
 
 **Step 5 — Character Evaluator tool-call loop**
 - Rewrite `run_evaluator()` to drive a tool-call loop instead of parsing a single JSON
@@ -1196,8 +1218,8 @@ user provides the value. This avoids mid-generation suspension entirely.
   create it at turn start in `run_turn()` and remove it on turn completion or error
 - Implement the `require_fact(path, reason, suggested_value?)` handler for the Character
   LLM: suspend the SSE stream → emit blocking sidechannel card → `await queue.get()` →
-  write the confirmed value via `author_set_fact` (locking it immutably) → return the
-  confirmed value as the tool result so the Character LLM resumes
+  write the confirmed value via `author_set_facts([{path, value}])` (locking it
+  immutably) → return the confirmed value as the tool result so the Character LLM resumes
 - Add a `POST /api/sessions/{id}/turns/{turn_id}/require-fact/respond` endpoint that
   looks up `_pending[session_id, turn_id]`, puts the user's decision, and returns
   immediately

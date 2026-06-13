@@ -84,6 +84,9 @@ addopts = [
     "--cov-fail-under=80",
     "--cov-branch",
 ]
+markers = [
+    "live: mark test as requiring a live Ollama server (deselect with -m 'not live')",
+]
 
 [tool.coverage.run]
 source = ["memories"]

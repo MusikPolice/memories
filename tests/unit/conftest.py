@@ -104,6 +104,48 @@ def make_embed_response(vec: list[float] | None = None) -> bytes:
     return json.dumps({"embeddings": [vec]}).encode()
 
 
+def make_tool_call_response(
+    tool_name: str,
+    arguments: dict[str, Any],
+    prompt_eval_count: int = 10,
+    eval_count: int = 5,
+) -> bytes:
+    """Build a non-streaming Ollama JSON response where the model calls one tool."""
+    obj = {
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": tool_name, "arguments": arguments}}],
+        },
+        "done": True,
+        "prompt_eval_count": prompt_eval_count,
+        "eval_count": eval_count,
+    }
+    return json.dumps(obj).encode()
+
+
+def make_multi_tool_call_response(calls: list[tuple[str, dict[str, Any]]]) -> bytes:
+    """Build a non-streaming Ollama JSON response where the model calls multiple tools."""
+    obj = {
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": name, "arguments": args}} for name, args in calls],
+        },
+        "done": True,
+    }
+    return json.dumps(obj).encode()
+
+
+def make_plain_tool_response(content: str) -> bytes:
+    """Build a non-streaming Ollama JSON response with plain content and no tool calls."""
+    obj = {
+        "message": {"role": "assistant", "content": content, "tool_calls": None},
+        "done": True,
+    }
+    return json.dumps(obj).encode()
+
+
 @pytest.fixture(autouse=True)
 def _clear_active_experiences() -> Any:
     experience_service._session_active_experiences.clear()

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -12,6 +14,21 @@ import httpx
 # Matches chat-template control tokens that some models emit past their
 # natural stop point (e.g. qwen3 emitting <|endoftext|> then repeating).
 _SPECIAL_TOKEN_RE = re.compile(r"<\|[^|>]+\|>|</s>")
+
+MAX_TOOL_CALL_ROUNDS = int(os.getenv("MAX_TOOL_CALL_ROUNDS", "10"))
+
+# Sync callable invoked by chat_with_tools for each tool call the model makes.
+# Receives the arguments dict from the tool_call; must return a result string.
+# May raise any exception — str(exc) is sent back to the model as the error.
+ToolHandler = Callable[[dict[str, Any]], str]
+
+
+@dataclass
+class ToolCallResult:
+    content: str  # final plain-text response from the model
+    history: list[dict[str, Any]]  # full message history including all tool turns
+    rounds: int  # number of HTTP round-trips made
+    cap_reached: bool  # True if the loop was cut short by max_rounds
 
 
 class OllamaConnectionError(Exception):
@@ -125,6 +142,71 @@ class OllamaClient:
                 raise OllamaResponseError(f"Ollama returned HTTP {response.status_code}")
         except httpx.ConnectError as exc:
             raise OllamaConnectionError(str(exc)) from exc
+
+    async def chat_with_tools(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        tool_handlers: dict[str, ToolHandler],
+        max_rounds: int = MAX_TOOL_CALL_ROUNDS,
+    ) -> ToolCallResult:
+        """Drive a tool-calling loop against POST /api/chat with ``stream: false``.
+
+        Re-invokes the model after each batch of tool calls until it returns
+        plain content or ``max_rounds`` is exhausted.  Returns a
+        ``ToolCallResult`` whose ``cap_reached`` flag signals whether the loop
+        was cut short.  ``OllamaConnectionError`` and ``OllamaResponseError``
+        propagate unchanged — infrastructure failures are not recoverable here.
+        """
+        url = f"{self.base_url}/api/chat"
+        history: list[dict[str, Any]] = list(messages)
+        content = ""
+        rounds = 0
+
+        while rounds < max_rounds:
+            payload: dict[str, Any] = {
+                "model": model,
+                "messages": history,
+                "tools": tools,
+                "stream": False,
+            }
+            try:
+                response = await self._http.post(url, json=payload)
+            except httpx.ConnectError as exc:
+                raise OllamaConnectionError(str(exc)) from exc
+
+            if response.status_code != 200:
+                raise OllamaResponseError(f"Ollama returned HTTP {response.status_code}")
+
+            data: dict[str, Any] = response.json()
+            rounds += 1
+            msg: dict[str, Any] = data["message"]
+            history.append(msg)
+
+            tool_calls: list[dict[str, Any]] = msg.get("tool_calls") or []
+            if not tool_calls:
+                content = msg.get("content", "") or ""
+                return ToolCallResult(
+                    content=content, history=history, rounds=rounds, cap_reached=False
+                )
+
+            for call in tool_calls:
+                fn: dict[str, Any] = call["function"]
+                name: str = fn["name"]
+                args: dict[str, Any] = fn["arguments"]
+                handler = tool_handlers.get(name)
+                if handler is None:
+                    result = f"Unknown tool: {name}"
+                else:
+                    try:
+                        result = handler(args)
+                    except Exception as exc:
+                        result = f"Error: {exc}"
+                tool_msg: dict[str, Any] = {"role": "tool", "content": result}
+                history.append(tool_msg)
+
+        return ToolCallResult(content=content, history=history, rounds=rounds, cap_reached=True)
 
     async def warmup_embed(self, model: str) -> None:
         """Load an embedding model into Ollama's memory.
