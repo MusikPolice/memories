@@ -59,20 +59,26 @@ permitted; the schema does.
 
 ### `immutable`
 
-A `set_fact` call targeting an immutable path is **immediately rejected** by the server
-with no user-facing side effect — the LLM receives a tool error and the turn continues
-as if the call was never made. The character cannot sneak an immutable change through by
-calling `set_fact`; the tool simply refuses.
+The server's handling of `set_fact` on an immutable path branches on whether the path
+already has a value:
 
-If the character's response *implies* a value that contradicts an already-set immutable
-fact, that is detected by the Character Evaluator as a contradiction and triggers
-regeneration exactly as today — that flow does not go through `set_fact` at all.
+**Path already set:** the call is **immediately rejected** with a tool error — the LLM
+receives the error and is expected to call `report_contradiction`, triggering the standard
+contradiction loop: the character's response is withheld and the Character LLM regenerates.
+The character cannot sneak an immutable change through by calling `set_fact`; the tool
+error makes the violation explicit to the evaluator.
 
-If an immutable path has no value yet, the correct tool is `require_fact(path, reason,
-suggested_value?)` rather than `set_fact`. `require_fact` pauses the turn, surfaces a
-blocking card to the user with the path's `Description` as guidance and the LLM's
-suggestion (if provided) pre-filled as an editable default. The value is written and
-locked only once the user explicitly confirms.
+**Path unset:** the call is **held pending user approval**. A blocking sidechannel card
+surfaces the path's `Description` and the evaluator's suggested value. Immutable facts
+are entirely within the user's control — the evaluator may propose a value but cannot
+write it unilaterally. The value is written and locked permanently only once the user
+explicitly confirms, edits, or the card is dismissed.
+
+The Character LLM has a separate, preferred path for the unset case: `require_fact(path,
+reason, suggested_value?)`, called mid-generation when the character realises it needs a
+value it cannot invent. The Character Evaluator's `set_fact` on an unset immutable path
+is the post-generation fallback for cases the character did not catch before generating
+its response. Both paths surface the same blocking card; the difference is timing.
 
 Note: the World Builder has author-level authority to overwrite any fact including
 immutable ones. It does this via a separate tool, `author_set_fact(path, value)`, which
@@ -311,6 +317,17 @@ This single distinction drives both passes. The author can assert anything about
 and it becomes true. The participant can only act within the world as it exists, subject
 to what they are physically and narratively capable of changing.
 
+### Invariant: Character LLM and Character Evaluator always run as a pair
+
+> **Any invocation of the Character LLM is always followed by a Character Evaluator pass
+> on whatever the Character LLM produced.**
+
+This applies to the initial generation and to every regeneration — whether triggered by
+a contradiction, a mutable reject/edit, or an immutable-unset edit. There is no code
+path that invokes the Character LLM and delivers its output without an evaluator pass.
+The evaluator is the gate through which all character prose must pass before the user
+sees it.
+
 ---
 
 ### Pass 1 — World Builder (pre-turn, runs on the user's message)
@@ -365,9 +382,16 @@ author_set_fact("User.State.Proximity-To-Character", "Close")
 The schema defines what facts *can* be extracted; the World Builder decides which ones
 *are* implied by the prose.
 
-**Scope.** The World Builder only writes facts. It does not generate character responses,
-run contradiction logic, propose inferences, or surface approval prompts to the user.
-It runs, updates the world state, and passes the updated context to the character LLM.
+**Scope.** The World Builder only writes Facts. It does not generate character responses,
+run contradiction logic, propose or invalidate Inferences, trigger the eager pass, or
+surface approval prompts to the user. It runs, updates the world state, and passes the
+updated context to the Character LLM.
+
+This boundary is intentional. Facts and Inferences belong to different epistemic
+domains: Facts are authorial ground truth; Inferences are the character's beliefs derived
+from that ground truth. The World Builder operates in the authorial domain only. Any
+effect on Inferences from a changed world state is the Character Evaluator's
+responsibility to detect and handle, not the World Builder's.
 
 ---
 
@@ -438,9 +462,10 @@ Two complementary mechanisms operate in parallel:
 
 **Option A — Evaluator-observed (baseline, always active).** The Character Evaluator
 reads the character's response and identifies assertions derivable from Facts but not yet
-stored, proposing them via `new_inference_logical` / `new_inference_probabilistic` tool
-calls. This is the proven current approach and runs regardless of what the Character LLM
-does.
+stored, proposing them via `propose_inference` tool calls. Inferences are the character's
+beliefs — the character decides what it believes, not the user. All proposed inferences
+are written to the DB immediately with no approval step. The user's only recourse is
+deletion after the fact via the sidechannel.
 
 **Option B — Character tool (additive).** The Character LLM is given `propose_inference`
 in its tool list. When it reasons that something follows from what it knows — *"She
@@ -452,6 +477,16 @@ captured early; if it does not, the Evaluator covers it via Option A.
 The two options are not mutually exclusive and both run by default. A future options menu
 may allow toggling each independently, since the user's choice of LLM will materially
 affect how reliably Option B fires in practice.
+
+**Deduplication.** Inferences filed by the Character LLM via `propose_inference` are
+written to the DB immediately when the tool is called. When the Character Evaluator runs
+immediately after, its context-loading call (`get_inferences`) naturally picks them up.
+The evaluator prompt already lists all established inferences with an instruction not to
+re-derive them, so Option A deduplicates against Option B results without any special
+handling. The trade-off is that inferences written during a turn that later fails the
+contradiction loop (or whose response the user ultimately rejects) are already in the DB
+— they are not rolled back. This is acceptable for now; stale inferences from a failed
+turn are harmless and will be superseded or revalidated on the next eager pass.
 
 ### Pass 3 — Character Evaluator (post-character, runs on the character's response)
 
@@ -482,14 +517,14 @@ character does most of the heavy lifting; the evaluator is there to pick up the 
 
 **Authority: mutability-constrained.** The character is in the story, not above it.
 
-| Situation | Server action |
-|---|---|
-| Character's response conflicts with an `Immutable` path already set | Contradiction — regenerate |
-| Character implies a value for an `Immutable` path that is **unset** | Surface blocking card with character's suggested value; branch on user action (see below) |
-| Character implies a value for a `Mutable` path | Call `set_fact`; surface mutable-update card to user (accept / edit / reject) |
-| Character implies a value for a `Fluid` path | Call `set_fact`; apply silently; quiet sidechannel notification |
-| Character invents a detail with no matching schema path | Call `propose_inference`; surface as a new inference for user review |
-| Character's response is consistent with all facts | Pass — deliver response |
+| Situation | Evaluator tool call | Server action |
+|---|---|---|
+| Character's response conflicts with an `Immutable` path already set | `set_fact` → rejected with tool error → evaluator calls `report_contradiction` | Contradiction — withhold response, regenerate |
+| Character implies a value for an `Immutable` path that is **unset** | `set_fact` → held pending approval | Surface blocking card; branch on user action (see below) |
+| Character implies a value for a `Mutable` path | `set_fact` → held pending approval | Surface mutable-update card (accept / edit / reject) |
+| Character implies a value for a `Fluid` path | `set_fact` → applied immediately | Quiet sidechannel notification; deliver response |
+| Character invents a detail with no matching schema path | `propose_inference` | Surface as new inference for user review |
+| Character's response is consistent with all facts | `report_pass` | Deliver response |
 
 **Immutable-unset branching:** when the evaluator detects a character response that uses
 an invented value for an unset `Immutable` path (either because the Character LLM called
@@ -503,8 +538,8 @@ on the user's action:
 - **Edit** (user supplies a different value) — the value is written and locked; the
   Character LLM is re-invoked with the corrected value in context; the new response
   replaces the original. Same regeneration flow as the current `implication` accept path.
-- **Dismiss** — no value is written; the response is delivered with the invented value
-  treated as an ungrounded detail (same as the current `implication` ignore path).
+- **Dismiss** — no value is written; the response is delivered as-is with the invented
+  value unrecorded.
 
 The Character Evaluator uses `set_fact` for schema-path writes. For details that cannot
 be captured as Facts — because no schema path exists — the evaluator calls
@@ -520,28 +555,26 @@ the old `implication` verdict for the off-schema case.
 - Unilaterally change an `Immutable` fact (triggers contradiction loop instead)
 - Create new schema paths
 
-#### Cascade re-evaluation when Facts change
+#### Inference staleness when Facts change
 
-When the World Builder (or the user via the sidechannel) updates a fact, all active
-Inferences that sourced from that fact path need re-evaluation. This already works today
-via `cascade_on_fact_edit()` in `inference_service.py`, which BFS-walks downstream
-Inferences and re-invokes the evaluator on each. With Facts now stored as paths rather
-than integer IDs, `source_fact_ids` becomes `source_fact_paths` (see Implementation
-Sketch, Step 6).
+The World Builder does not touch Inferences — it writes Facts and stops. Inferences are
+the character's beliefs, and the Character Evaluator is the appropriate place for belief
+revalidation, not the fact-writing layer.
 
-One new concern: the World Builder may write **multiple facts in a single turn**. Firing
-a cascade after each individual `set_fact` call would be wasteful and could produce
-intermediate states mid-cascade that interfere with each other. The cascade should be
-batched: collect all fact paths written by the World Builder for the turn, then run a
-single cascade pass over all affected Inferences once the World Builder is done.
+In practice, staleness surfaces naturally through the normal turn flow: if the World
+Builder updated a fact that an active Inference was derived from, the character's system
+prompt will contain both the updated fact value and the now-inconsistent inference. The
+Character LLM will encounter this tension and may reason about it in its response. The
+Character Evaluator then evaluates that response against current Facts and will flag any
+inconsistency as a contradiction, which triggers regeneration as normal.
 
-**Cascade performance.** `cascade_on_fact_edit` already operates in-memory: it loads
-the full inference set for the character and BFS-walks it in Python, never issuing
-per-inference SQL queries. Replacing integer `source_fact_ids` with path-string
-`source_fact_paths` changes the matching logic from `int in list` to `str in list` —
-both are trivially fast for the inference counts expected in this application. No SQL
-index tuning or query restructuring is needed; `source_fact_paths` is stored as a JSON
-array string in the DB and deserialized at load time.
+The existing `cascade_on_fact_edit()` function in `inference_service.py` is therefore
+**not called from the World Builder path**. It is retained for user-initiated fact edits
+and deletes made through the fact management UI (where an explicit revalidation pass is
+appropriate and expected), but it plays no role during roleplay turns.
+
+The eager pass (generating new Inferences from the current Fact set) likewise remains
+exclusively user-triggered — it is not fired by the World Builder.
 
 ---
 
@@ -550,6 +583,12 @@ array string in the DB and deserialized at load time.
 These features are removed or significantly curtailed in this design:
 
 - **`implication` verdict** — replaced by three mechanisms: the World Builder pass (for user-asserted facts), the Character Evaluator's mutability-gated `set_fact` tool call (for character-implied facts that match a schema path), and the `propose_inference` tool call (for character-invented details that have no schema path, which are stored as Inferences rather than Facts)
+- **`new_inference_probabilistic` user review flow** — removed. Inferences are the
+  character's beliefs; the character decides what it believes. All inferences — whether
+  proposed by the Character LLM or the Character Evaluator, and regardless of inference
+  type — are written to the DB immediately with no approval step. The sidechannel
+  displays new inferences as quiet notifications. The user may delete any inference via
+  the sidechannel to steer the narrative, but cannot block one from being written.
 - **Inference promotion to Fact** — the `/inferences/{id}/promote` endpoint and its UI
   button are removed. Inferences remain as derived conclusions; they cannot be elevated
   to facts. If a user wants a derived conclusion to become a ground truth, they add it
@@ -740,6 +779,40 @@ by exactly one terminal tool (`report_contradiction` or `report_pass`). The serv
 re-derives mutability from the schema on each `set_fact` call — the evaluator's choice
 of tool is not trusted for access control.
 
+#### Decision logging
+
+Every tool call across all three passes is logged to the `decisions` table. Each row
+records one tool invocation. The logging point and content depend on whether the tool
+requires user input:
+
+**Tools that do not require user input** (`author_set_fact`, `propose_inference`,
+`report_pass`, `report_contradiction`, `set_fact` on fluid paths): logged immediately
+when the tool is called, before the result is returned to the LLM.
+
+**Tools that require user input** (`require_fact`, `set_fact` on mutable or unset
+immutable paths): logged after the user provides input and before execution is returned
+to the calling LLM, so the user's decision is recorded alongside the tool arguments.
+
+The `decisions` table schema is updated to reflect this per-call structure:
+
+```sql
+CREATE TABLE decisions (
+    id             INTEGER PRIMARY KEY,
+    character_id   INTEGER REFERENCES characters(id),
+    session_id     INTEGER REFERENCES sessions(id),
+    turn_id        INTEGER,
+    pass_name      TEXT NOT NULL,  -- "world_builder" | "character_llm" | "character_evaluator"
+    tool_name      TEXT NOT NULL,  -- e.g. "set_fact" | "propose_inference" | "report_pass"
+    tool_args      TEXT NOT NULL,  -- JSON object of the arguments passed to the tool
+    user_input     TEXT,           -- JSON of the user's decision if input was required; NULL otherwise
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+The `decisions` router and UI are read-only debugging surfaces and require no changes
+beyond displaying the new columns. The existing `GET /api/sessions/{id}/decisions`
+endpoint continues to serve the log in reverse-chronological order.
+
 **Experiences are immutable.** Once written, an Experience is a permanent episodic
 record — something the character *lived through*, not a snapshot of current world state.
 Current state belongs in Facts (e.g. `Setting.Location.Name`); Experiences record what
@@ -759,12 +832,50 @@ part of this work.
 
 ### Character system prompt
 
-`build_system_prompt()` renders facts from the masked blob, walking the tree and
-rendering each populated leaf under its grouping path as a heading. Each leaf renders
-its current value, its `Description` (so the character understands the intended meaning
-of the fact), and for `Enum` leaves the full `Constraint` list (so the character knows
-the range of values the fact can take and can reason about them). Unpopulated leaves are
-omitted from the character prompt — the character only sees what is known.
+`build_system_prompt()` renders the **full schema tree** — both populated and unpopulated
+leaves — merged with current blob values. The character sees the complete taxonomy so it
+knows which paths exist, which are set, and which are awaiting a value. This is the
+information it needs to call `require_fact` correctly: if it encounters an `Immutable`
+leaf with no value that it needs to produce a coherent response, it knows the path name
+to pass to the tool.
+
+The prompt includes a preamble explaining the schema conventions:
+
+```
+## World State
+
+The following describes everything known about the world right now.
+Facts are organised by category and grouped by topic.
+
+Mutability levels:
+- IMMUTABLE: fixed permanently once set. You may not invent or change these.
+  If a value is missing and you need it, call require_fact() rather than making one up.
+- MUTABLE: stable but can change with narrative context. If your response implies a
+  change, the evaluator will surface it to the user for approval.
+- FLUID: expected to change freely within a session. Update via the evaluator naturally.
+
+For ENUM facts, only the listed values are valid.
+```
+
+Each leaf then renders as:
+
+```
+[IMMUTABLE] Character.Identity.Name — The character's given name
+  Value: Sarah
+
+[FLUID] Character.State-Of-Mind.Mood — The character's dominant emotional state
+  Value: Anxious
+  Valid values: Calm | Anxious | Angry | Sad | Joyful | Neutral | Guarded | Excited
+
+[IMMUTABLE] Character.Identity.Age — The character's age in years
+  Value: (not set)
+```
+
+Populated leaves show their value. Unpopulated leaves show `(not set)` so the
+character knows the path exists but has no value yet. The `Description` is rendered
+for every leaf regardless of population — it tells the character what the fact means
+and how to interpret it. `Constraint` lists are rendered for every `Enum` leaf
+regardless of whether a value is set, so the character always sees the valid options.
 
 ---
 
@@ -774,14 +885,35 @@ omitted from the character prompt — the character only sees what is known.
 
 - Facts displayed as a tree mirroring the schema structure; each grouping node is a
   collapsible section; leaves show their current value (or a placeholder if unset)
+- Leaf controls are type-aware: `Enum` leaves render a dropdown constrained to the
+  `Constraint` list; `Integer` leaves render a numeric input; `String` leaves render
+  free text
 - Fact creation is removed from the sidechannel for regular sessions — the fact list is
   read-only during roleplay. The user may still edit existing leaf values inline.
 - A future settings panel (out of scope here) will expose the full schema with editable
   values and allow extending the taxonomy
 
+### `GET /api/schema`
+
+A new read-only endpoint that returns `fact_schema.json` verbatim as JSON. The frontend
+fetches this once at startup and uses it to render the fact tree structure and type-aware
+controls. The schema is the same for all characters and changes only with deployments, so
+a single application-level fetch (rather than a per-character call) is sufficient.
+No auth or character scoping is needed — the schema describes the taxonomy, not any
+character's data.
+
+### Inference panel
+
+New inferences written during a turn (by either the Character LLM or the Character
+Evaluator) are shown as quiet notifications in the sidechannel — no approval action
+required. The sidechannel inference list gains a **delete** button on each entry so the
+user can remove an inference they wish to expunge from the character's belief set to
+steer the narrative. There is no accept/edit/ignore flow for inferences.
+
 ### Removed UI elements
 
 - "Promote to Fact" button on inferences in the sidechannel — removed
+- Accept / ignore sidechannel card for probabilistic inferences — removed
 - Fact creation form — removed from the in-session UI (facts are defined by the schema;
   values are set either before the session in the settings panel or by the evaluator
   during roleplay subject to mutability rules)
@@ -799,8 +931,8 @@ omitted from the character prompt — the character only sees what is known.
 - **`fact_update` (immutable, unset):** a blocking sidechannel card: *"Character implied
   their name is Sarah. Record character.identity.name = Sarah? Accept / Edit / Dismiss."*
   Accept locks the value and delivers the existing response unchanged. Edit locks the
-  user's value and regenerates the response. Dismiss delivers the response with the
-  invented value treated as ungrounded.
+  user's value and regenerates the response. Dismiss delivers the response as-is with
+  the invented value unrecorded.
 
 All three require the standard four-part commit rule (chat.js case, index.html card,
 chat-component.js handler, chat-component.test.js test).
@@ -839,11 +971,11 @@ The legacy `facts` table can be dropped in a future cleanup.
    rejected"*) may be added later if self-correction proves insufficient in practice, but
    is not required for initial implementation.
 
-3. **Naming the immutable-value request tool.** `request_fact_value(path, reason)` is
-   accurate but awkward. Candidates: `require_fact`, `prompt_user_for_fact`,
-   `request_fact_from_user`. Should communicate "I cannot proceed without this and I am
-   not allowed to invent it" — `require_fact` comes closest. Settle on a name before
-   implementation.
+3. ~~**Naming the immutable-value request tool.**~~ **Resolved.**
+   `require_fact(path, reason, suggested_value?)` — fits the existing `verb_noun` tool
+   naming pattern (`set_fact`, `author_set_fact`, `propose_inference`), avoids ambiguity
+   with "prompt" in an LLM context, and clearly signals necessity without implying
+   write authority. This name is used throughout the rest of this document.
 
 4. ~~**Inference generation: evaluator-observed vs. character tool.**~~ **Resolved.**
    Option A (evaluator-observed) is the baseline and is always active — the Character
@@ -862,15 +994,18 @@ The legacy `facts` table can be dropped in a future cleanup.
    Builder). Regeneration on edit/reject is necessary because the withheld response was
    built on a world state the user has overruled.
 
-6. **`fact_update` for unset fluid paths.** If `Character.State-Of-Mind.Mood` has no
-   value yet and the evaluator first sets it (rather than changes it), should that be
-   treated differently from subsequent updates? Probably not — the first write is still a
-   fluid operation and should apply silently.
+6. ~~**`fact_update` for unset fluid paths.**~~ **Resolved.**
+   No distinction. The first write to an unset fluid leaf is treated identically to
+   subsequent writes — applied immediately, quiet sidechannel notification. Fluid
+   semantics apply regardless of prior state; tracking whether a path has ever had a
+   value would add complexity for no semantic benefit.
 
-7. **Inference source paths.** Replacing `source_fact_ids` (integer array) with
-   `source_fact_paths` (path string array) means existing inference rows become orphaned.
-   Simplest fix: mark all existing inferences `invalidated` at migration time and let the
-   next eager pass regenerate them against the new schema.
+7. ~~**Inference source paths.**~~ **Resolved.**
+   No migration. The existing `memories.db` data is not precious; the database is wiped
+   on first run of the new schema. `source_fact_ids` is removed from the `inferences`
+   DDL and replaced with `source_fact_paths TEXT` in the initial `CREATE TABLE`
+   statement. No migration function needed — `init_db()` creates the correct schema
+   from scratch.
 
 8. **Settings panel for schema editing.** The plan defers a UI for editing
    `fact_schema.json` to future work. The JSON file is the interim solution. This is
@@ -932,6 +1067,26 @@ simply delays returning the tool result while it surfaces the blocking card via 
 waits for the user's HTTP response. Once the user provides the value, the server writes
 it and returns it as the tool result. The LLM resumes with the value populated.
 
+**Coordination mechanism.** All three SSE-suspension flows — `require_fact` (Character
+LLM mid-generation), mutable fact update (Character Evaluator post-generation), and
+immutable-unset (Character Evaluator post-generation) — share a single mechanism: a
+per-turn `asyncio.Queue` stored in a module-level dict keyed by `(session_id, turn_id)`.
+
+```python
+_pending: dict[tuple[int, int], asyncio.Queue] = {}
+```
+
+The SSE generator (inside `run_turn`) creates the queue at turn start, stores it in
+`_pending`, and `await`s it whenever a blocking tool call needs user input. The accept/
+reject endpoint for that turn looks up the queue by `(session_id, turn_id)`, puts the
+user's response, and returns immediately. The SSE generator resumes with the value.
+
+The queue is removed from `_pending` when the turn completes (or errors). All three
+flows use the same `await queue.get()` / `queue.put(response)` pattern, so the
+coordination code is written once and shared. This works correctly in a single-process
+uvicorn deployment; it is not safe across multiple workers, which is not a concern for
+this local application.
+
 This is simpler than originally anticipated, but the PoC must still verify:
 
 - The SSE stream can stay open for an indefinite user-interaction period without timing
@@ -947,51 +1102,203 @@ via the Character Evaluator post-generation: the evaluator detects the unset imm
 path, surfaces the blocking card, and the Character LLM is re-invoked fresh once the
 user provides the value. This avoids mid-generation suspension entirely.
 
-**Step 1 — Schema JSON file and loader**
+**Step 1 — Schema JSON file, loader, and `GET /api/schema` endpoint**
 - Write `src/memories/fact_schema.json` with the default schema above
 - Write `src/memories/schema_loader.py`: `load_schema()`, `render_schema_for_prompt()`,
   `apply_mask(blob)` (drops invalid paths per schema), `check_write_permitted(path, schema)`
   (returns mutability or raises if path not in schema)
+- Add `GET /api/schema` router (new `src/memories/routers/schema.py`) — returns
+  `fact_schema.json` verbatim as JSON; loaded once at startup, cached in memory
 - Tests: mask drops paths not in schema; known leaf paths pass through; unknown grouping
   paths dropped; immutable path blocked on re-write; mutability returned correctly for
-  all path types
+  all path types; `GET /api/schema` returns the expected structure
 
-**Step 2 — DB: `character_facts` table and repository**
+**Step 2 — DB: `character_facts` table, updated `decisions` table, and repositories**
 - Add `character_facts` table in `init_db()`
+- Replace `decisions` table schema: drop `reasoning`, `verdict`, `violations` columns;
+  add `pass_name`, `tool_name`, `tool_args` (JSON), `user_input` (JSON, nullable)
+- Drop `ungrounded_implications` column from `messages` table (no longer written or read)
+- Drop `captured_by` column from `messages` table — it exists to support Phase 7a/7b
+  compression (annotate-eagerly-trim-lazily), which is deferred future work; removing it
+  now avoids dead writes and keeps the schema honest about what is actually used
+- Drop `segments` table entirely and remove `segment_id` FK from `messages` — segments
+  exist only to support the Phase 7b compression pass, which is deferred; the table and
+  all references to it (`create_session()` opening a `session_start` segment,
+  `get_active_segment()`, `segment_id` parameter on `store_message()`) are removed;
+  the `segments` table will be rebuilt when Phase 7b is revisited
 - Repository functions: `get_facts(character_id) → dict` (applies mask), `set_facts(character_id, blob)`,
   `patch_fact(character_id, path_tuple, value)`
+- Update `store_decision()` to accept `pass_name`, `tool_name`, `tool_args`, `user_input`
+  instead of `reasoning`, `verdict`, `violations`
 - `get_facts()` returns `{}` if no row exists yet
-- Tests: round-trip read/write; mask applied on read; patch updates a nested key; missing
-  character returns empty dict
+- Tests: round-trip read/write on facts; mask applied on read; patch updates a nested key;
+  missing character returns empty dict; decision row stores correct pass/tool/args/input
 
-**Step 3 — Prompt changes**
-- Update `build_system_prompt()` to render from blob by walking the schema tree; enum
-  values as strings
-- Update evaluator prompt to include schema section and `fact_update` verdict instructions;
-  remove `implication` verdict from the prompt vocabulary
+**Step 3 — Prompt changes and evaluator model cleanup**
+- Update `build_system_prompt()` to render the full schema tree (populated and
+  unpopulated leaves); populated leaves show their value, unpopulated leaves show
+  `(not set)`; every leaf renders its `Description` and mutability level; `Enum` leaves
+  always render their `Constraint` list; include the mutability-level preamble
+- Update evaluator prompt to include schema section and tool-call instructions; remove
+  `implication` and `experience_update` from the prompt vocabulary and from
+  `_VALID_VERDICTS` in `evaluator.py`
+- Remove `ExperienceUpdate` model and `experience_updates` field from `EvaluatorResult`
+- Remove `Violation.suggested_fact` free-form dict (replaced by schema-path `set_fact`
+  tool calls; violations no longer carry fact proposals)
 - Update World Builder prompt to match
-- Update `EvaluatorResult` to replace `implication` violations with `fact_update` shape
-- Tests: prompt contains schema section; facts render grouped; range rendering correct;
-  evaluator output parsed with new shape
+- Tests: prompt contains schema section; facts render grouped; `implication` and
+  `experience_update` no longer accepted as valid verdicts; evaluator output parsed with
+  new shape
 
-**Step 4 — Server-side mutability enforcement**
-- On `fact_update` verdict: look up mutability from schema (not from evaluator output)
-- `fluid`: apply immediately, emit quiet sidechannel notification
-- `mutable`: queue as blocking notification; apply only if user accepts
-- `immutable`, path already set: treat as contradiction, trigger regeneration
-- `immutable`, path unset: emit unset-fact blocking notification
-- Tests: fluid update applies and emits notification; mutable update blocks; immutable
-  change triggers contradiction loop; immutable unset surfaces card
+**Step 4 — World Builder service**
+- Refactor `extraction_service.py` → `world_builder.py`; switch from a structured JSON
+  verdict to `author_set_fact` tool calls
+- Implement the `author_set_fact` server-side handler: validates the path exists in the
+  schema, applies no mutability check, writes the value to the blob immediately, emits a
+  quiet non-blocking sidechannel notification per write
+- Update `run_turn()` to invoke the World Builder as its first pass before the Character
+  LLM is called; the pre-turn section in `run_turn()` calls `world_builder.run_world_builder()`
+  instead of the old extractor
+- `author_set_fact` is scoped to the World Builder's tool list only — the Character LLM
+  and Character Evaluator never receive it
+- Tests: `author_set_fact` writes the correct value to the blob; unknown schema path
+  returns a tool error; `run_turn()` invokes the World Builder before the Character LLM;
+  a quiet notification is emitted per write; Character LLM tool list does not include
+  `author_set_fact`
 
-**Step 5 — UI: tree display, new notification cards, removed create/promote paths**
+**Step 5 — Character Evaluator tool-call loop**
+- Rewrite `run_evaluator()` to drive a tool-call loop instead of parsing a single JSON
+  verdict blob; the server re-invokes the LLM after each tool call until a terminal tool
+  is called or `MAX_TOOL_CALL_ROUNDS` is reached
+- Implement server-side handlers for the four Evaluator tools:
+  - `propose_inference(statement, derivation, source_paths)` — writes to the inferences
+    DB immediately; replaces the `new_inference_logical` / `new_inference_probabilistic`
+    verdict paths
+  - `report_contradiction(description)` — terminal tool; triggers the contradiction
+    regeneration loop
+  - `report_pass()` — terminal tool; delivers the character's response
+  - `set_fact(path, value)` on a **fluid** path — validates the schema path; applies the
+    value immediately; emits a quiet sidechannel notification
+- `set_fact` on mutable or unset-immutable paths returns a stub tool error at this stage
+  ("approval flow not yet implemented"); these are completed in Step 7
+- Add `MAX_TOOL_CALL_ROUNDS` cap and both fallback strategies (non-terminal failure:
+  drop the failed call, inject a system message instructing the LLM to call a terminal
+  tool; terminal failure: treat as `report_pass` and log a warning)
+- Update `chat_service.py` to use the loop-based evaluator; by the end of this step
+  `run_turn()` is fully three-pass for the fluid case
+- Tests: `propose_inference` written to DB; `report_pass` delivers response;
+  `report_contradiction` triggers regeneration; fluid `set_fact` applies immediately and
+  emits notification; tool-call cap fires at the configured limit; non-terminal fallback
+  injects terminal instruction; terminal fallback delivers response and logs warning
+
+**Step 6 — `require_fact` and asyncio.Queue coordination**
+- Establish the per-turn `asyncio.Queue` stored in `_pending[session_id, turn_id]`;
+  create it at turn start in `run_turn()` and remove it on turn completion or error
+- Implement the `require_fact(path, reason, suggested_value?)` handler for the Character
+  LLM: suspend the SSE stream → emit blocking sidechannel card → `await queue.get()` →
+  write the confirmed value via `author_set_fact` (locking it immutably) → return the
+  confirmed value as the tool result so the Character LLM resumes
+- Add a `POST /api/sessions/{id}/turns/{turn_id}/require-fact/respond` endpoint that
+  looks up `_pending[session_id, turn_id]`, puts the user's decision, and returns
+  immediately
+- Add `require_fact` to the Character LLM's tool list
+- Tests: SSE stream stays open during suspension; confirmed value written and locked
+  immutably; Character LLM resumes with value in tool result; dismissed card leaves path
+  unset and returns a "no value provided" tool result; queue removed from `_pending`
+  after turn completes normally and on error
+
+**Step 7 — Mutable and immutable approval gates + dead-code removal**
+- With the asyncio.Queue established in Step 6, complete the `set_fact` handler for
+  non-fluid paths:
+  - **Mutable**: suspend SSE → blocking card → accept (write value + deliver response) /
+    edit (write user's value + regenerate, skipping World Builder) / reject (discard
+    proposed value + regenerate, skipping World Builder)
+  - **Immutable, already set**: return tool error → evaluator calls
+    `report_contradiction` → contradiction loop handles it (no queue needed)
+  - **Immutable, unset**: suspend SSE → blocking card → accept (write + lock + deliver
+    existing response) / edit (write user's value + lock + regenerate) / dismiss (deliver
+    as-is, path remains unset)
+- Remove `experience_update` handling from `chat_service.py`: delete the
+  `delete_experience` call and the `experience_update` branch in `run_turn()`
+- Remove `implication` verdict handling from `chat_service.py`
+- Tests: mutable accept writes value and delivers; mutable edit regenerates with user
+  value; mutable reject regenerates without change; immutable-set triggers contradiction
+  loop; immutable-unset accept locks and delivers; immutable-unset edit locks user value
+  and regenerates; immutable-unset dismiss delivers as-is; `experience_update` branch is
+  gone; `implication` branch is gone
+
+**Step 8 — UI: tree display, new notification cards, removed cards and paths**
+- Frontend fetches `GET /api/schema` once at startup and stores the result; uses it to
+  render the fact tree structure and select type-aware controls per leaf (`Enum` →
+  dropdown, `Integer` → numeric input, `String` → free text)
 - Sidechannel fact list rendered as collapsible schema tree; inline value editing retained
+- Remove `implication` notification card from `index.html`, its handler from
+  `chat-component.js`, its case from `buildNotificationFromSidechannel` in `chat.js`,
+  and its tests from `chat.test.js` and `chat-component.test.js`
+- Remove `experience_update` notification card and handler by the same four-part rule
+- Remove the ungrounded badge rendering from message cards in `index.html` and any
+  associated logic in `chat-component.js` and `chat.js`
 - Remove "Promote to Fact" button from inference cards
 - Remove in-session fact creation form
 - Add `fact_update_fluid`, `fact_update_mutable`, `fact_update_immutable_unset` sidechannel
   cards; all three follow the four-part commit rule
 
-**Step 6 — Inference path migration**
-- Rename `source_fact_ids` → `source_fact_paths` in `inferences` table
-- Mark all existing inferences `invalidated` at migration (regenerated by next eager pass)
-- Update inference service to write/read path strings
-- Remove `POST .../inferences/{id}/promote` endpoint and its tests
+**Step 9 — Inference path migration**
+- Rename `source_fact_ids` → `source_fact_paths` in the `inferences` `CREATE TABLE`
+  statement in `init_db()` — no migration needed; the DB is wiped on first run of the
+  new schema (see resolved Open Question 7)
+- Update `inference_service.py` to write and read path strings (`run_eager_pass()`,
+  `cascade_on_fact_edit()`, `cascade_on_fact_delete()`, `revalidate_single_inference()`)
+- Remove `POST /api/characters/{id}/inferences/{id}/promote` endpoint and its
+  integration tests
+- Tests: inference written with `source_fact_paths`; cascade walks paths correctly;
+  promote endpoint removed and returns 404
+
+**Step 10 — Documentation update**
+- Rewrite the architecture section of `CLAUDE.md` to reflect the three-pass design
+  (World Builder, Character LLM, Character Evaluator), tool-call model, schema-constrained
+  fact blob, updated DB schema, removed verdicts and columns, and deferred work
+- Update `README.md` to match
+- Do this after implementation is complete and verified so the docs describe what was
+  actually built, not what was planned
+
+---
+
+## Deferred Future Work
+
+The following were queued after Phase 6 in `docs/plan.md` but are paused while this
+Facts v2 rework takes priority. They remain valid and desirable; resume them once this
+plan is complete and stable.
+
+### Optimistic streaming (see `docs/streaming-plan.md`)
+
+Stream character response tokens to the client as they are generated rather than
+buffering until after the evaluator clears them. The full design — `on_token` callback
+in `OllamaClient`, unified `asyncio.Queue` in `chat.py`, streaming bubble state machine
+in `chat-component.js`, contradicted-bubble visual treatment in `index.html` — is
+specified in `docs/streaming-plan.md`. No design decisions outstanding; implementation
+can begin directly from that document once Facts v2 is stable.
+
+Note: the `asyncio.Queue` pattern in `streaming-plan.md` (unified status + token event
+queue) is distinct from but compatible with the per-turn `_pending` coordination queue
+introduced by this plan for blocking tool calls (`require_fact`, mutable approvals). The
+two queues serve different purposes and coexist without conflict.
+
+### Context budget, annotation, and compression (Phase 7a/7b from `docs/plan.md`)
+
+**Phase 7a — Budget visibility and message annotation:**
+- Track token counts from Ollama response `prompt_eval_count` / `eval_count`
+- Estimate pre-flight prompt cost via `tiktoken` (cl100k_base)
+- Track reserved zone size dynamically (Facts + Inferences + active Experiences)
+- Annotate messages with `captured_by` path strings when Facts are written from
+  conversation (restore the `captured_by` column, now using path strings rather than
+  integer IDs, once this phase begins)
+- Show context pressure indicator in UI
+
+**Phase 7b — Compression:**
+- Rebuild the `segments` table and `segment_id` FK on `messages` (dropped in this plan)
+- Segment boundaries on event boundaries (fact written, evaluator event, size cap)
+- Compression pass at 80% of available budget: drop fully-annotated segments, journal
+  the rest via an LLM pass
+- Journal entries token-capped at configurable max (default 200 tokens), stored in the
+  `segments` table, injected in place of raw messages
