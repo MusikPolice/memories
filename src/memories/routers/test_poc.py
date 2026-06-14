@@ -86,7 +86,7 @@ async def test_require_fact_poc(
             )
             await _on_event(SSEEvent(event="done", data={}))
 
-        task = asyncio.ensure_future(_work())
+        task = asyncio.create_task(_work())
 
         try:
             while not task.done():

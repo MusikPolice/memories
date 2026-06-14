@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Generator
 from typing import Any
 
 import httpx
 import pytest
 import respx
 
-import memories.services.tool_gate as tool_gate_module
 from memories.services.chat_service import SSEEvent
 from memories.services.ollama_client import OllamaClient
 from memories.services.tool_gate import (
@@ -40,13 +38,6 @@ _REQUIRE_FACT_TOOL: dict[str, Any] = {
         },
     },
 }
-
-
-@pytest.fixture(autouse=True)
-def _clear_gates() -> Generator[None, None, None]:
-    tool_gate_module._pending.clear()
-    yield
-    tool_gate_module._pending.clear()
 
 
 async def test_create_and_resolve_gate() -> None:

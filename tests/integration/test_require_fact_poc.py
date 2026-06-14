@@ -17,8 +17,7 @@ import asyncio
 import contextlib
 import json
 import socket
-from collections.abc import AsyncGenerator
-from typing import Any
+from collections.abc import AsyncGenerator, Callable
 
 import aiosqlite
 import pytest
@@ -41,17 +40,17 @@ _UNKNOWN_SESSION_ID = 999999
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def _clear_gates() -> Any:
-    tool_gate_module._pending.clear()
-    yield
-    tool_gate_module._pending.clear()
+def _bound_socket() -> socket.socket:
+    """Return a TCP socket already bound to a free loopback port.
 
-
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    Keeping the socket open until it is passed to uvicorn.Server.serve()
+    eliminates the TOCTOU race where another process claims the port between
+    our bind() and uvicorn's bind().
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", 0))
+    return s
 
 
 @pytest.fixture
@@ -69,20 +68,23 @@ async def poc_client(db: aiosqlite.Connection) -> AsyncGenerator[AsyncClient, No
 
     app.dependency_overrides[get_db] = _override_db
 
-    port = _free_port()
+    sock = _bound_socket()
+    port = sock.getsockname()[1]
     config = uvicorn.Config(
         app,
-        host="127.0.0.1",
-        port=port,
         loop="none",
         lifespan="off",
         log_level="error",
     )
     server = uvicorn.Server(config)
-    serve_task = asyncio.create_task(server.serve())
+    serve_task = asyncio.create_task(server.serve(sockets=[sock]))
 
-    while not server.started:
-        await asyncio.sleep(0.05)
+    try:
+        await asyncio.wait_for(_wait_until(lambda: server.started), timeout=10.0)
+    except TimeoutError as exc:
+        server.should_exit = True
+        await serve_task
+        raise RuntimeError("uvicorn failed to start within 10 seconds") from exc
 
     async with AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
         try:
@@ -92,6 +94,11 @@ async def poc_client(db: aiosqlite.Connection) -> AsyncGenerator[AsyncClient, No
             await serve_task
 
     app.dependency_overrides.clear()
+
+
+async def _wait_until(condition: Callable[[], bool]) -> None:
+    while not condition():
+        await asyncio.sleep(0.05)
 
 
 @pytest.fixture
@@ -282,13 +289,16 @@ async def test_keep_alive_comments_emitted_during_suspension(
     ), f"expected at least one ping comment, got raw_lines={collector.raw_lines}"
 
 
-async def test_double_accept_returns_409(poc_client: AsyncClient, session_id: int) -> None:
-    """Second accept while queue is full → 409; first resolution stands.
+async def test_double_accept_rejects_second_resolve(
+    poc_client: AsyncClient, session_id: int
+) -> None:
+    """The second of two concurrent accept requests is rejected; the stream resolves cleanly.
 
-    Both requests are dispatched concurrently so they arrive at the server before
-    the event loop has a chance to run _work() and consume the first queued value.
-    Sequential awaits yield control between calls, letting _work() drain the queue
-    and clean up the gate before the second request arrives (→ 404, not 409).
+    When both requests race to the server, the first to call resolve_gate() wins (200).
+    The second gets either:
+    - 409 QueueFull — if it arrives while the queue still holds the first value, or
+    - 404 Not Found — if _work() already consumed the value and cleanup_gate() ran first.
+    Both outcomes prove that only one resolution took effect.
     """
     collector = _SseCollector()
     consumer = asyncio.create_task(collector.consume(poc_client, _poc_url(session_id)))
@@ -301,7 +311,8 @@ async def test_double_accept_returns_409(poc_client: AsyncClient, session_id: in
     )
 
     statuses = sorted([r1.status_code, r2.status_code])
-    assert statuses == [200, 409], f"expected [200, 409], got {statuses}"
+    assert statuses[0] == 200, f"expected one 200, got {statuses}"
+    assert statuses[1] in (404, 409), f"expected second to be 404 or 409, got {statuses}"
 
     try:
         await asyncio.wait_for(consumer, timeout=5.0)

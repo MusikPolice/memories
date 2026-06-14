@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from memories.database import get_session
 from memories.deps import get_db, get_ollama
-from memories.services.chat_service import run_turn
+from memories.services.chat_service import SSEEvent, run_turn
 from memories.services.experience_service import get_active_experiences
 from memories.services.ollama_client import OllamaClient
 
@@ -40,26 +40,26 @@ async def send_message(
         raise HTTPException(status_code=409, detail="Session has ended")
 
     async def _stream() -> AsyncGenerator[str, None]:
-        _q: asyncio.Queue[str] = asyncio.Queue()
+        _q: asyncio.Queue[SSEEvent] = asyncio.Queue()
 
-        async def _on_status(state: str) -> None:
-            await _q.put(state)
+        async def _on_event(event: SSEEvent) -> None:
+            await _q.put(event)
 
         yield 'event: status\ndata: {"state": "extracting"}\n\n'
 
-        _task = asyncio.ensure_future(
-            run_turn(db, session_id, body.content, ollama, think=body.think, on_status=_on_status)
+        _task = asyncio.create_task(
+            run_turn(db, session_id, body.content, ollama, think=body.think, on_event=_on_event)
         )
 
         while not _task.done():
             try:
-                state = await asyncio.wait_for(_q.get(), timeout=0.05)
-                yield f'event: status\ndata: {{"state": "{state}"}}\n\n'
+                ev = await asyncio.wait_for(_q.get(), timeout=0.05)
+                yield ev.to_sse()
             except TimeoutError:
-                pass
+                yield ": ping\n\n"
 
         while not _q.empty():
-            yield f'event: status\ndata: {{"state": "{_q.get_nowait()}"}}\n\n'
+            yield _q.get_nowait().to_sse()
 
         exc = _task.exception()
         if exc is not None:
