@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 import aiosqlite
@@ -54,6 +56,21 @@ _log = logging.getLogger(__name__)
 MAX_CONTRADICTION_RETRIES: int = int(os.getenv("MAX_CONTRADICTION_RETRIES", "3"))
 
 StatusCallback = Callable[[str], Awaitable[None]] | None
+
+
+@dataclass
+class SSEEvent:
+    """A typed SSE event that tool handlers can emit via EventCallback."""
+
+    event: str
+    data: dict[str, object] = field(default_factory=dict)
+
+    def to_sse(self) -> str:
+        """Serialise to SSE wire format: two lines followed by a blank line."""
+        return f"event: {self.event}\ndata: {json.dumps(self.data)}\n\n"
+
+
+EventCallback = Callable[[SSEEvent], Awaitable[None]] | None
 
 
 async def run_contradiction_loop(
