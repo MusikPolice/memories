@@ -104,6 +104,8 @@ async def test_require_fact_poc(
                 raise exc
 
         finally:
+            if not task.done():
+                task.cancel()
             cleanup_gate(session_id, turn_id)
 
     return StreamingResponse(_stream(), media_type="text/event-stream")

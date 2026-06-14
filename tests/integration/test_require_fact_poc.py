@@ -16,12 +16,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import socket
 from collections.abc import AsyncGenerator
 from typing import Any
 
 import aiosqlite
 import pytest
-from httpx import ASGITransport, AsyncClient
+import uvicorn
+from httpx import AsyncClient
 
 import memories.services.tool_gate as tool_gate_module
 from memories.database import create_character, create_session
@@ -46,16 +48,49 @@ def _clear_gates() -> Any:
     tool_gate_module._pending.clear()
 
 
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 @pytest.fixture
 async def poc_client(db: aiosqlite.Connection) -> AsyncGenerator[AsyncClient, None]:
-    """AsyncClient wired to the in-memory DB; no Ollama override needed."""
+    """AsyncClient backed by a real uvicorn server for true concurrent SSE streaming.
+
+    ASGITransport buffers the full HTTP response before yielding any lines, which
+    deadlocks tests that must send an accept request while an SSE stream is open.
+    A real server streams incrementally so the consumer and the accept endpoint
+    can run concurrently in the same asyncio event loop.
+    """
 
     async def _override_db() -> AsyncGenerator[aiosqlite.Connection, None]:
         yield db
 
     app.dependency_overrides[get_db] = _override_db
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        yield client
+
+    port = _free_port()
+    config = uvicorn.Config(
+        app,
+        host="127.0.0.1",
+        port=port,
+        loop="none",
+        lifespan="off",
+        log_level="error",
+    )
+    server = uvicorn.Server(config)
+    serve_task = asyncio.create_task(server.serve())
+
+    while not server.started:
+        await asyncio.sleep(0.05)
+
+    async with AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+        try:
+            yield client
+        finally:
+            server.should_exit = True
+            await serve_task
+
     app.dependency_overrides.clear()
 
 
@@ -248,17 +283,25 @@ async def test_keep_alive_comments_emitted_during_suspension(
 
 
 async def test_double_accept_returns_409(poc_client: AsyncClient, session_id: int) -> None:
-    """A second call to the accept endpoint returns 409; first resolution stands."""
+    """Second accept while queue is full → 409; first resolution stands.
+
+    Both requests are dispatched concurrently so they arrive at the server before
+    the event loop has a chance to run _work() and consume the first queued value.
+    Sequential awaits yield control between calls, letting _work() drain the queue
+    and clean up the gate before the second request arrives (→ 404, not 409).
+    """
     collector = _SseCollector()
     consumer = asyncio.create_task(collector.consume(poc_client, _poc_url(session_id)))
 
     await asyncio.wait_for(collector.sidechannel_seen.wait(), timeout=5.0)
 
-    r1 = await poc_client.post(_respond_url(session_id), json={"value": "Alice"})
-    r2 = await poc_client.post(_respond_url(session_id), json={"value": "Bob"})
+    r1, r2 = await asyncio.gather(
+        poc_client.post(_respond_url(session_id), json={"value": "Alice"}),
+        poc_client.post(_respond_url(session_id), json={"value": "Bob"}),
+    )
 
-    assert r1.status_code == 200
-    assert r2.status_code == 409
+    statuses = sorted([r1.status_code, r2.status_code])
+    assert statuses == [200, 409], f"expected [200, 409], got {statuses}"
 
     try:
         await asyncio.wait_for(consumer, timeout=5.0)
@@ -277,16 +320,30 @@ async def test_accept_unknown_turn_returns_404(poc_client: AsyncClient, session_
 async def test_accept_before_suspension_resolves_immediately(
     poc_client: AsyncClient, session_id: int
 ) -> None:
-    """A pre-queued resolution is consumed by await_gate() without blocking."""
-    # Create the gate manually so the accept endpoint can find it
-    tool_gate_module.create_gate(session_id, _TURN_ID)
+    """Value pre-queued before await_gate() is called; await_gate() returns immediately.
+
+    Uses delay_ms=200 so the SSE endpoint sleeps after creating the gate but before
+    calling await_gate().  We poll _pending to detect gate creation, then resolve it
+    during the delay window.  await_gate() later returns the buffered value instantly.
+    """
+    collector = _SseCollector()
+    consumer = asyncio.create_task(
+        collector.consume(poc_client, _poc_url(session_id, delay_ms=200))
+    )
+
+    # Wait for the gate to appear (the SSE endpoint creates it on request arrival,
+    # before the 200 ms delay begins).
+    async def _gate_created() -> None:
+        while (session_id, _TURN_ID) not in tool_gate_module._pending:
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(_gate_created(), timeout=5.0)
+
+    # Pre-resolve before await_gate() is reached (during the 200 ms sleep).
     response = await poc_client.post(_respond_url(session_id), json={"value": "Preloaded"})
     assert response.status_code == 200
 
-    # Now start the SSE stream — the gate value is already queued, so it
-    # should resume immediately and emit done without ever blocking.
-    collector = _SseCollector()
-    consumer = asyncio.create_task(collector.consume(poc_client, _poc_url(session_id)))
+    # Stream completes without blocking since the value was already queued.
     await asyncio.wait_for(consumer, timeout=5.0)
 
     message_events = [e for e in collector.events if e.get("event") == "message"]
