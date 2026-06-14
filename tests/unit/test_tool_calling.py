@@ -19,6 +19,7 @@ from tests.unit.conftest import (
     make_multi_tool_call_response,
     make_plain_tool_response,
     make_tool_call_response,
+    make_tool_call_response_with_thinking,
 )
 
 _CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
@@ -44,6 +45,10 @@ _MESSAGES = [{"role": "user", "content": "Set the mood to Anxious"}]
 _DEFAULT_ARGS: dict[str, Any] = {"path": "Character.State-Of-Mind.Mood", "value": "Anxious"}
 
 
+async def _ok_handler(args: dict[str, Any]) -> str:
+    return "OK"
+
+
 # ---------------------------------------------------------------------------
 # Request shape tests
 # ---------------------------------------------------------------------------
@@ -57,7 +62,7 @@ async def test_tools_list_sent_in_request_body(ollama: OllamaClient) -> None:
             httpx.Response(200, content=make_plain_tool_response("Done.")),
         ]
     )
-    await ollama.chat_with_tools("qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": lambda a: "OK"})
+    await ollama.chat_with_tools("qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler})
 
     body = json.loads(route.calls[0].request.content)
     assert "tools" in body
@@ -72,10 +77,28 @@ async def test_stream_false_used_for_tool_calls(ollama: OllamaClient) -> None:
             httpx.Response(200, content=make_plain_tool_response("Done.")),
         ]
     )
-    await ollama.chat_with_tools("qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": lambda a: "OK"})
+    await ollama.chat_with_tools("qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler})
 
     body = json.loads(route.calls[0].request.content)
     assert body.get("stream") is False
+
+
+@respx.mock
+async def test_tools_and_stream_sent_in_all_rounds(ollama: OllamaClient) -> None:
+    """tools and stream:false must be present in every round, not just the first."""
+    route = respx.post(_CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(200, content=make_tool_call_response("set_fact", _DEFAULT_ARGS)),
+            httpx.Response(200, content=make_plain_tool_response("Done.")),
+        ]
+    )
+    await ollama.chat_with_tools("qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler})
+
+    assert len(route.calls) == 2
+    for call in route.calls:
+        body = json.loads(call.request.content)
+        assert body["tools"] == _TOOLS
+        assert body["stream"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +110,7 @@ async def test_stream_false_used_for_tool_calls(ollama: OllamaClient) -> None:
 async def test_no_tool_calls_returns_plain_content_directly(ollama: OllamaClient) -> None:
     call_log: list[dict[str, Any]] = []
 
-    def handler(args: dict[str, Any]) -> str:
+    async def handler(args: dict[str, Any]) -> str:
         call_log.append(args)
         return "OK"
 
@@ -106,7 +129,7 @@ async def test_no_tool_calls_returns_plain_content_directly(ollama: OllamaClient
 async def test_single_tool_call_then_plain_content(ollama: OllamaClient) -> None:
     call_log: list[dict[str, Any]] = []
 
-    def handler(args: dict[str, Any]) -> str:
+    async def handler(args: dict[str, Any]) -> str:
         call_log.append(args)
         return "OK"
 
@@ -129,7 +152,7 @@ async def test_single_tool_call_then_plain_content(ollama: OllamaClient) -> None
 async def test_multiple_sequential_tool_calls(ollama: OllamaClient) -> None:
     call_log: list[dict[str, Any]] = []
 
-    def handler(args: dict[str, Any]) -> str:
+    async def handler(args: dict[str, Any]) -> str:
         call_log.append(args)
         return "OK"
 
@@ -148,6 +171,9 @@ async def test_multiple_sequential_tool_calls(ollama: OllamaClient) -> None:
     result = await ollama.chat_with_tools("qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": handler})
 
     assert len(call_log) == 3
+    assert call_log[0] == args1
+    assert call_log[1] == args2
+    assert call_log[2] == args3
     assert result.rounds == 4
     assert result.cap_reached is False
 
@@ -156,7 +182,7 @@ async def test_multiple_sequential_tool_calls(ollama: OllamaClient) -> None:
 async def test_multiple_tool_calls_in_single_response(ollama: OllamaClient) -> None:
     call_log: list[dict[str, Any]] = []
 
-    def handler(args: dict[str, Any]) -> str:
+    async def handler(args: dict[str, Any]) -> str:
         call_log.append(args)
         return "OK"
 
@@ -195,9 +221,7 @@ async def test_history_contains_all_messages(ollama: OllamaClient) -> None:
             httpx.Response(200, content=make_plain_tool_response("Done.")),
         ]
     )
-    result = await ollama.chat_with_tools(
-        "qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": lambda a: "OK"}
-    )
+    result = await ollama.chat_with_tools("qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler})
 
     assert len(result.history) == 4
     # 1. Original user message
@@ -210,6 +234,24 @@ async def test_history_contains_all_messages(ollama: OllamaClient) -> None:
     assert result.history[2]["content"] == "OK"
     # 4. Final assistant message
     assert result.history[3]["role"] == "assistant"
+    assert result.history[3]["content"] == "Done."
+
+
+@respx.mock
+async def test_input_messages_not_mutated(ollama: OllamaClient) -> None:
+    """chat_with_tools must not modify the caller's messages list."""
+    original = [{"role": "user", "content": "Set the mood to Anxious"}]
+    messages_copy = list(original)
+
+    respx.post(_CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(200, content=make_tool_call_response("set_fact", _DEFAULT_ARGS)),
+            httpx.Response(200, content=make_plain_tool_response("Done.")),
+        ]
+    )
+    await ollama.chat_with_tools("qwen3:7b", messages_copy, _TOOLS, {"set_fact": _ok_handler})
+
+    assert messages_copy == original
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +263,7 @@ async def test_history_contains_all_messages(ollama: OllamaClient) -> None:
 async def test_handler_exception_becomes_error_string(ollama: OllamaClient) -> None:
     call_count = [0]
 
-    def handler(args: dict[str, Any]) -> str:
+    async def handler(args: dict[str, Any]) -> str:
         call_count[0] += 1
         if call_count[0] == 1:
             raise ValueError("'Apprehensive' is not a valid value. Valid values are: Calm, Anxious")
@@ -239,7 +281,10 @@ async def test_handler_exception_becomes_error_string(ollama: OllamaClient) -> N
 
     tool_msgs = [m for m in result.history if m.get("role") == "tool"]
     assert len(tool_msgs) == 2
-    assert tool_msgs[0]["content"].startswith("Error:")
+    error_content = tool_msgs[0]["content"]
+    assert error_content.startswith("Error:")
+    assert "'Apprehensive' is not a valid value" in error_content
+    assert "Traceback" not in error_content
     assert call_count[0] == 2
     assert result.rounds == 3
     assert result.content == "Done."
@@ -255,13 +300,12 @@ async def test_unknown_tool_name_returns_error_to_model(ollama: OllamaClient) ->
             httpx.Response(200, content=make_plain_tool_response("I'll try differently.")),
         ]
     )
-    result = await ollama.chat_with_tools(
-        "qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": lambda a: "OK"}
-    )
+    result = await ollama.chat_with_tools("qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler})
 
     tool_msgs = [m for m in result.history if m.get("role") == "tool"]
     assert len(tool_msgs) == 1
     assert "Unknown tool" in tool_msgs[0]["content"]
+    assert "nonexistent_tool" in tool_msgs[0]["content"]
     assert result.content == "I'll try differently."
 
 
@@ -272,7 +316,7 @@ async def test_unknown_tool_name_returns_error_to_model(ollama: OllamaClient) ->
 
 @respx.mock
 async def test_cap_reached_returns_cap_reached_true(ollama: OllamaClient) -> None:
-    respx.post(_CHAT_URL).mock(
+    route = respx.post(_CHAT_URL).mock(
         side_effect=[
             httpx.Response(200, content=make_tool_call_response("set_fact", _DEFAULT_ARGS)),
             httpx.Response(200, content=make_tool_call_response("set_fact", _DEFAULT_ARGS)),
@@ -280,11 +324,12 @@ async def test_cap_reached_returns_cap_reached_true(ollama: OllamaClient) -> Non
         ]
     )
     result = await ollama.chat_with_tools(
-        "qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": lambda a: "OK"}, max_rounds=3
+        "qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler}, max_rounds=3
     )
 
     assert result.cap_reached is True
     assert result.rounds == 3
+    assert len(route.calls) == 3
 
 
 @respx.mock
@@ -297,7 +342,7 @@ async def test_cap_reached_content_is_empty_string(ollama: OllamaClient) -> None
         ]
     )
     result = await ollama.chat_with_tools(
-        "qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": lambda a: "OK"}, max_rounds=3
+        "qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler}, max_rounds=3
     )
 
     assert result.content == ""
@@ -312,7 +357,7 @@ async def test_cap_reached_history_contains_all_rounds(ollama: OllamaClient) -> 
         ]
     )
     result = await ollama.chat_with_tools(
-        "qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": lambda a: "OK"}, max_rounds=2
+        "qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler}, max_rounds=2
     )
 
     # original + 2 rounds x (tool-call msg + tool-result msg) = 1 + 4 = 5
@@ -352,7 +397,7 @@ async def test_non_200_response_propagates(ollama: OllamaClient) -> None:
 async def test_tool_call_with_none_tool_calls_field(ollama: OllamaClient) -> None:
     call_log: list[dict[str, Any]] = []
 
-    def handler(args: dict[str, Any]) -> str:
+    async def handler(args: dict[str, Any]) -> str:
         call_log.append(args)
         return "OK"
 
@@ -367,10 +412,110 @@ async def test_tool_call_with_none_tool_calls_field(ollama: OllamaClient) -> Non
 
 
 @respx.mock
+async def test_tool_call_id_propagated_to_result_message(ollama: OllamaClient) -> None:
+    """When the model assigns an id to a tool call, it must appear as tool_call_id
+    in the corresponding tool result message.  Without this, models that rely on
+    ID correlation (e.g. qwen3) loop indefinitely because they never learn which
+    calls were resolved.
+    """
+    respx.post(_CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                content=make_tool_call_response("set_fact", _DEFAULT_ARGS, call_id="call_abc123"),
+            ),
+            httpx.Response(200, content=make_plain_tool_response("Done.")),
+        ]
+    )
+    result = await ollama.chat_with_tools("qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler})
+
+    tool_msgs = [m for m in result.history if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].get("tool_call_id") == "call_abc123"
+    assert result.cap_reached is False
+
+
+@respx.mock
+async def test_multi_tool_call_ids_propagated_to_result_messages(ollama: OllamaClient) -> None:
+    """Each result message must carry the tool_call_id that matches its call,
+    so the model can correlate results to calls when several fire in one round.
+    """
+    args1: dict[str, Any] = {"path": "Character.State-Of-Mind.Mood", "value": "Anxious"}
+    args2: dict[str, Any] = {"path": "Character.State-Of-Mind.Energy", "value": "Tired"}
+
+    respx.post(_CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                content=make_multi_tool_call_response(
+                    [("set_fact", args1), ("set_fact", args2)],
+                    call_ids=["call_001", "call_002"],
+                ),
+            ),
+            httpx.Response(200, content=make_plain_tool_response("Done.")),
+        ]
+    )
+    result = await ollama.chat_with_tools("qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler})
+
+    tool_msgs = [m for m in result.history if m.get("role") == "tool"]
+    assert len(tool_msgs) == 2
+    assert tool_msgs[0].get("tool_call_id") == "call_001"
+    assert tool_msgs[1].get("tool_call_id") == "call_002"
+    assert result.cap_reached is False
+
+
+@respx.mock
+async def test_tool_result_has_no_id_when_call_has_no_id(ollama: OllamaClient) -> None:
+    """When the model omits the id field (single-call models), no tool_call_id
+    should be added to the result — an unexpected key would confuse those models.
+    """
+    respx.post(_CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                content=make_tool_call_response("set_fact", _DEFAULT_ARGS),  # no call_id
+            ),
+            httpx.Response(200, content=make_plain_tool_response("Done.")),
+        ]
+    )
+    result = await ollama.chat_with_tools("qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler})
+
+    tool_msgs = [m for m in result.history if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert "tool_call_id" not in tool_msgs[0]
+
+
+@respx.mock
+async def test_thinking_stripped_from_history(ollama: OllamaClient) -> None:
+    """Thinking tokens must not be fed back to the model as conversation context.
+
+    The qwen3 family loops indefinitely when its own thinking tokens appear in
+    history — they cause the next turn's generation to keep emitting tool calls
+    rather than producing a plain-text response.
+    """
+    respx.post(_CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                content=make_tool_call_response_with_thinking(
+                    "set_fact", _DEFAULT_ARGS, thinking="I should record the mood."
+                ),
+            ),
+            httpx.Response(200, content=make_plain_tool_response("Done.")),
+        ]
+    )
+    result = await ollama.chat_with_tools("qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler})
+
+    assert all("thinking" not in m for m in result.history)
+    assert result.cap_reached is False
+    assert result.content == "Done."
+
+
+@respx.mock
 async def test_handler_is_callable_with_arguments_dict(ollama: OllamaClient) -> None:
     received: list[Any] = []
 
-    def handler(args: dict[str, Any]) -> str:
+    async def handler(args: dict[str, Any]) -> str:
         received.append(args)
         return "OK"
 

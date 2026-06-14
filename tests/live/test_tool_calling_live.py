@@ -25,9 +25,11 @@ pytestmark = [
 ]
 
 _SYSTEM_PROMPT = (
-    "You are a fact-extraction assistant. When the user's message implies a fact about "
-    "the character, call set_fact to record it. Do not describe what you would do — "
-    "call the tool. Call it once per distinct fact implied."
+    "You are a fact-extraction assistant. When the user's message implies facts about "
+    "the character, call set_fact once for each distinct fact — you may issue multiple "
+    "calls in a single response. After all calls return 'OK', respond with a short "
+    "plain-text confirmation of what was recorded. Do not call set_fact again for "
+    "facts that have already been successfully recorded."
 )
 
 
@@ -38,7 +40,7 @@ async def test_model_calls_tool_not_prose(
 ) -> None:
     call_log: list[tuple[str, str]] = []
 
-    def handler(args: dict[str, Any]) -> str:
+    async def handler(args: dict[str, Any]) -> str:
         call_log.append((args.get("path", ""), args.get("value", "")))
         return "OK"
 
@@ -64,7 +66,7 @@ async def test_model_extracts_multiple_facts(
 ) -> None:
     call_log: list[tuple[str, str]] = []
 
-    def handler(args: dict[str, Any]) -> str:
+    async def handler(args: dict[str, Any]) -> str:
         call_log.append((args.get("path", ""), args.get("value", "")))
         return "OK"
 
@@ -79,6 +81,7 @@ async def test_model_extracts_multiple_facts(
         ],
         tools=[set_fact_tool],
         tool_handlers={"set_fact": handler},
+        max_rounds=5,
     )
 
     assert len(call_log) >= 2, "Expected at least two tool calls (outfit + mood)"
@@ -95,10 +98,15 @@ async def test_model_retries_after_tool_error(
 ) -> None:
     call_count = [0]
 
-    def handler(args: dict[str, Any]) -> str:
+    async def handler(args: dict[str, Any]) -> str:
         call_count[0] += 1
         if call_count[0] == 1:
-            raise ValueError("Validation failed on first attempt — please retry")
+            value = args.get("value", "")
+            path = args.get("path", "")
+            raise ValueError(
+                f"'{value}' is not a valid value for {path}. "
+                "Call set_fact again with value='Stressed'."
+            )
         return "OK"
 
     result = await live_ollama.chat_with_tools(
@@ -109,6 +117,7 @@ async def test_model_retries_after_tool_error(
         ],
         tools=[set_fact_tool],
         tool_handlers={"set_fact": handler},
+        max_rounds=5,
     )
 
     assert call_count[0] >= 2, "Model did not retry after error"
@@ -121,7 +130,7 @@ async def test_latency_within_acceptable_range(
     live_model: str,
     set_fact_tool: dict[str, Any],
 ) -> None:
-    def handler(args: dict[str, Any]) -> str:
+    async def handler(args: dict[str, Any]) -> str:
         return "OK"
 
     start = time.monotonic()
@@ -136,6 +145,7 @@ async def test_latency_within_acceptable_range(
         ],
         tools=[set_fact_tool],
         tool_handlers={"set_fact": handler},
+        max_rounds=5,
     )
     elapsed = time.monotonic() - start
 

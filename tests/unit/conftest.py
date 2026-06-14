@@ -109,13 +109,21 @@ def make_tool_call_response(
     arguments: dict[str, Any],
     prompt_eval_count: int = 10,
     eval_count: int = 5,
+    call_id: str | None = None,
 ) -> bytes:
-    """Build a non-streaming Ollama JSON response where the model calls one tool."""
+    """Build a non-streaming Ollama JSON response where the model calls one tool.
+
+    Pass *call_id* to simulate models (e.g. qwen3) that include an ``id`` on
+    each tool call; the client must echo it back as ``tool_call_id``.
+    """
+    tool_call: dict[str, Any] = {"function": {"name": tool_name, "arguments": arguments}}
+    if call_id is not None:
+        tool_call["id"] = call_id
     obj = {
         "message": {
             "role": "assistant",
             "content": "",
-            "tool_calls": [{"function": {"name": tool_name, "arguments": arguments}}],
+            "tool_calls": [tool_call],
         },
         "done": True,
         "prompt_eval_count": prompt_eval_count,
@@ -124,15 +132,53 @@ def make_tool_call_response(
     return json.dumps(obj).encode()
 
 
-def make_multi_tool_call_response(calls: list[tuple[str, dict[str, Any]]]) -> bytes:
-    """Build a non-streaming Ollama JSON response where the model calls multiple tools."""
+def make_multi_tool_call_response(
+    calls: list[tuple[str, dict[str, Any]]],
+    call_ids: list[str] | None = None,
+) -> bytes:
+    """Build a non-streaming Ollama JSON response where the model calls multiple tools.
+
+    Pass *call_ids* (same length as *calls*) to simulate models that assign IDs
+    to each call; the client must echo each one back as ``tool_call_id``.
+    """
+    tool_calls: list[dict[str, Any]] = []
+    for i, (name, args) in enumerate(calls):
+        tc: dict[str, Any] = {"function": {"name": name, "arguments": args}}
+        if call_ids is not None:
+            tc["id"] = call_ids[i]
+        tool_calls.append(tc)
     obj = {
         "message": {
             "role": "assistant",
             "content": "",
-            "tool_calls": [{"function": {"name": name, "arguments": args}} for name, args in calls],
+            "tool_calls": tool_calls,
         },
         "done": True,
+    }
+    return json.dumps(obj).encode()
+
+
+def make_tool_call_response_with_thinking(
+    tool_name: str,
+    arguments: dict[str, Any],
+    thinking: str = "I should call this tool.",
+    prompt_eval_count: int = 10,
+    eval_count: int = 5,
+) -> bytes:
+    """Build a non-streaming Ollama JSON response with a thinking field and one tool call.
+
+    Used to test that thinking tokens are stripped from history before re-sending.
+    """
+    obj = {
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "thinking": thinking,
+            "tool_calls": [{"function": {"name": tool_name, "arguments": arguments}}],
+        },
+        "done": True,
+        "prompt_eval_count": prompt_eval_count,
+        "eval_count": eval_count,
     }
     return json.dumps(obj).encode()
 

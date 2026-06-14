@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+
+log = logging.getLogger(__name__)
 
 # Matches chat-template control tokens that some models emit past their
 # natural stop point (e.g. qwen3 emitting <|endoftext|> then repeating).
@@ -17,10 +20,11 @@ _SPECIAL_TOKEN_RE = re.compile(r"<\|[^|>]+\|>|</s>")
 
 MAX_TOOL_CALL_ROUNDS = int(os.getenv("MAX_TOOL_CALL_ROUNDS", "10"))
 
-# Sync callable invoked by chat_with_tools for each tool call the model makes.
+# Async callable invoked by chat_with_tools for each tool call the model makes.
 # Receives the arguments dict from the tool_call; must return a result string.
 # May raise any exception — str(exc) is sent back to the model as the error.
-ToolHandler = Callable[[dict[str, Any]], str]
+# Must be async so that handlers can suspend the loop (e.g. to await a turn gate).
+ToolHandler = Callable[[dict[str, Any]], Awaitable[str]]
 
 
 @dataclass
@@ -164,6 +168,13 @@ class OllamaClient:
         content = ""
         rounds = 0
 
+        log.debug(
+            "chat_with_tools start model=%s max_rounds=%d tools=%s",
+            model,
+            max_rounds,
+            [t["function"]["name"] for t in tools if "function" in t],
+        )
+
         while rounds < max_rounds:
             payload: dict[str, Any] = {
                 "model": model,
@@ -182,30 +193,57 @@ class OllamaClient:
             data: dict[str, Any] = response.json()
             rounds += 1
             msg: dict[str, Any] = data["message"]
-            history.append(msg)
+            # Strip thinking before appending to history. The qwen3 family (and
+            # others) loop indefinitely when their own thinking tokens are fed
+            # back as conversation context — they were never meant to be.
+            history.append({k: v for k, v in msg.items() if k != "thinking"})
 
             tool_calls: list[dict[str, Any]] = msg.get("tool_calls") or []
             if not tool_calls:
                 content = msg.get("content", "") or ""
+                log.debug("chat_with_tools done rounds=%d content=%r", rounds, content[:120])
                 return ToolCallResult(
                     content=content, history=history, rounds=rounds, cap_reached=False
                 )
+
+            log.debug(
+                "chat_with_tools round=%d tool_calls=%s",
+                rounds,
+                [
+                    {
+                        "id": c.get("id"),
+                        "name": c["function"]["name"],
+                        "args": c["function"]["arguments"],
+                    }
+                    for c in tool_calls
+                ],
+            )
 
             for call in tool_calls:
                 fn: dict[str, Any] = call["function"]
                 name: str = fn["name"]
                 args: dict[str, Any] = fn["arguments"]
+                call_id: str | None = call.get("id")
                 handler = tool_handlers.get(name)
                 if handler is None:
                     result = f"Unknown tool: {name}"
                 else:
                     try:
-                        result = handler(args)
+                        result = await handler(args)
                     except Exception as exc:
                         result = f"Error: {exc}"
+                log.debug(
+                    "chat_with_tools tool_result id=%s name=%s result=%r", call_id, name, result
+                )
                 tool_msg: dict[str, Any] = {"role": "tool", "content": result}
+                if call_id is not None:
+                    # Required for models that use IDs (e.g. qwen3 multi-call
+                    # responses): without tool_call_id the model can't correlate
+                    # results to calls and loops indefinitely.
+                    tool_msg["tool_call_id"] = call_id
                 history.append(tool_msg)
 
+        log.debug("chat_with_tools cap_reached rounds=%d", rounds)
         return ToolCallResult(content=content, history=history, rounds=rounds, cap_reached=True)
 
     async def warmup_embed(self, model: str) -> None:

@@ -14,8 +14,15 @@ _pending: dict[tuple[int, int], asyncio.Queue[str | None]] = {}
 
 
 def create_gate(session_id: int, turn_id: int) -> None:
-    """Register a new one-shot gate keyed by (session_id, turn_id)."""
-    _pending[(session_id, turn_id)] = asyncio.Queue(maxsize=1)
+    """Register a new one-shot gate keyed by (session_id, turn_id).
+
+    Raises ValueError if a gate for this key already exists, making accidental
+    double-registration visible rather than silently stranding the first awaiter.
+    """
+    key = (session_id, turn_id)
+    if key in _pending:
+        raise ValueError(f"Gate for ({session_id}, {turn_id}) already exists")
+    _pending[key] = asyncio.Queue(maxsize=1)
 
 
 async def await_gate(session_id: int, turn_id: int) -> str | None:

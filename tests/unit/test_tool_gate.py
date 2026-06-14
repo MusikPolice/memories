@@ -72,3 +72,9 @@ async def test_double_resolve_raises() -> None:
 
 async def test_cleanup_idempotent() -> None:
     cleanup_gate(99, 99)  # gate does not exist — should not raise
+
+
+async def test_create_gate_duplicate_raises() -> None:
+    create_gate(1, 1)
+    with pytest.raises(ValueError, match="already exists"):
+        create_gate(1, 1)
