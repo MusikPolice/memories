@@ -85,9 +85,17 @@ async def test_model_extracts_multiple_facts(
     )
 
     assert len(call_log) >= 2, "Expected at least two tool calls (outfit + mood)"
-    paths = [path.lower() for path, _ in call_log]
-    assert any("outfit" in p or "top" in p for p in paths), "No outfit path found in calls"
-    assert any("mood" in p for p in paths), "No mood path found in calls"
+    # We check extracted values rather than paths because no schema exists yet to
+    # constrain path naming — the model picks paths freely and different runs produce
+    # different but equally valid choices (e.g. "Character.Clothing.Type" vs
+    # "Character.Appearance.Outfit.Top"). Once Step 1 (fact_schema.json) is implemented
+    # and the system prompt includes the schema, update these assertions to check paths
+    # against the schema leaf names instead.
+    values = [value.lower() for _, value in call_log]
+    assert any(
+        "scrub" in v or "surgical" in v or "top" in v for v in values
+    ), "Clothing value not extracted"
+    assert any("calm" in v for v in values), "Mood value not extracted"
     assert result.cap_reached is False
 
 
