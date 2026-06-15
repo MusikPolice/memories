@@ -24,6 +24,7 @@ from memories.routers import (
     implication,
     inferences,
     require_fact,
+    schema,
     sessions,
     test_poc,
 )
@@ -75,6 +76,7 @@ async def _logged_http_exception(request: Request, exc: HTTPException) -> Respon
     return await http_exception_handler(request, exc)
 
 
+app.include_router(schema.router, prefix="/api", tags=["schema"])
 app.include_router(characters.router, prefix="/api/characters", tags=["characters"])
 app.include_router(facts.router, prefix="/api/characters", tags=["facts"])
 app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])

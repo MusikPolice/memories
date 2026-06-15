@@ -1,0 +1,97 @@
+{
+  "Character": {
+    "Identity": {
+      "Name": {
+        "Type": "String",
+        "Mutability": "Immutable",
+        "Description": "The character's given name, typically in the format 'First Last'"
+      },
+      "Age": {
+        "Type": "Integer",
+        "Mutability": "Immutable",
+        "Description": "The character's age in years. Subtracting this from Setting.Temporal.Current-Year yields the character's birth year"
+      }
+    },
+    "Appearance": {
+      "Body": {
+        "Height": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The character's height, expressed in the user's preferred unit"
+        },
+        "Hair-Colour": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "The character's natural or current hair colour. Descriptive modifiers are encouraged (e.g. 'Chestnut Brown', 'Strawberry Blonde')"
+        }
+      },
+      "Outfit": {
+        "Top": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "What the character is wearing on their upper body"
+        },
+        "Bottom": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "What the character is wearing on their lower body"
+        },
+        "Shoes": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "The character's footwear"
+        }
+      }
+    },
+    "State-Of-Mind": {
+      "Mood": {
+        "Type": "Enum",
+        "Constraint": ["Calm", "Anxious", "Angry", "Sad", "Joyful", "Neutral", "Guarded", "Excited"],
+        "Mutability": "Fluid",
+        "Description": "The character's dominant emotional state at this moment in the narrative"
+      },
+      "Energy": {
+        "Type": "Enum",
+        "Constraint": ["Exhausted", "Tired", "Neutral", "Alert", "Energised"],
+        "Mutability": "Fluid",
+        "Description": "The character's physical energy level"
+      }
+    }
+  },
+  "User": {
+    "Identity": {
+      "Name": {
+        "Type": "String",
+        "Mutability": "Immutable",
+        "Description": "The user's name as they prefer to be addressed by the character"
+      }
+    }
+  },
+  "Setting": {
+    "Temporal": {
+      "Current-Year": {
+        "Type": "Integer",
+        "Mutability": "Mutable",
+        "Description": "The year in which the narrative is currently set"
+      }
+    },
+    "Location": {
+      "Name": {
+        "Type": "String",
+        "Mutability": "Mutable",
+        "Description": "The name of the current location (e.g. 'Chicago Memorial Hospital', 'The Crown pub')"
+      },
+      "Space": {
+        "Type": "Enum",
+        "Constraint": ["Interior", "Exterior"],
+        "Mutability": "Mutable",
+        "Description": "Whether the scene takes place inside a building or outdoors"
+      },
+      "Description": {
+        "Type": "String",
+        "Mutability": "Fluid",
+        "Description": "A brief description of the immediate surroundings and atmosphere"
+      }
+    }
+  }
+}

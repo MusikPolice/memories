@@ -1078,7 +1078,7 @@ against `jaahas/qwen3.5-uncensored:latest` on local hardware.
 The fallback to structured JSON verdicts is not needed; tool calling is reliable on
 the target model.
 
-**Step 0b — `require_fact` suspension PoC (gate on Character LLM tool work)**
+**Step 0b — `require_fact` suspension PoC (gate on Character LLM tool work)** ✅ complete
 
 Because tool calls are synchronous from the LLM's perspective — the model stops
 generating and waits for the server to respond before continuing — `require_fact` does
@@ -1123,7 +1123,7 @@ via the Character Evaluator post-generation: the evaluator detects the unset imm
 path, surfaces the blocking card, and the Character LLM is re-invoked fresh once the
 user provides the value. This avoids mid-generation suspension entirely.
 
-**Step 1 — Schema JSON file, loader, and `GET /api/schema` endpoint**
+**Step 1 — Schema JSON file, loader, and `GET /api/schema` endpoint** ✅ complete
 - Write `src/memories/fact_schema.json` with the default schema above
 - Write `src/memories/schema_loader.py`: `load_schema()`, `render_schema_for_prompt()`,
   `apply_mask(blob)` (drops invalid paths per schema), `check_write_permitted(path, schema)`
