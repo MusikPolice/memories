@@ -2,14 +2,36 @@
   "Character": {
     "Identity": {
       "Name": {
-        "Type": "String",
-        "Mutability": "Immutable",
-        "Description": "The character's given name, typically in the format 'First Last'"
+        "First": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The character's first or given name, typically the one that they expect to be addressed by"
+        },
+        "Middle": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The character's middle name, typically only used in formal situations or on legal documents"
+        },
+        "Last": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The character's last or family name, typically only used in formal situations or when dealing with strangers"
+        }
       },
       "Age": {
         "Type": "Integer",
         "Mutability": "Immutable",
         "Description": "The character's age in years. Subtracting this from Setting.Temporal.Current-Year yields the character's birth year"
+      },
+      "Pronouns": {
+        "Type": "String",
+        "Mutability": "Immutable",
+        "Description": "The character's pronouns, e.g. 'she/her', 'he/him', 'they/them'. Used to determine how the character refers to themselves and how narration refers to them"
+      },
+      "Occupation": {
+        "Type": "String",
+        "Mutability": "Mutable",
+        "Description": "The character's current job, role, or primary activity. May change within a narrative (promoted, fired, retired). e.g. 'Emergency physician', 'Graduate student in astrophysics', 'Retired detective'"
       }
     },
     "Appearance": {
@@ -19,11 +41,112 @@
           "Mutability": "Immutable",
           "Description": "The character's height, expressed in the user's preferred unit"
         },
-        "Hair-Colour": {
+        "Build": {
+          "Type": "Enum",
+          "Constraint": ["Slim", "Athletic", "Average", "Curvy", "Stocky", "Heavyset"],
+          "Mutability": "Immutable",
+          "Description": "The character's overall body type. A broad categorical descriptor that grounds physical presence and informs how the character moves and is perceived"
+        },
+        "Chest": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The shape and appearance of the character's chest and upper torso. Covers both breast appearance (where relevant) and overall chest shape. e.g. 'Broad and heavily muscled, with a pronounced barrel shape', 'Full bust, sitting high', 'Narrow-chested and lean, ribs visible under tension', 'Athletic and flat-chested, with defined pectorals'"
+        },
+        "Hips": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The width and shape of the hips relative to the waist. Distinct from Build, which captures overall body type. e.g. 'Narrow hips and a flat waist', 'Full hips with a defined waist, giving a pronounced hourglass line', 'Broad-hipped with minimal waist definition', 'Lean and straight, with no significant waist-to-hip differential'"
+        },
+        "Hands": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The size, shape, and condition of the hands. Come up frequently when characters gesture, touch things, or are observed at close range. e.g. 'Surgeon's hands — long-fingered, steady, nails kept short', 'Broad and calloused, scarred across the knuckles', 'Small and neat, with carefully maintained nails', 'Large and expressive, seemingly always in motion'"
+        },
+        "Eye-Colour": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The character's natural eye colour. Descriptive modifiers are encouraged (e.g. 'Steel Grey', 'Warm Hazel', 'Deep Brown')"
+        },
+        "Skin-Tone": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "A descriptive reference for the character's skin tone, e.g. 'Warm Brown', 'Pale Olive', 'Deep Ebony', 'Freckled Fair'"
+        },
+        "Distinguishing-Features": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "Scars, birthmarks, tattoos, piercings, or other permanent physical details that uniquely identify the character. Leave unset if none are notable"
+        }
+      },
+      "Hair": {
+        "Colour": {
           "Type": "String",
           "Mutability": "Mutable",
-          "Description": "The character's natural or current hair colour. Descriptive modifiers are encouraged (e.g. 'Chestnut Brown', 'Strawberry Blonde')"
+          "Description": "The character's natural or current hair colour. Descriptive modifiers are encouraged (e.g. 'Chestnut Brown', 'Strawberry Blonde', 'Platinum Blonde with darker roots')"
+        },
+        "Length": {
+          "Type": "Enum",
+          "Constraint": ["Cropped", "Short", "Medium", "Long", "Very Long"],
+          "Mutability": "Mutable",
+          "Description": "The character's current hair length. Mutable because hair can be cut within a narrative arc"
+        },
+        "Style": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "How the character's hair is currently worn or styled. e.g. 'Loose and slightly wavy, falling past the shoulders', 'Pulled back in a tight bun', 'Cropped close on the sides with a longer top swept to one side', 'Natural curls worn loose'"
         }
+      },
+      "Face": {
+        "Shape": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The overall shape of the character's face. e.g. 'Oval with a gently tapered chin', 'Broad and square with strong symmetry', 'Heart-shaped with a wide forehead and pointed chin'"
+        },
+        "Eyes": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The shape, size, and expression of the eyes — separate from colour, which is captured in Appearance.Body.Eye-Colour. e.g. 'Large and heavy-lidded, with long dark lashes', 'Narrow and watchful, slightly downturned at the outer corners', 'Wide and round with a candid, open quality'"
+        },
+        "Eyebrows": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "The shape, weight, and character of the eyebrows. Mutable because they can be shaped or grown out. e.g. 'Thick and dark, often furrowed in thought', 'Fine and gently arched', 'Sparse and pale, barely visible against fair skin'"
+        },
+        "Nose": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The shape and character of the nose. e.g. 'Small and gently upturned', 'Prominent with a slight aquiline curve', 'Broad and flat with flared nostrils', 'Straight and narrow with a refined tip'"
+        },
+        "Cheekbones": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The prominence and shape of the cheekbones. e.g. 'High and sharply defined, casting shadows beneath', 'Soft and rounded, giving the face a youthful fullness', 'Broad and flat, widening the midface'"
+        },
+        "Lips": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The shape, fullness, and expression of the lips. e.g. 'Full and expressive with a pronounced cupid's bow', 'Thin and precise, often held in a neutral line', 'Wide mouth with a natural upward curve at the corners'"
+        },
+        "Jawline": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The definition and shape of the jaw and chin. e.g. 'Sharply defined with a strong square set', 'Soft and rounded, blending into a gentle neck', 'Angular with a slightly pointed chin and visible jaw muscles'"
+        },
+        "Complexion": {
+          "Type": "String",
+          "Mutability": "Fluid",
+          "Description": "The texture and current condition of the facial skin — distinct from Appearance.Body.Skin-Tone, which captures colour. e.g. 'Clear and even', 'Lightly freckled across the nose and cheeks', 'Weathered with fine lines around the eyes', 'Flushed and slightly blotchy after crying'"
+        },
+        "Facial-Hair": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "Beard, moustache, stubble, or other facial hair. Can be grown or shaved within a narrative. e.g. 'Clean-shaven', 'Short neatly trimmed beard', 'Heavy dark stubble', 'Full beard kept slightly unkempt'. Leave unset for characters without facial hair"
+        }
+      },
+      "Voice": {
+        "Type": "String",
+        "Mutability": "Immutable",
+        "Description": "The character's voice — pitch, timbre, and accent. The evaluator enforces this whenever the character speaks. e.g. 'Low and slightly husky, with a Chicago accent she never quite lost', 'Precise and clipped, the kind of voice that expects to be listened to', 'Warm and melodic, with a faint Scottish lilt', 'Thin and reedy, easily overlooked in a crowd'"
       },
       "Outfit": {
         "Top": {
@@ -40,13 +163,52 @@
           "Type": "String",
           "Mutability": "Mutable",
           "Description": "The character's footwear"
+        },
+        "Outerwear": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "Coat, jacket, lab coat, or other outer layer the character is wearing. Frequently added or removed as scenes move between interior and exterior"
+        },
+        "Accessories": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "Visible adornment: jewellery, watch, glasses, bag, hat, etc. Leave unset if nothing notable is being worn"
         }
+      }
+    },
+    "Personality": {
+      "Traits": {
+        "Type": "String",
+        "Mutability": "Mutable",
+        "Description": "A comma-separated list of adjectives describing the character's disposition. Intended to be built up incrementally as the character reveals themselves rather than declared upfront. e.g. 'sardonic, fiercely loyal, self-doubting', 'warm, methodical, quietly stubborn, deflects vulnerability with humour'. The evaluator uses this to catch responses that feel tonally inconsistent with the established character"
+      },
+      "Drives": {
+        "Type": "String",
+        "Mutability": "Mutable",
+        "Description": "What the character fundamentally wants or is reaching toward — the engine of their behaviour. Can be set retroactively once a pattern becomes clear through play. e.g. 'To prove she is as capable as anyone who ever doubted her', 'To keep the people he loves safe, even at cost to himself', 'To understand how things work, because understanding feels like control'"
+      },
+      "Speech-Style": {
+        "Type": "String",
+        "Mutability": "Immutable",
+        "Description": "How the character speaks: cadence, register, characteristic habits, and any accent or dialect markers that should inflect their dialogue. e.g. 'Clipped and precise, rarely wastes words', 'Warm and expansive, prone to tangents', 'Deflects vulnerability with dry humour; faint Chicago accent surfaces when she is tired or angry'. Used to catch prose that sounds off-character"
+      }
+    },
+    "Background": {
+      "Education": {
+        "Type": "String",
+        "Mutability": "Immutable",
+        "Description": "The character's highest qualification or relevant field of study. e.g. 'MD, specialising in emergency medicine', 'BSc Computer Science, dropped out of PhD', 'Self-taught; no formal qualifications'"
+      },
+      "Hometown": {
+        "Type": "String",
+        "Mutability": "Immutable",
+        "Description": "The place the character is from originally, which may differ from their current location. Grounds backstory and may surface naturally in dialogue. e.g. 'Glasgow, Scotland', 'A small town in rural Ohio'"
       }
     },
     "State-Of-Mind": {
       "Mood": {
         "Type": "Enum",
-        "Constraint": ["Calm", "Anxious", "Angry", "Sad", "Joyful", "Neutral", "Guarded", "Excited"],
+        "Constraint": ["Calm", "Anxious", "Angry", "Sad", "Joyful", "Neutral", "Guarded", "Excited", "Aroused"],
         "Mutability": "Fluid",
         "Description": "The character's dominant emotional state at this moment in the narrative"
       },
@@ -55,15 +217,204 @@
         "Constraint": ["Exhausted", "Tired", "Neutral", "Alert", "Energised"],
         "Mutability": "Fluid",
         "Description": "The character's physical energy level"
+      },
+      "Intoxication": {
+        "Type": "Enum",
+        "Constraint": ["Sober", "Tipsy", "Drunk", "Wrecked"],
+        "Mutability": "Fluid",
+        "Description": "The character's level of alcohol or substance intoxication. Affects speech patterns and behaviour that the evaluator should enforce. Defaults to Sober when unset"
+      },
+      "Pain": {
+        "Type": "Enum",
+        "Constraint": ["None", "Mild", "Moderate", "Severe"],
+        "Mutability": "Fluid",
+        "Description": "The character's current pain level. Relevant in medical or action-heavy settings; shapes how the character moves and speaks. Defaults to None when unset"
+      }
+    },
+    "Physical-Status": {
+      "Health": {
+        "Type": "Enum",
+        "Constraint": ["Healthy", "Ill", "Injured", "Critically-Injured"],
+        "Mutability": "Fluid",
+        "Description": "The character's broad physical health status. The evaluator uses this to catch the character acting as though uninjured or well when a worse status is set"
       }
     }
   },
   "User": {
     "Identity": {
       "Name": {
+        "First": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The user's first or given name, as they prefer to be addressed by the character"
+        },
+        "Middle": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The user's middle name, typically only used in formal situations or on legal documents"
+        },
+        "Last": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The user's last or family name, typically only used in formal situations or when dealing with strangers"
+        }
+      },
+      "Age": {
+        "Type": "Integer",
+        "Mutability": "Immutable",
+        "Description": "The user's age in years. Allows the character to contextualise the user's perspective relative to their own age"
+      },
+      "Pronouns": {
         "Type": "String",
         "Mutability": "Immutable",
-        "Description": "The user's name as they prefer to be addressed by the character"
+        "Description": "The user's pronouns, e.g. 'she/her', 'he/him', 'they/them'. Used to determine how the character refers to the user in third-person narration"
+      },
+      "Occupation": {
+        "Type": "String",
+        "Mutability": "Mutable",
+        "Description": "The user's current job, role, or primary activity. A common first-exchange detail that helps the character frame responses appropriately. e.g. 'Nurse', 'Journalist', 'Student'"
+      }
+    },
+    "Appearance": {
+      "Body": {
+        "Height": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The user's height, expressed in their preferred unit"
+        },
+        "Build": {
+          "Type": "Enum",
+          "Constraint": ["Slim", "Athletic", "Average", "Curvy", "Stocky", "Heavyset"],
+          "Mutability": "Immutable",
+          "Description": "The user's overall body type. A broad categorical descriptor that grounds how the character perceives and describes the user"
+        },
+        "Chest": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The shape and appearance of the user's chest and upper torso. Covers both breast appearance (where relevant) and overall chest shape. e.g. 'Broad and heavily muscled', 'Full bust, sitting high', 'Narrow-chested and lean', 'Athletic and flat-chested, with defined pectorals'"
+        },
+        "Hips": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The width and shape of the user's hips relative to the waist. e.g. 'Narrow hips and a flat waist', 'Full hips with a defined waist, giving a pronounced hourglass line', 'Lean and straight, with no significant waist-to-hip differential'"
+        },
+        "Hands": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The size, shape, and condition of the user's hands. e.g. 'Long-fingered and precise, nails kept short', 'Broad and calloused, scarred across the knuckles', 'Small and neat, with carefully maintained nails'"
+        },
+        "Eye-Colour": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The user's natural eye colour. Descriptive modifiers are encouraged (e.g. 'Steel Grey', 'Warm Hazel', 'Deep Brown')"
+        },
+        "Skin-Tone": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "A descriptive reference for the user's skin tone, e.g. 'Warm Brown', 'Pale Olive', 'Deep Ebony', 'Freckled Fair'"
+        },
+        "Distinguishing-Features": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "Scars, birthmarks, tattoos, piercings, or other permanent physical details that uniquely identify the user. Leave unset if none are notable"
+        }
+      },
+      "Hair": {
+        "Colour": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "The user's natural or current hair colour. Descriptive modifiers are encouraged (e.g. 'Chestnut Brown', 'Strawberry Blonde')"
+        },
+        "Length": {
+          "Type": "Enum",
+          "Constraint": ["Cropped", "Short", "Medium", "Long", "Very Long"],
+          "Mutability": "Mutable",
+          "Description": "The user's current hair length"
+        },
+        "Style": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "How the user's hair is currently worn or styled. e.g. 'Loose and slightly wavy, falling past the shoulders', 'Pulled back in a tight bun', 'Natural curls worn loose'"
+        }
+      },
+      "Face": {
+        "Shape": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The overall shape of the user's face. e.g. 'Oval with a gently tapered chin', 'Broad and square with strong symmetry', 'Heart-shaped with a wide forehead and pointed chin'"
+        },
+        "Eyes": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The shape, size, and expression of the user's eyes — separate from colour, which is captured in Appearance.Body.Eye-Colour. e.g. 'Large and heavy-lidded, with long dark lashes', 'Narrow and watchful, slightly downturned at the outer corners'"
+        },
+        "Eyebrows": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "The shape, weight, and character of the user's eyebrows. e.g. 'Thick and dark', 'Fine and gently arched', 'Sparse and pale, barely visible against fair skin'"
+        },
+        "Nose": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The shape and character of the user's nose. e.g. 'Small and gently upturned', 'Prominent with a slight aquiline curve', 'Broad and flat with flared nostrils'"
+        },
+        "Cheekbones": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The prominence and shape of the user's cheekbones. e.g. 'High and sharply defined, casting shadows beneath', 'Soft and rounded, giving the face a youthful fullness'"
+        },
+        "Lips": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The shape and fullness of the user's lips. e.g. 'Full and expressive with a pronounced cupid's bow', 'Thin and precise, often held in a neutral line', 'Wide mouth with a natural upward curve at the corners'"
+        },
+        "Jawline": {
+          "Type": "String",
+          "Mutability": "Immutable",
+          "Description": "The definition and shape of the user's jaw and chin. e.g. 'Sharply defined with a strong square set', 'Soft and rounded, blending into a gentle neck', 'Angular with a slightly pointed chin'"
+        },
+        "Complexion": {
+          "Type": "String",
+          "Mutability": "Fluid",
+          "Description": "The texture and current condition of the user's facial skin. e.g. 'Clear and even', 'Lightly freckled across the nose and cheeks', 'Flushed after exertion or embarrassment'"
+        },
+        "Facial-Hair": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "Beard, moustache, stubble, or other facial hair. e.g. 'Clean-shaven', 'Short neatly trimmed beard', 'Heavy dark stubble'. Leave unset if none"
+        }
+      },
+      "Voice": {
+        "Type": "String",
+        "Mutability": "Immutable",
+        "Description": "The user's voice — pitch, timbre, and any notable accent. e.g. 'Low and measured, with a faint Southern drawl', 'High and animated, laughs easily', 'Warm and unhurried'"
+      },
+      "Outfit": {
+        "Top": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "What the user is wearing on their upper body"
+        },
+        "Bottom": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "What the user is wearing on their lower body"
+        },
+        "Shoes": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "The user's footwear"
+        },
+        "Outerwear": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "Coat, jacket, or other outer layer the user is wearing. Leave unset if none"
+        },
+        "Accessories": {
+          "Type": "String",
+          "Mutability": "Mutable",
+          "Description": "Visible adornment: jewellery, watch, glasses, bag, hat, etc. Leave unset if nothing notable is being worn"
+        }
       }
     }
   },
@@ -73,6 +424,18 @@
         "Type": "Integer",
         "Mutability": "Mutable",
         "Description": "The year in which the narrative is currently set"
+      },
+      "Season": {
+        "Type": "Enum",
+        "Constraint": ["Spring", "Summer", "Autumn", "Winter"],
+        "Mutability": "Mutable",
+        "Description": "The current season. Changes slowly; surfaced to the user for approval when it shifts. Informs what is plausible outdoors and affects atmosphere"
+      },
+      "Time-Of-Day": {
+        "Type": "Enum",
+        "Constraint": ["Dawn", "Morning", "Afternoon", "Evening", "Night", "Late-Night"],
+        "Mutability": "Fluid",
+        "Description": "The approximate time of day within the narrative. Changes frequently within a session; affects atmosphere and what activities or locations are plausible"
       }
     },
     "Location": {
@@ -81,16 +444,40 @@
         "Mutability": "Mutable",
         "Description": "The name of the current location (e.g. 'Chicago Memorial Hospital', 'The Crown pub')"
       },
+      "Country": {
+        "Type": "String",
+        "Mutability": "Mutable",
+        "Description": "The country in which the current scene is set. Broader than Location.Name; may shift across narrative scenes. e.g. 'United States', 'United Kingdom', 'Japan'"
+      },
       "Space": {
         "Type": "Enum",
         "Constraint": ["Interior", "Exterior"],
         "Mutability": "Mutable",
         "Description": "Whether the scene takes place inside a building or outdoors"
       },
+      "Weather": {
+        "Type": "Enum",
+        "Constraint": ["Clear", "Overcast", "Raining", "Stormy", "Snowing", "Foggy"],
+        "Mutability": "Fluid",
+        "Description": "The current weather conditions. Relevant for exterior scenes; the evaluator can catch the character describing sunshine during a storm. Leave unset for interior scenes where weather is not relevant"
+      },
       "Description": {
         "Type": "String",
         "Mutability": "Fluid",
         "Description": "A brief description of the immediate surroundings and atmosphere"
+      }
+    },
+    "Atmosphere": {
+      "Genre": {
+        "Type": "String",
+        "Mutability": "Immutable",
+        "Description": "The narrative genre that anchors tone-checking across the session. e.g. 'Contemporary Medical Drama', 'Gothic Horror', 'Hard Science Fiction', 'Slow-burn Romance'. The evaluator uses this as a baseline for what kinds of events and language are appropriate"
+      },
+      "Tone": {
+        "Type": "Enum",
+        "Constraint": ["Serious", "Playful", "Tense", "Melancholic", "Romantic", "Humorous"],
+        "Mutability": "Fluid",
+        "Description": "The current emotional register of the scene. Shifts naturally over the course of a session as the narrative evolves"
       }
     }
   }
