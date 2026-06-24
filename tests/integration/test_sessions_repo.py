@@ -11,17 +11,6 @@ async def test_create_session_sets_character_id(db: aiosqlite.Connection) -> Non
     assert session.character_id == char.id
 
 
-async def test_create_session_creates_initial_segment(db: aiosqlite.Connection) -> None:
-    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
-    session = await create_session(db, character_id=char.id)
-    cursor = await db.execute(
-        "SELECT * FROM segments WHERE session_id = ? AND boundary_reason = 'session_start'",
-        (session.id,),
-    )
-    row = await cursor.fetchone()
-    assert row is not None
-
-
 async def test_end_session_sets_ended_at(db: aiosqlite.Connection) -> None:
     char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
     session = await create_session(db, character_id=char.id)

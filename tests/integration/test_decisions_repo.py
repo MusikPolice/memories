@@ -5,119 +5,159 @@ from __future__ import annotations
 import aiosqlite
 
 from memories.database import (
-    create_character,
     create_session,
     get_decisions,
     store_decision,
 )
+from memories.models import Character, Session
 
 
-async def test_store_decision_returns_with_id(db: aiosqlite.Connection) -> None:
-    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
-    session = await create_session(db, character_id=char.id)
+async def test_store_decision_with_tool_call_data(
+    db: aiosqlite.Connection, character: Character, session: Session
+) -> None:
     decision = await store_decision(
         db,
-        character_id=char.id,
+        character_id=character.id,
         session_id=session.id,
         turn_id=1,
-        reasoning="Response looked clean.",
-        verdict="pass",
+        pass_name="character_evaluator",
+        tool_name="report_pass",
+        tool_args={},
+        user_input=None,
     )
     assert decision.id > 0
+    assert decision.pass_name == "character_evaluator"
+    assert decision.tool_name == "report_pass"
+    assert decision.tool_args == {}
+    assert decision.user_input is None
+    assert not hasattr(decision, "reasoning")
+    assert not hasattr(decision, "verdict")
 
 
-async def test_store_decision_stores_verdict_and_reasoning(db: aiosqlite.Connection) -> None:
-    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
-    session = await create_session(db, character_id=char.id)
-    decision = await store_decision(
-        db,
-        character_id=char.id,
-        session_id=session.id,
-        turn_id=1,
-        reasoning="Character mentioned a sibling.",
-        verdict="implication",
-    )
-    assert decision.verdict == "implication"
-    assert decision.reasoning == "Character mentioned a sibling."
-
-
-async def test_store_decision_with_violations(db: aiosqlite.Connection) -> None:
-    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
-    session = await create_session(db, character_id=char.id)
-    violations = [
-        {"type": "implication", "description": "implied a sibling", "suggested_fact": None}
-    ]
-    decision = await store_decision(
-        db,
-        character_id=char.id,
-        session_id=session.id,
-        turn_id=1,
-        reasoning="See violations.",
-        verdict="implication",
-        violations=violations,
-    )
-    assert isinstance(decision.violations, list)
-    assert decision.violations[0]["type"] == "implication"
-
-
-async def test_store_decision_without_violations(db: aiosqlite.Connection) -> None:
-    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
-    session = await create_session(db, character_id=char.id)
-    decision = await store_decision(
-        db,
-        character_id=char.id,
-        session_id=session.id,
-        turn_id=1,
-        reasoning="Clean.",
-        verdict="pass",
-        violations=None,
-    )
-    assert decision.violations is None
-
-
-async def test_get_decisions_returns_all_for_session(db: aiosqlite.Connection) -> None:
-    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
-    session = await create_session(db, character_id=char.id)
+async def test_store_decision_tool_args_round_trips_as_dict(
+    db: aiosqlite.Connection, character: Character, session: Session
+) -> None:
     await store_decision(
-        db, character_id=char.id, session_id=session.id, turn_id=1, reasoning="t1", verdict="pass"
+        db,
+        character_id=character.id,
+        session_id=session.id,
+        turn_id=1,
+        pass_name="character_evaluator",
+        tool_name="set_fact",
+        tool_args={"path": "Character.Identity.Name", "value": "Sarah"},
+        user_input=None,
+    )
+    decisions = await get_decisions(db, session.id)
+    assert len(decisions) == 1
+    assert isinstance(decisions[0].tool_args, dict)
+    assert decisions[0].tool_args["path"] == "Character.Identity.Name"
+    assert decisions[0].tool_args["value"] == "Sarah"
+
+
+async def test_store_decision_with_user_input(
+    db: aiosqlite.Connection, character: Character, session: Session
+) -> None:
+    await store_decision(
+        db,
+        character_id=character.id,
+        session_id=session.id,
+        turn_id=1,
+        pass_name="character_evaluator",
+        tool_name="set_fact",
+        tool_args={"path": "Character.Identity.Name", "value": "Sarah"},
+        user_input={"action": "accept", "value": "Sarah"},
+    )
+    decisions = await get_decisions(db, session.id)
+    assert isinstance(decisions[0].user_input, dict)
+    assert decisions[0].user_input["action"] == "accept"
+    assert decisions[0].user_input["value"] == "Sarah"
+
+
+async def test_store_decision_user_input_null(
+    db: aiosqlite.Connection, character: Character, session: Session
+) -> None:
+    await store_decision(
+        db,
+        character_id=character.id,
+        session_id=session.id,
+        turn_id=1,
+        pass_name="character_evaluator",
+        tool_name="report_pass",
+        tool_args={},
+        user_input=None,
+    )
+    decisions = await get_decisions(db, session.id)
+    assert decisions[0].user_input is None
+
+
+async def test_get_decisions_returns_all_for_session(
+    db: aiosqlite.Connection, character: Character, session: Session
+) -> None:
+    await store_decision(
+        db,
+        character_id=character.id,
+        session_id=session.id,
+        turn_id=1,
+        pass_name="character_evaluator",
+        tool_name="report_pass",
+        tool_args={},
+        user_input=None,
     )
     await store_decision(
-        db, character_id=char.id, session_id=session.id, turn_id=2, reasoning="t2", verdict="pass"
+        db,
+        character_id=character.id,
+        session_id=session.id,
+        turn_id=2,
+        pass_name="character_evaluator",
+        tool_name="report_pass",
+        tool_args={},
+        user_input=None,
     )
     decisions = await get_decisions(db, session.id)
     assert len(decisions) == 2
 
 
-async def test_get_decisions_ordered_by_turn_id_desc(db: aiosqlite.Connection) -> None:
-    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
-    session = await create_session(db, character_id=char.id)
+async def test_get_decisions_returns_in_reverse_chronological_order(
+    db: aiosqlite.Connection, character: Character, session: Session
+) -> None:
     await store_decision(
         db,
-        character_id=char.id,
+        character_id=character.id,
         session_id=session.id,
         turn_id=1,
-        reasoning="first",
-        verdict="pass",
+        pass_name="character_evaluator",
+        tool_name="report_pass",
+        tool_args={},
+        user_input=None,
     )
     await store_decision(
         db,
-        character_id=char.id,
+        character_id=character.id,
         session_id=session.id,
         turn_id=2,
-        reasoning="second",
-        verdict="implication",
+        pass_name="character_evaluator",
+        tool_name="set_fact",
+        tool_args={"path": "Character.State-Of-Mind.Mood", "value": "Calm"},
+        user_input=None,
     )
     decisions = await get_decisions(db, session.id)
     assert decisions[0].turn_id == 2
     assert decisions[1].turn_id == 1
 
 
-async def test_get_decisions_isolated_per_session(db: aiosqlite.Connection) -> None:
-    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
-    session_a = await create_session(db, character_id=char.id)
-    session_b = await create_session(db, character_id=char.id)
+async def test_get_decisions_isolated_per_session(
+    db: aiosqlite.Connection, character: Character, session: Session
+) -> None:
+    session_b = await create_session(db, character_id=character.id)
     await store_decision(
-        db, character_id=char.id, session_id=session_a.id, turn_id=1, reasoning="A", verdict="pass"
+        db,
+        character_id=character.id,
+        session_id=session.id,
+        turn_id=1,
+        pass_name="character_evaluator",
+        tool_name="report_pass",
+        tool_args={},
+        user_input=None,
     )
     decisions_b = await get_decisions(db, session_b.id)
     assert decisions_b == []
