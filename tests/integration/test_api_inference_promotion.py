@@ -6,7 +6,7 @@ import aiosqlite
 import pytest
 from httpx import AsyncClient
 
-from memories.database import create_inference, get_facts, get_inferences
+from memories.database import create_inference, get_fact_rows, get_inferences
 from memories.models import Character, Inference
 
 # ---------------------------------------------------------------------------
@@ -157,7 +157,7 @@ async def test_promote_inference_fact_stored_in_db(
         _promote_url(character.id, inference.id),
         json={"key": "birth_year", "value": "1993"},
     )
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     assert any(f.key == "birth_year" for f in facts)
 
 

@@ -22,7 +22,7 @@ from httpx import AsyncClient
 from memories.database import (
     create_fact,
     create_inference,
-    get_facts,
+    get_fact_rows,
     update_fact,
 )
 from memories.models import Character, Session
@@ -102,7 +102,7 @@ async def test_undo_user_fact_restores_value_in_db(
     )
     assert response.status_code == 200
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     restored = next(f for f in facts if f.id == fact.id)
     assert restored.value == "Reykjavik"
 
@@ -121,7 +121,7 @@ async def test_undo_user_fact_preserves_category_and_mutability(
     )
     assert response.status_code == 200
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     restored = next(f for f in facts if f.id == fact.id)
     assert restored.category == "user"
     assert restored.mutability == "low"
@@ -265,7 +265,7 @@ async def test_accept_implicit_fact_tier3_creates_new_fact(
     )
     assert response.status_code == 201
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     assert any(f.key == "current_mood" and f.value == "anxious" for f in facts)
 
 
@@ -330,7 +330,7 @@ async def test_accept_implicit_fact_tier4_updates_existing_fact(
     )
     assert response.status_code == 200
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     updated = next(f for f in facts if f.id == fact.id)
     assert updated.value == "Chicago"
 
@@ -394,7 +394,7 @@ async def test_accept_implicit_fact_tier4_deleted_fact_falls_back_to_create(
     assert body["fact"]["key"] == "home_city"
     assert body["fact"]["value"] == "Chicago"
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     assert any(f.key == "home_city" and f.value == "Chicago" for f in facts)
 
 
@@ -475,7 +475,7 @@ async def test_ignore_implicit_fact_does_not_modify_db(
     )
     assert response.status_code == 204
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     home = next(f for f in facts if f.id == fact.id)
     assert home.value == "Reykjavik"
 
@@ -502,7 +502,7 @@ async def test_accept_implicit_fact_tier3_duplicate_key_updates_existing(
     body = response.json()
     assert body["fact"]["value"] == "Chicago"
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     home = next(f for f in facts if f.key == "home_city")
     assert home.value == "Chicago"
 

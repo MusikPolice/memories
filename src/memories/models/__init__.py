@@ -32,27 +32,13 @@ class Session(BaseModel):
     closing_journal: str | None = None
 
 
-class Segment(BaseModel):
-    id: int
-    session_id: int
-    start_turn: int
-    end_turn: int | None = None
-    boundary_reason: str | None = None
-    status: str = "verbatim"
-    journal_text: str | None = None
-    created_at: datetime
-
-
 class Message(BaseModel):
     id: int
     character_id: int
     session_id: int
-    segment_id: int
     role: str
     content: str
     turn_id: int
-    captured_by: list[str] | None = None
-    ungrounded_implications: list[dict[str, Any]] | None = None
     created_at: datetime
 
 
@@ -61,9 +47,10 @@ class Decision(BaseModel):
     character_id: int
     session_id: int
     turn_id: int
-    reasoning: str
-    verdict: str
-    violations: list[dict[str, Any]] | None = None
+    pass_name: str
+    tool_name: str
+    tool_args: dict[str, Any]
+    user_input: dict[str, Any] | None = None
     created_at: datetime
 
 

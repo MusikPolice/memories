@@ -16,7 +16,7 @@ from memories.database import (
     create_inference,
     get_decisions,
     get_experiences,
-    get_facts,
+    get_fact_rows,
     get_inferences,
     get_messages,
 )
@@ -306,7 +306,7 @@ async def test_send_message_pass_verdict_decision_stored(
         await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
     decisions = await get_decisions(db, session.id)
     assert len(decisions) == 1
-    assert decisions[0].verdict == "pass"
+    assert decisions[0].tool_args["verdict"] == "pass"
 
 
 async def test_send_message_implication_verdict_emits_ungrounded_message(
@@ -1376,7 +1376,7 @@ async def test_accept_implication_on_high_mutability_fact_preserves_mutability(
             json={"key": "mood", "value": "anxious", "regenerate": False},
         )
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     mood_fact = next((f for f in facts if f.key == "mood"), None)
     assert mood_fact is not None
     assert mood_fact.mutability == "high"
@@ -1433,7 +1433,7 @@ async def test_turn_tier1_fact_added_to_db(
             json={"content": "We're meeting in Chicago."},
         )
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     assert any(f.key == "meeting_city" and f.value == "Chicago" for f in facts)
 
 
@@ -1489,7 +1489,7 @@ async def test_turn_tier2_update_overwrites_fact_in_db(
             json={"content": "I moved to Chicago last month."},
         )
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     home = next(f for f in facts if f.key == "home_city")
     assert home.value == "Chicago"
 
@@ -1548,7 +1548,7 @@ async def test_turn_tier3_proposal_not_written_to_db(
             json={"content": "I've been feeling off."},
         )
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     assert not any(f.key == "current_mood" for f in facts)
     # The implicit_fact_proposed sidechannel event should be present (fails before Phase 6)
     events = _parse_sse(response.text)
@@ -1587,7 +1587,7 @@ async def test_turn_tier4_proposal_does_not_overwrite_existing_fact(
             json={"content": "Just got home."},
         )
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     home = next(f for f in facts if f.key == "home_city")
     assert home.value == "Reykjavik"
     # The implicit_fact_proposed sidechannel event should be present (fails before Phase 6)

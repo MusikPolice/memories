@@ -38,7 +38,7 @@ from memories.database import (
     end_session,
     get_decisions,
     get_experiences,
-    get_facts,
+    get_fact_rows,
     get_inferences,
     get_messages,
 )
@@ -293,7 +293,7 @@ async def test_pass_verdict_decision_stored(
         await run_turn(db, session.id, "Hello", ollama)
     decisions = await get_decisions(db, session.id)
     assert len(decisions) == 1
-    assert decisions[0].verdict == "pass"
+    assert decisions[0].tool_args["verdict"] == "pass"
 
 
 async def test_contradiction_response_not_stored_on_first_attempt(
@@ -454,50 +454,6 @@ async def test_contradiction_notifications_collected_per_iteration(
     assert len(eval_result.contradiction_notifications) == 2
 
 
-async def test_implication_verdict_tags_message_ungrounded(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    violations = [
-        {
-            "type": "implication",
-            "description": "implied a sibling",
-            "suggested_fact": {"key": "siblings", "value": "one"},
-        }
-    ]
-    with respx.mock:
-        respx.post(_CHAT_URL).mock(
-            side_effect=_mock_turn("I have a sister.", "implication", violations=violations)
-        )
-        await run_turn(db, session.id, "Family?", ollama)
-    msgs = await get_messages(db, session.id)
-    assistant = next(m for m in msgs if m.role == "assistant")
-    assert assistant.ungrounded_implications is not None
-
-
-async def test_implication_violations_stored_in_message(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    violations = [
-        {
-            "type": "implication",
-            "description": "implied a sibling",
-            "suggested_fact": {"key": "siblings", "value": "one"},
-        }
-    ]
-    with respx.mock:
-        respx.post(_CHAT_URL).mock(
-            side_effect=_mock_turn("I have a sister.", "implication", violations=violations)
-        )
-        await run_turn(db, session.id, "Family?", ollama)
-    msgs = await get_messages(db, session.id)
-    assistant = next(m for m in msgs if m.role == "assistant")
-    assert isinstance(assistant.ungrounded_implications, list)
-    assert assistant.ungrounded_implications[0].get("suggested_fact") == {
-        "key": "siblings",
-        "value": "one",
-    }
-
-
 async def test_new_inference_logical_creates_inference_row(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
@@ -519,30 +475,6 @@ async def test_new_inference_logical_creates_inference_row(
         await run_turn(db, session.id, "When were you born?", ollama)
     stored = await get_inferences(db, character.id)
     assert any(i.statement == "Born in 1991" for i in stored)
-
-
-async def test_new_inference_probabilistic_tags_message_ungrounded(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    inferences = [
-        {
-            "inference_type": "probabilistic",
-            "statement": "Works long hours",
-            "derivation": "occupation=surgeon",
-            "source_fact_ids": [],
-            "source_inference_ids": [],
-        }
-    ]
-    with respx.mock:
-        respx.post(_CHAT_URL).mock(
-            side_effect=_mock_turn(
-                "I work very long hours.", "new_inference_probabilistic", new_inferences=inferences
-            )
-        )
-        await run_turn(db, session.id, "Your schedule?", ollama)
-    msgs = await get_messages(db, session.id)
-    assistant = next(m for m in msgs if m.role == "assistant")
-    assert assistant.ungrounded_implications is not None
 
 
 async def test_new_inference_probabilistic_does_not_create_db_row(
@@ -1158,7 +1090,7 @@ async def test_run_turn_auto_adds_tier1_facts(
         )
         await run_turn(db, session.id, "We're meeting in Chicago!", ollama)
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     assert any(f.key == "meeting_location" and f.value == "Chicago" for f in facts)
 
 
@@ -1184,7 +1116,7 @@ async def test_run_turn_auto_updates_tier2_facts(
         )
         await run_turn(db, session.id, "I moved to Chicago last month.", ollama)
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     updated = next(f for f in facts if f.key == "home_city")
     assert updated.value == "Chicago"
 
@@ -1210,7 +1142,7 @@ async def test_run_turn_does_not_write_implicit_proposals_to_db(
         )
         result = await run_turn(db, session.id, "I've been feeling off.", ollama)
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     assert not any(f.key == "mood" for f in facts)
     # The ExtractionResult in the return value should carry the proposals
     assert isinstance(result[-1], ExtractionResult)
@@ -1358,7 +1290,7 @@ async def test_run_turn_deduplicates_tier1_facts_that_already_exist(
         # Should not raise; IntegrityError on the duplicate should be swallowed
         result = await run_turn(db, session.id, "Were you a surgeon?", ollama)
 
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     # Original fact must still be there; duplicate (different value) was suppressed
     occupation_facts = [f for f in facts if f.key == "occupation"]
     assert len(occupation_facts) == 1
@@ -1384,7 +1316,7 @@ async def test_run_turn_empty_extraction_result_does_not_change_facts(
 
     # Extraction call happened (3 total calls)
     assert len(route.calls) == 3
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     assert len(facts) == 1
     assert facts[0].key == "occupation"
     assert isinstance(result[-1], ExtractionResult)

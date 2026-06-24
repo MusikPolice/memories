@@ -15,7 +15,7 @@ from memories.database import (
     get_character,
     get_fact,
     get_fact_by_category_key,
-    get_facts,
+    get_fact_rows,
     get_inferences,
     get_messages,
     get_session,
@@ -113,7 +113,7 @@ async def accept_implication(
     # Reload facts and rebuild context for regeneration
     character = await get_character(db, session.character_id)
     assert character is not None
-    facts = await get_facts(db, session.character_id)
+    facts = await get_fact_rows(db, session.character_id)
     inferences = await get_inferences(db, session.character_id)
     system_prompt = build_system_prompt(character, facts, inferences)
 
@@ -149,16 +149,15 @@ async def accept_implication(
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail="Turn not found") from exc
 
-    # Log a new decision using the actual verdict from the regenerated response
-    violations_for_log = [v.model_dump() for v in ev.violations] if ev.violations else None
     await store_decision(
         db,
         character_id=session.character_id,
         session_id=session_id,
         turn_id=turn_id,
-        reasoning=ev.decision_log or "Response regenerated after implication accepted.",
-        verdict=ev.verdict,
-        violations=violations_for_log,
+        pass_name="character_evaluator",  # nosec B106
+        tool_name="evaluator_verdict",
+        tool_args={"verdict": ev.verdict},
+        user_input=None,
     )
 
     response: dict[str, Any] = {"content": new_content, "turn_id": turn_id}
@@ -285,7 +284,7 @@ async def undo_user_fact(
     stale = await cascade_on_fact_edit(db, session.character_id, fact.id, ollama)
 
     # Re-fetch updated fact for the response
-    updated_facts = await get_facts(db, session.character_id)
+    updated_facts = await get_fact_rows(db, session.character_id)
     updated_fact = next(f for f in updated_facts if f.id == fact.id)
 
     return {
@@ -323,7 +322,7 @@ async def accept_implicit_fact(
             # Tier 4: fact still exists, update it
             await update_fact(db, fact_id=fact.id, value=body.value)
             stale = await cascade_on_fact_edit(db, session.character_id, fact.id, ollama)
-            updated_facts = await get_facts(db, session.character_id)
+            updated_facts = await get_fact_rows(db, session.character_id)
             updated_fact = next(f for f in updated_facts if f.id == fact.id)
             return JSONResponse(
                 status_code=200,
@@ -355,7 +354,7 @@ async def accept_implicit_fact(
             raise
         await update_fact(db, fact_id=existing.id, value=body.value)
         stale = await cascade_on_fact_edit(db, session.character_id, existing.id, ollama)
-        updated_facts = await get_facts(db, session.character_id)
+        updated_facts = await get_fact_rows(db, session.character_id)
         updated_fact = next(f for f in updated_facts if f.id == existing.id)
         return JSONResponse(
             status_code=200,

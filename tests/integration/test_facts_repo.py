@@ -10,8 +10,8 @@ from memories.database import (
     create_fact,
     delete_fact,
     get_fact_by_category_key,
-    get_facts,
-    patch_fact,
+    get_fact_rows,
+    patch_fact_row,
     update_fact,
 )
 from memories.exceptions import NotFoundError
@@ -36,7 +36,7 @@ async def test_get_facts_returns_only_own_character(db: aiosqlite.Connection) ->
     bob = await create_character(db, name="Bob", modelfile_base="qwen3:7b")
     await create_fact(db, character_id=alice.id, key="age", value="30")
     await create_fact(db, character_id=bob.id, key="age", value="40")
-    alice_facts = await get_facts(db, alice.id)
+    alice_facts = await get_fact_rows(db, alice.id)
     assert len(alice_facts) == 1
     assert alice_facts[0].value == "30"
 
@@ -45,7 +45,7 @@ async def test_update_fact_changes_value(db: aiosqlite.Connection) -> None:
     char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
     fact = await create_fact(db, character_id=char.id, key="occupation", value="doctor")
     await update_fact(db, fact_id=fact.id, value="surgeon")
-    facts = await get_facts(db, char.id)
+    facts = await get_fact_rows(db, char.id)
     assert facts[0].value == "surgeon"
 
 
@@ -58,7 +58,7 @@ async def test_delete_fact_removes_it(db: aiosqlite.Connection) -> None:
     char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
     fact = await create_fact(db, character_id=char.id, key="occupation", value="doctor")
     await delete_fact(db, fact_id=fact.id)
-    facts = await get_facts(db, char.id)
+    facts = await get_fact_rows(db, char.id)
     assert facts == []
 
 
@@ -160,7 +160,7 @@ async def test_patch_fact_mutability_only(db: aiosqlite.Connection) -> None:
     fact = await create_fact(
         db, character_id=char.id, key="mood", value="cheerful", category="character"
     )
-    updated = await patch_fact(db, fact_id=fact.id, mutability="high")
+    updated = await patch_fact_row(db, fact_id=fact.id, mutability="high")
     assert updated.mutability == "high"
     assert updated.value == "cheerful"
     assert updated.category == "character"
@@ -171,7 +171,7 @@ async def test_patch_fact_category_only(db: aiosqlite.Connection) -> None:
     fact = await create_fact(
         db, character_id=char.id, key="name", value="Alice", mutability="immutable"
     )
-    updated = await patch_fact(db, fact_id=fact.id, category="user")
+    updated = await patch_fact_row(db, fact_id=fact.id, category="user")
     assert updated.category == "user"
     assert updated.value == "Alice"
     assert updated.mutability == "immutable"
@@ -179,7 +179,7 @@ async def test_patch_fact_category_only(db: aiosqlite.Connection) -> None:
 
 async def test_patch_fact_raises_not_found_for_unknown_id(db: aiosqlite.Connection) -> None:
     with pytest.raises(NotFoundError):
-        await patch_fact(db, fact_id=99999, mutability="high")
+        await patch_fact_row(db, fact_id=99999, mutability="high")
 
 
 async def test_same_key_allowed_in_different_categories(db: aiosqlite.Connection) -> None:
@@ -190,7 +190,7 @@ async def test_same_key_allowed_in_different_categories(db: aiosqlite.Connection
     fact_char = await create_fact(
         db, character_id=char.id, key="name", value="Elara", category="character"
     )
-    facts = await get_facts(db, char.id)
+    facts = await get_fact_rows(db, char.id)
     name_facts = [f for f in facts if f.key == "name"]
     assert len(name_facts) == 2
     assert fact_user.id != fact_char.id

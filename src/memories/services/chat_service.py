@@ -8,7 +8,6 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
 
 import aiosqlite
 
@@ -16,9 +15,8 @@ from memories.database import (
     create_fact,
     create_inference,
     delete_experience,
-    get_active_segment,
     get_character,
-    get_facts,
+    get_fact_rows,
     get_inferences,
     get_messages,
     get_session,
@@ -179,14 +177,11 @@ async def run_turn(
         raise SessionEndedError(f"Session {session_id} has ended")
 
     # Parallelize all DB reads that depend only on session, not on each other.
-    # history and segment are loaded here rather than after extraction so they
-    # share the same gather pass; both are read-only and unaffected by extraction writes.
-    character, facts, inferences, history, segment, turn_id = await asyncio.gather(
+    character, facts, inferences, history, turn_id = await asyncio.gather(
         get_character(db, session.character_id),
-        get_facts(db, session.character_id),
+        get_fact_rows(db, session.character_id),
         get_inferences(db, session.character_id),
         get_messages(db, session_id),
-        get_active_segment(db, session_id),
         next_turn_id(db, session_id),
     )
     assert character is not None
@@ -236,14 +231,13 @@ async def run_turn(
                 "extraction tier2: fact_id=%d not found, skipping update", fact_upd.fact_id
             )
     if extraction_result.new_facts or extraction_result.fact_updates:
-        facts = await get_facts(db, session.character_id)
+        facts = await get_fact_rows(db, session.character_id)
 
     system_prompt = build_system_prompt(character, facts, inferences, active or None)
 
     await store_message(
         db,
         session_id=session_id,
-        segment_id=segment.id,
         character_id=session.character_id,
         role="user",
         content=user_content,
@@ -292,20 +286,13 @@ async def run_turn(
                     upd.contradicted_experience_id,
                 )
 
-    # Determine ungrounded_implications to store with the assistant message
-    ungrounded: list[dict[str, Any]] | None = None
-    if eval_result.verdict in ("implication", "new_inference_probabilistic"):
-        ungrounded = [v.model_dump() for v in eval_result.violations]
-
     await store_message(
         db,
         session_id=session_id,
-        segment_id=segment.id,
         character_id=session.character_id,
         role="assistant",
         content=char_content,
         turn_id=turn_id,
-        ungrounded_implications=ungrounded,
     )
 
     # Auto-promote logical inferences with depth cap.
@@ -333,18 +320,15 @@ async def run_turn(
             )
             inferences.append(stored)
 
-    # Log decision
-    violations_for_log = (
-        [v.model_dump() for v in eval_result.violations] if eval_result.violations else None
-    )
     await store_decision(
         db,
         character_id=session.character_id,
         session_id=session_id,
         turn_id=turn_id,
-        reasoning=eval_result.decision_log,
-        verdict=eval_result.verdict,
-        violations=violations_for_log,
+        pass_name="character_evaluator",  # nosec B106
+        tool_name="evaluator_verdict",
+        tool_args={"verdict": eval_result.verdict},
+        user_input=None,
     )
 
     if eval_result.max_retries_exceeded:

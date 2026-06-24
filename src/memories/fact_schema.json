@@ -2,21 +2,9 @@
   "Character": {
     "Identity": {
       "Name": {
-        "First": {
-          "Type": "String",
-          "Mutability": "Immutable",
-          "Description": "The character's first or given name, typically the one that they expect to be addressed by"
-        },
-        "Middle": {
-          "Type": "String",
-          "Mutability": "Immutable",
-          "Description": "The character's middle name, typically only used in formal situations or on legal documents"
-        },
-        "Last": {
-          "Type": "String",
-          "Mutability": "Immutable",
-          "Description": "The character's last or family name, typically only used in formal situations or when dealing with strangers"
-        }
+        "Type": "String",
+        "Mutability": "Immutable",
+        "Description": "The character's name, typically in the format 'First Last'"
       },
       "Age": {
         "Type": "Integer",
@@ -243,21 +231,9 @@
   "User": {
     "Identity": {
       "Name": {
-        "First": {
-          "Type": "String",
-          "Mutability": "Immutable",
-          "Description": "The user's first or given name, as they prefer to be addressed by the character"
-        },
-        "Middle": {
-          "Type": "String",
-          "Mutability": "Immutable",
-          "Description": "The user's middle name, typically only used in formal situations or on legal documents"
-        },
-        "Last": {
-          "Type": "String",
-          "Mutability": "Immutable",
-          "Description": "The user's last or family name, typically only used in formal situations or when dealing with strangers"
-        }
+        "Type": "String",
+        "Mutability": "Immutable",
+        "Description": "The user's name, as they prefer to be addressed by the character"
       },
       "Age": {
         "Type": "Integer",

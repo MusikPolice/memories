@@ -13,9 +13,9 @@ from memories.database import (
     create_fact,
     delete_fact,
     get_character,
-    get_facts,
+    get_fact_rows,
     get_inferences,
-    patch_fact,
+    patch_fact_row,
     update_fact,
 )
 from memories.deps import get_db
@@ -50,7 +50,7 @@ async def list_facts_endpoint(character_id: int, db: _DB) -> list[Fact]:
     character = await get_character(db, character_id)
     if character is None:
         raise HTTPException(status_code=404, detail="Character not found")
-    return await get_facts(db, character_id)
+    return await get_fact_rows(db, character_id)
 
 
 @router.get("/{character_id}/inferences", response_model=list[Inference])
@@ -118,7 +118,7 @@ async def patch_fact_endpoint(character_id: int, fact_id: int, body: _PatchBody,
     if row is None:
         raise HTTPException(status_code=404, detail="Fact not found")
     try:
-        return await patch_fact(
+        return await patch_fact_row(
             db, fact_id=fact_id, category=body.category, mutability=body.mutability
         )
     except NotFoundError as exc:

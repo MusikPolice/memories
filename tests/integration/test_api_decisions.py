@@ -48,7 +48,8 @@ async def test_get_decisions_contains_verdict_field(
         await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
     response = await client.get(f"/api/sessions/{session.id}/decisions")
     data = response.json()
-    assert "verdict" in data[0]
+    assert "tool_args" in data[0]
+    assert "verdict" in data[0]["tool_args"]
 
 
 async def test_get_decisions_contains_reasoning_field(
@@ -59,8 +60,8 @@ async def test_get_decisions_contains_reasoning_field(
         await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
     response = await client.get(f"/api/sessions/{session.id}/decisions")
     data = response.json()
-    assert "reasoning" in data[0]
-    assert data[0]["reasoning"]
+    assert "pass_name" in data[0]
+    assert data[0]["pass_name"]
 
 
 async def test_get_decisions_ordered_by_turn_id_desc(
@@ -106,4 +107,4 @@ async def test_get_decisions_includes_violations_for_implication(
         await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Family?"})
     response = await client.get(f"/api/sessions/{session.id}/decisions")
     data = response.json()
-    assert data[0]["violations"] is not None
+    assert data[0]["tool_args"]["verdict"] == "implication"

@@ -21,9 +21,9 @@ from memories.models import (
     Fact,
     Inference,
     Message,
-    Segment,
     Session,
 )
+from memories.schema_loader import apply_mask
 
 # ---------------------------------------------------------------------------
 # Full schema — created once at startup; all tables present from Phase 1
@@ -60,6 +60,12 @@ CREATE TABLE IF NOT EXISTS facts (
 );
 CREATE INDEX IF NOT EXISTS idx_facts_character ON facts(character_id);
 
+CREATE TABLE IF NOT EXISTS character_facts (
+    character_id INTEGER PRIMARY KEY REFERENCES characters(id),
+    facts_json   TEXT NOT NULL DEFAULT '{}',
+    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS inferences (
     id                    INTEGER PRIMARY KEY,
     character_id          INTEGER REFERENCES characters(id),
@@ -90,41 +96,27 @@ CREATE INDEX IF NOT EXISTS idx_experiences_character_embedding
     ON experiences(character_id) WHERE embedding IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS decisions (
-    id               INTEGER PRIMARY KEY,
-    character_id     INTEGER REFERENCES characters(id),
-    session_id       INTEGER REFERENCES sessions(id),
-    turn_id          INTEGER,
-    reasoning        TEXT NOT NULL,
-    verdict          TEXT NOT NULL,
-    violations       TEXT,
-    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id           INTEGER PRIMARY KEY,
+    character_id INTEGER REFERENCES characters(id),
+    session_id   INTEGER REFERENCES sessions(id),
+    turn_id      INTEGER,
+    pass_name    TEXT NOT NULL,
+    tool_name    TEXT NOT NULL,
+    tool_args    TEXT NOT NULL,
+    user_input   TEXT,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_session_turn
     ON decisions(session_id, turn_id);
 
-CREATE TABLE IF NOT EXISTS segments (
-    id               INTEGER PRIMARY KEY,
-    session_id       INTEGER REFERENCES sessions(id),
-    start_turn       INTEGER NOT NULL,
-    end_turn         INTEGER,
-    boundary_reason  TEXT,
-    status           TEXT NOT NULL DEFAULT 'verbatim',
-    journal_text     TEXT,
-    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_segments_session ON segments(session_id);
-
 CREATE TABLE IF NOT EXISTS messages (
-    id                       INTEGER PRIMARY KEY,
-    character_id             INTEGER REFERENCES characters(id),
-    session_id               INTEGER REFERENCES sessions(id),
-    segment_id               INTEGER REFERENCES segments(id),
-    role                     TEXT NOT NULL,
-    content                  TEXT NOT NULL,
-    turn_id                  INTEGER,
-    captured_by              TEXT,
-    ungrounded_implications  TEXT,
-    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id           INTEGER PRIMARY KEY,
+    character_id INTEGER REFERENCES characters(id),
+    session_id   INTEGER REFERENCES sessions(id),
+    role         TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    turn_id      INTEGER,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session_turn
     ON messages(session_id, turn_id);
@@ -149,12 +141,7 @@ def _row(row: aiosqlite.Row) -> dict[str, Any]:
 
 
 def _parse_message(row: aiosqlite.Row) -> Message:
-    d = _row(row)
-    if d.get("captured_by"):
-        d["captured_by"] = json.loads(d["captured_by"])
-    if d.get("ungrounded_implications"):
-        d["ungrounded_implications"] = json.loads(d["ungrounded_implications"])
-    return Message.model_validate(d)
+    return Message.model_validate(_row(row))
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +179,7 @@ async def list_characters(db: aiosqlite.Connection) -> list[Character]:
 
 
 # ---------------------------------------------------------------------------
-# Facts
+# Facts (legacy row-based — keeps the existing facts.py router working)
 # ---------------------------------------------------------------------------
 
 
@@ -218,7 +205,7 @@ async def create_fact(
     return Fact.model_validate(_row(row))
 
 
-async def get_facts(db: aiosqlite.Connection, character_id: int) -> list[Fact]:
+async def get_fact_rows(db: aiosqlite.Connection, character_id: int) -> list[Fact]:
     cursor = await db.execute(
         "SELECT * FROM facts WHERE character_id = ? ORDER BY id",
         (character_id,),
@@ -279,7 +266,7 @@ async def delete_fact(
         raise NotFoundError(f"Fact {fact_id} not found")
 
 
-async def patch_fact(
+async def patch_fact_row(
     db: aiosqlite.Connection,
     *,
     fact_id: int,
@@ -326,6 +313,58 @@ async def get_fact_by_category_key(
 
 
 # ---------------------------------------------------------------------------
+# Character facts blob (new schema-constrained fact store)
+# ---------------------------------------------------------------------------
+
+
+async def get_facts(db: aiosqlite.Connection, character_id: int) -> dict[str, Any]:
+    """Return the schema-masked fact blob for character_id, or {} if none exists."""
+    row = await (
+        await db.execute(
+            "SELECT facts_json FROM character_facts WHERE character_id = ?",
+            (character_id,),
+        )
+    ).fetchone()
+    if row is None:
+        return {}
+    blob: dict[str, Any] = json.loads(row[0])
+    return apply_mask(blob)
+
+
+async def set_facts(db: aiosqlite.Connection, character_id: int, blob: dict[str, Any]) -> None:
+    """Write blob as the facts_json for character_id, replacing any existing row."""
+    await db.execute(
+        """INSERT INTO character_facts (character_id, facts_json, updated_at)
+           VALUES (?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(character_id) DO UPDATE SET
+               facts_json = excluded.facts_json,
+               updated_at = excluded.updated_at""",
+        (character_id, json.dumps(blob)),
+    )
+    await db.commit()
+
+
+async def patch_fact(
+    db: aiosqlite.Connection,
+    character_id: int,
+    path_tuple: tuple[str, ...],
+    value: str | int | float | bool | None,
+) -> None:
+    """Set a single leaf in the character's fact blob to {"Value": value}.
+
+    Creates intermediate grouping dicts as needed. Non-destructive to other paths.
+    """
+    blob = await get_facts(db, character_id)
+    node: dict[str, Any] = blob
+    for key in path_tuple[:-1]:
+        if key not in node or not isinstance(node[key], dict):
+            node[key] = {}
+        node = node[key]
+    node[path_tuple[-1]] = {"Value": value}
+    await set_facts(db, character_id, blob)
+
+
+# ---------------------------------------------------------------------------
 # Sessions
 # ---------------------------------------------------------------------------
 
@@ -335,15 +374,9 @@ async def create_session(db: aiosqlite.Connection, *, character_id: int) -> Sess
         "INSERT INTO sessions (character_id) VALUES (?)",
         (character_id,),
     )
+    await db.commit()
     assert cursor.lastrowid is not None
     session_id = cursor.lastrowid
-
-    # Every session begins with a single verbatim segment.
-    await db.execute(
-        "INSERT INTO segments (session_id, start_turn, boundary_reason) VALUES (?, ?, ?)",
-        (session_id, 1, "session_start"),
-    )
-    await db.commit()
 
     row = await (await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))).fetchone()
     assert row is not None
@@ -369,25 +402,6 @@ async def end_session(db: aiosqlite.Connection, session_id: int) -> Session:
 
 
 # ---------------------------------------------------------------------------
-# Segments
-# ---------------------------------------------------------------------------
-
-
-async def get_active_segment(db: aiosqlite.Connection, session_id: int) -> Segment:
-    """Return the open (end_turn IS NULL) segment for *session_id*."""
-    row = await (
-        await db.execute(
-            "SELECT * FROM segments WHERE session_id = ? AND end_turn IS NULL "
-            "ORDER BY id DESC LIMIT 1",
-            (session_id,),
-        )
-    ).fetchone()
-    if row is None:
-        raise NotFoundError(f"No active segment for session {session_id}")
-    return Segment.model_validate(_row(row))
-
-
-# ---------------------------------------------------------------------------
 # Messages
 # ---------------------------------------------------------------------------
 
@@ -396,22 +410,16 @@ async def store_message(
     db: aiosqlite.Connection,
     *,
     session_id: int,
-    segment_id: int,
     character_id: int,
     role: str,
     content: str,
     turn_id: int,
-    ungrounded_implications: list[dict[str, Any]] | None = None,
 ) -> Message:
-    ungrounded_json = (
-        json.dumps(ungrounded_implications) if ungrounded_implications is not None else None
-    )
     cursor = await db.execute(
         """INSERT INTO messages
-               (character_id, session_id, segment_id, role, content, turn_id,
-                ungrounded_implications)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (character_id, session_id, segment_id, role, content, turn_id, ungrounded_json),
+               (character_id, session_id, role, content, turn_id)
+           VALUES (?, ?, ?, ?, ?)""",
+        (character_id, session_id, role, content, turn_id),
     )
     await db.commit()
     assert cursor.lastrowid is not None
@@ -450,9 +458,9 @@ async def replace_message_content(
     turn_id: int,
     new_content: str,
 ) -> Message:
-    """Replace content and clear ungrounded_implications on the assistant message."""
+    """Replace content on the assistant message for the given (session_id, turn_id)."""
     cursor = await db.execute(
-        "UPDATE messages SET content = ?, ungrounded_implications = NULL "
+        "UPDATE messages SET content = ? "
         "WHERE session_id = ? AND turn_id = ? AND role = 'assistant'",
         (new_content, session_id, turn_id),
     )
@@ -476,8 +484,9 @@ async def replace_message_content(
 
 def _parse_decision(row: aiosqlite.Row) -> Decision:
     d = _row(row)
-    if d.get("violations"):
-        d["violations"] = json.loads(d["violations"])
+    d["tool_args"] = json.loads(d["tool_args"])
+    if d.get("user_input") is not None:
+        d["user_input"] = json.loads(d["user_input"])
     return Decision.model_validate(d)
 
 
@@ -487,15 +496,25 @@ async def store_decision(
     character_id: int,
     session_id: int,
     turn_id: int,
-    reasoning: str,
-    verdict: str,
-    violations: list[dict[str, Any]] | None = None,
+    pass_name: str,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    user_input: dict[str, Any] | None = None,
 ) -> Decision:
-    violations_json = json.dumps(violations) if violations is not None else None
+    user_input_json = json.dumps(user_input) if user_input is not None else None
     cursor = await db.execute(
-        """INSERT INTO decisions (character_id, session_id, turn_id, reasoning, verdict, violations)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (character_id, session_id, turn_id, reasoning, verdict, violations_json),
+        """INSERT INTO decisions
+               (character_id, session_id, turn_id, pass_name, tool_name, tool_args, user_input)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            character_id,
+            session_id,
+            turn_id,
+            pass_name,
+            tool_name,
+            json.dumps(tool_args),
+            user_input_json,
+        ),
     )
     await db.commit()
     assert cursor.lastrowid is not None

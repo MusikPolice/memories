@@ -13,7 +13,7 @@ from httpx import AsyncClient
 from memories.database import (
     create_inference,
     get_decisions,
-    get_facts,
+    get_fact_rows,
     get_inferences,
     get_messages,
 )
@@ -90,7 +90,7 @@ async def test_accept_implication_creates_fact_in_db(
             f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
             json={"key": "siblings", "value": "one sister"},
         )
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     assert any(f.key == "siblings" and f.value == "one sister" for f in facts)
 
 
@@ -128,24 +128,6 @@ async def test_accept_implication_content_differs_from_original(
     assert response.json()["content"] == regenerated
 
 
-async def test_accept_implication_clears_ungrounded_implications_on_message(
-    db: aiosqlite.Connection,
-    client: AsyncClient,
-    character: Character,
-    implication_session: tuple[Session, int],
-) -> None:
-    session, turn_id = implication_session
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_pass_turn())
-        await client.post(
-            f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
-            json={"key": "siblings", "value": "none"},
-        )
-    msgs = await get_messages(db, session.id)
-    assistant_msg = next(m for m in msgs if m.role == "assistant" and m.turn_id == turn_id)
-    assert assistant_msg.ungrounded_implications is None
-
-
 async def test_edit_implication_uses_user_provided_value(
     db: aiosqlite.Connection,
     client: AsyncClient,
@@ -159,7 +141,7 @@ async def test_edit_implication_uses_user_provided_value(
             f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
             json={"key": "siblings", "value": "two brothers"},  # different from suggestion
         )
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     assert any(f.key == "siblings" and f.value == "two brothers" for f in facts)
 
 
@@ -180,8 +162,7 @@ async def test_accept_implication_stores_new_decision(
     decisions = await get_decisions(db, session.id)
     # Two decisions: one from the original turn (implication), one from the regen (pass)
     assert len(decisions) == 2
-    regen_decision = next(d for d in decisions if d.reasoning != "Clean.")
-    assert regen_decision.verdict == "pass"
+    regen_decision = next(d for d in decisions if d.tool_args.get("verdict") == "pass")
     assert regen_decision.turn_id == turn_id
 
 
@@ -222,9 +203,8 @@ async def test_accept_implication_duplicate_key_updates_existing_fact(
             f"/api/sessions/{session.id}/messages", json={"content": "Tell me about your sister."}
         )
     msgs = await get_messages(db, session.id)
-    second_assistant = next(
-        m for m in reversed(msgs) if m.role == "assistant" and m.ungrounded_implications is not None
-    )
+    assistant_msgs = [m for m in msgs if m.role == "assistant"]
+    second_assistant = assistant_msgs[-1]
     second_turn_id = second_assistant.turn_id
 
     # Accept with a different value — should update, not fail with 500
@@ -235,7 +215,7 @@ async def test_accept_implication_duplicate_key_updates_existing_fact(
             json={"key": "siblings", "value": "two brothers"},
         )
     assert response.status_code == 200
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     siblings = next(f for f in facts if f.key == "siblings")
     assert siblings.value == "two brothers"
 
@@ -317,7 +297,7 @@ async def test_accept_implication_no_regen_creates_fact_without_llm_call(
             json={"key": "siblings", "value": "one sister", "regenerate": False},
         )
     assert response.status_code == 200
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     assert any(f.key == "siblings" and f.value == "one sister" for f in facts)
 
 
@@ -336,24 +316,6 @@ async def test_accept_implication_no_regen_returns_original_content(
     data = response.json()
     assert data["content"] == "I have a sister, actually."
     assert data["turn_id"] == turn_id
-
-
-async def test_accept_implication_no_regen_clears_ungrounded_flag(
-    db: aiosqlite.Connection,
-    client: AsyncClient,
-    character: Character,
-    implication_session: tuple[Session, int],
-) -> None:
-    """With regenerate=False the ungrounded_implications flag is still cleared."""
-    session, turn_id = implication_session
-    with respx.mock:
-        await client.post(
-            f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
-            json={"key": "siblings", "value": "one sister", "regenerate": False},
-        )
-    msgs = await get_messages(db, session.id)
-    assistant_msg = next(m for m in msgs if m.role == "assistant" and m.turn_id == turn_id)
-    assert assistant_msg.ungrounded_implications is None
 
 
 async def test_accept_implication_no_regen_does_not_store_extra_decision(
@@ -387,19 +349,6 @@ async def test_ignore_implication_returns_204(
     session, turn_id = implication_session
     response = await client.post(f"/api/sessions/{session.id}/turns/{turn_id}/ignore-implication")
     assert response.status_code == 204
-
-
-async def test_ignore_implication_message_ungrounded_remains_set(
-    db: aiosqlite.Connection,
-    client: AsyncClient,
-    character: Character,
-    implication_session: tuple[Session, int],
-) -> None:
-    session, turn_id = implication_session
-    await client.post(f"/api/sessions/{session.id}/turns/{turn_id}/ignore-implication")
-    msgs = await get_messages(db, session.id)
-    assistant_msg = next(m for m in msgs if m.role == "assistant" and m.turn_id == turn_id)
-    assert assistant_msg.ungrounded_implications is not None
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +436,7 @@ async def test_accept_second_implication_on_same_turn_succeeds(
             json={"key": "eye_colour", "value": "brown"},
         )
     assert r2.status_code == 200
-    facts = await get_facts(db, character.id)
+    facts = await get_fact_rows(db, character.id)
     assert any(f.key == "eye_colour" and f.value == "brown" for f in facts)
 
 

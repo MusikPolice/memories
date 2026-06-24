@@ -10,7 +10,7 @@ import aiosqlite
 from memories.database import (
     create_inference,
     get_character,
-    get_facts,
+    get_fact_rows,
     get_inferences,
     update_inference_status,
 )
@@ -268,7 +268,7 @@ async def cascade_on_fact_edit(
     _all = await get_inferences(db, character_id, status="all")
     non_invalidated = [inf for inf in _all if inf.status != "invalidated"]
     active = [inf for inf in non_invalidated if inf.status == "active"]
-    facts = await get_facts(db, character_id)
+    facts = await get_fact_rows(db, character_id)
 
     newly_stale: set[int] = set()
     processed: set[int] = set()

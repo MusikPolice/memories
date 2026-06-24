@@ -75,7 +75,7 @@ def test_load_schema_caches_result() -> None:
 
 
 def test_load_schema_leaf_has_required_fields() -> None:
-    leaf = schema_loader.load_schema()["Character"]["Identity"]["Name"]["First"]
+    leaf = schema_loader.load_schema()["Character"]["Identity"]["Name"]
     assert "Type" in leaf
     assert "Mutability" in leaf
     assert "Description" in leaf

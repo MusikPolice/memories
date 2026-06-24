@@ -13,7 +13,7 @@ from memories.database import (
     _row,
     delete_inference,
     get_character,
-    get_facts,
+    get_fact_rows,
     get_inferences,
     update_inference_status,
 )
@@ -61,7 +61,7 @@ async def generate_inferences_endpoint(
     if character is None:
         raise HTTPException(status_code=404, detail="Character not found")
 
-    facts = await get_facts(db, character_id)
+    facts = await get_fact_rows(db, character_id)
     existing_inferences = await get_inferences(db, character_id, status="all")
 
     try:
