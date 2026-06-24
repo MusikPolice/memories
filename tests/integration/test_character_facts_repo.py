@@ -59,6 +59,23 @@ async def test_get_facts_keeps_valid_paths_drops_invalid_after_masking(
     assert "BadPath" not in result
 
 
+async def test_patch_fact_cleans_stale_paths_as_side_effect(
+    db: aiosqlite.Connection, character: Character
+) -> None:
+    await set_facts(
+        db,
+        character.id,
+        {
+            "Character": {"Identity": {"Name": {"Value": "Old"}}},
+            "LegacyCategory": {"Nested": {"Value": "stale"}},
+        },
+    )
+    await patch_fact(db, character.id, ("Character", "Identity", "Name"), "New")
+    result = await get_facts(db, character.id)
+    assert result["Character"]["Identity"]["Name"]["Value"] == "New"
+    assert "LegacyCategory" not in result
+
+
 async def test_patch_fact_updates_single_nested_key(
     db: aiosqlite.Connection, character: Character
 ) -> None:
@@ -84,6 +101,15 @@ async def test_patch_fact_on_character_with_no_row_creates_row(
     await patch_fact(db, character.id, ("Character", "Identity", "Name"), "Elena")
     result = await get_facts(db, character.id)
     assert result["Character"]["Identity"]["Name"]["Value"] == "Elena"
+
+
+async def test_patch_fact_creates_intermediate_groupings(
+    db: aiosqlite.Connection, character: Character
+) -> None:
+    await set_facts(db, character.id, {})
+    await patch_fact(db, character.id, ("Character", "Appearance", "Body", "Height"), "5ft 8in")
+    result = await get_facts(db, character.id)
+    assert result["Character"]["Appearance"]["Body"]["Height"]["Value"] == "5ft 8in"
 
 
 async def test_patch_fact_overwrite_existing_leaf(

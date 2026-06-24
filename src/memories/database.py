@@ -527,7 +527,7 @@ async def store_decision(
 
 async def get_decisions(db: aiosqlite.Connection, session_id: int) -> list[Decision]:
     cursor = await db.execute(
-        "SELECT * FROM decisions WHERE session_id = ? ORDER BY turn_id DESC",
+        "SELECT * FROM decisions WHERE session_id = ? ORDER BY turn_id DESC, id DESC",
         (session_id,),
     )
     rows = await cursor.fetchall()
