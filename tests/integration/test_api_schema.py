@@ -41,7 +41,7 @@ async def test_get_schema_has_setting_key(client: AsyncClient) -> None:
 @pytest.mark.anyio
 async def test_get_schema_character_identity_name_is_leaf(client: AsyncClient) -> None:
     data = (await client.get("/api/schema")).json()
-    leaf = data["Character"]["Identity"]["Name"]
+    leaf = data["Character"]["Identity"]["Name"]["First"]
     assert "Type" in leaf
     assert "Mutability" in leaf
     assert "Description" in leaf
@@ -50,13 +50,13 @@ async def test_get_schema_character_identity_name_is_leaf(client: AsyncClient) -
 @pytest.mark.anyio
 async def test_get_schema_leaf_type_is_string(client: AsyncClient) -> None:
     data = (await client.get("/api/schema")).json()
-    assert data["Character"]["Identity"]["Name"]["Type"] == "String"
+    assert data["Character"]["Identity"]["Name"]["First"]["Type"] == "String"
 
 
 @pytest.mark.anyio
 async def test_get_schema_leaf_mutability_is_immutable(client: AsyncClient) -> None:
     data = (await client.get("/api/schema")).json()
-    assert data["Character"]["Identity"]["Name"]["Mutability"] == "Immutable"
+    assert data["Character"]["Identity"]["Name"]["First"]["Mutability"] == "Immutable"
 
 
 @pytest.mark.anyio
