@@ -291,6 +291,7 @@ async def run_turn(
                 statement=inf.statement,
                 derivation=inf.derivation,
                 source_inference_ids=inf.source_inference_ids,
+                source_fact_paths=inf.source_fact_paths,
                 inference_type=inf.inference_type,
                 depth=depth,
             )

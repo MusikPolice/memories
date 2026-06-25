@@ -256,6 +256,17 @@ async def test_evaluator_raises_parse_error_on_missing_verdict(ollama: OllamaCli
 
 
 @respx.mock
+async def test_evaluator_raises_parse_error_on_missing_decision_log(ollama: OllamaClient) -> None:
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200, content=make_ollama_ndjson(json.dumps({"verdict": "pass"}))
+        )
+    )
+    with pytest.raises(EvaluatorParseError):
+        await run_evaluator(_CHARACTER, _FACTS_BLOB, _USER_MSG, _CHAR_RESPONSE, ollama)
+
+
+@respx.mock
 async def test_evaluator_raises_parse_error_on_unknown_verdict(ollama: OllamaClient) -> None:
     respx.post(_CHAT_URL).mock(
         return_value=httpx.Response(

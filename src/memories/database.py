@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS inferences (
     derivation            TEXT NOT NULL,
     source_fact_ids       TEXT,
     source_inference_ids  TEXT,
+    source_fact_paths     TEXT,
     depth                 INTEGER NOT NULL DEFAULT 1,
     inference_type        TEXT NOT NULL DEFAULT 'logical',
     status                TEXT NOT NULL DEFAULT 'active',
@@ -541,14 +542,13 @@ async def get_decisions(db: aiosqlite.Connection, session_id: int) -> list[Decis
 
 def _parse_inference(row: aiosqlite.Row) -> Inference:
     d = _row(row)
-    if d.get("source_fact_ids"):
-        d["source_fact_ids"] = json.loads(d["source_fact_ids"])
-    else:
-        d["source_fact_ids"] = []
-    if d.get("source_inference_ids"):
-        d["source_inference_ids"] = json.loads(d["source_inference_ids"])
-    else:
-        d["source_inference_ids"] = []
+    d["source_fact_ids"] = json.loads(d["source_fact_ids"]) if d.get("source_fact_ids") else []
+    d["source_inference_ids"] = (
+        json.loads(d["source_inference_ids"]) if d.get("source_inference_ids") else []
+    )
+    d["source_fact_paths"] = (
+        json.loads(d["source_fact_paths"]) if d.get("source_fact_paths") else []
+    )
     return Inference.model_validate(d)
 
 
@@ -560,17 +560,28 @@ async def create_inference(
     derivation: str,
     source_fact_ids: list[int] | None = None,
     source_inference_ids: list[int] | None = None,
+    source_fact_paths: list[str] | None = None,
     depth: int = 1,
     inference_type: str = "logical",
 ) -> Inference:
     fact_ids_json = json.dumps(source_fact_ids or [])
     inf_ids_json = json.dumps(source_inference_ids or [])
+    paths_json = json.dumps(source_fact_paths or [])
     cursor = await db.execute(
         """INSERT INTO inferences
                (character_id, statement, derivation, source_fact_ids, source_inference_ids,
-                depth, inference_type)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (character_id, statement, derivation, fact_ids_json, inf_ids_json, depth, inference_type),
+                source_fact_paths, depth, inference_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            character_id,
+            statement,
+            derivation,
+            fact_ids_json,
+            inf_ids_json,
+            paths_json,
+            depth,
+            inference_type,
+        ),
     )
     await db.commit()
     assert cursor.lastrowid is not None

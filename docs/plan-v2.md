@@ -1243,11 +1243,16 @@ user provides the value. This avoids mid-generation suspension entirely.
 - Remove `experience_update` handling from `chat_service.py`: delete the
   `delete_experience` call and the `experience_update` branch in `run_turn()`
 - Remove `implication` verdict handling from `chat_service.py`
+- Remove dead `"implication"` checks from the router layer: `chat.py` lines 105 and 113
+  (`if eval_result.verdict in ("implication", "new_inference_probabilistic")`) and
+  `implication.py` line 166 (`if ev.verdict in ("implication", "new_inference_probabilistic")`);
+  these were left as dead code in Step 3 and are never reachable since `implication` was
+  removed from `_VALID_VERDICTS`
 - Tests: mutable accept writes value and delivers; mutable edit regenerates with user
   value; mutable reject regenerates without change; immutable-set triggers contradiction
   loop; immutable-unset accept locks and delivers; immutable-unset edit locks user value
   and regenerates; immutable-unset dismiss delivers as-is; `experience_update` branch is
-  gone; `implication` branch is gone
+  gone; `implication` branch is gone from both `chat_service.py` and the router layer
 
 **Step 8 — UI: tree display, new notification cards, removed cards and paths**
 - Frontend fetches `GET /api/schema` once at startup and stores the result; uses it to

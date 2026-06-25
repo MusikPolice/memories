@@ -52,7 +52,7 @@ class EvaluatorResult(BaseModel):
     verdict: str
     new_inferences: list[NewInference] = []
     violations: list[Violation] = []
-    decision_log: str = ""
+    decision_log: str
     contradiction_notifications: list[ContradictionNotification] = []
     max_retries_exceeded: bool = False
 
@@ -225,9 +225,6 @@ async def run_evaluator(
 
     if verdict not in _VALID_VERDICTS:
         raise EvaluatorParseError(f"Unknown evaluator verdict: {verdict!r}")
-
-    if "decision_log" not in data:
-        raise EvaluatorParseError("Evaluator response missing required 'decision_log' field")
 
     # Contradiction priority: if any violation has type "contradiction", force the verdict
     violations_raw: list[dict[str, Any]] = data.get("violations", []) or []

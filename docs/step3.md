@@ -556,3 +556,71 @@ Tests that verify the `experience_update` branch in `run_turn()` (e.g. tests tha
 **Schema changes between sessions.** If a leaf is added to the schema after a session has started, the character system prompt will show the new leaf as `(not set)`. If a leaf is removed, the blob still holds its value (masked on read, so it's dropped). The character sees the new schema state on the very next turn. No session restart is required.
 
 **`run_turn()` and the extraction gap.** Between Step 3 and Step 4, the extraction service runs and writes to the old `facts` table, but those writes are invisible to the character. This means a user message like "my name is Jon" may not be captured until Step 4's World Builder is in place. Document this as a known transitional limitation in the commit message.
+
+---
+
+## Post-Implementation Cleanup Tasks
+
+Issues found during adversarial review that were deferred rather than fixed in-session.
+
+### CT-1: `source_fact_paths` is unimplemented end-to-end
+
+**Decided:** Fix in a follow-up before Step 4 begins.
+
+The spec says Step 2 introduced a `source_fact_paths` column on the `inferences` table. It was not added. The gap means:
+
+- `NewInference.source_fact_paths` (the evaluator output field) is silently dropped on every auto-promote in `run_turn()` — `create_inference()` has no `source_fact_paths` parameter.
+- `Inference` model (`models/__init__.py`) and `_parse_inference()` in `database.py` still use `source_fact_ids: list[int]`, not path strings.
+- `_AcceptInferenceBody` in `implication.py` still has `source_fact_ids: list[int]` — the accept-inference API now speaks a different language than what the evaluator emits.
+
+**What to do:**
+
+1. Add `source_fact_paths TEXT` column to the `inferences` DDL in `database.py`.
+2. Update `_parse_inference()` to parse the column (JSON array of strings; default `[]`).
+3. Add `source_fact_paths: list[str] = []` to `Inference` in `models/__init__.py`.
+4. Add `source_fact_paths: list[str] | None = None` parameter to `create_inference()`, stored as JSON.
+5. Pass `source_fact_paths=inf.source_fact_paths` in the auto-promote block in `chat_service.py`.
+6. Update `_AcceptInferenceBody.source_fact_ids` → `source_fact_paths: list[str] = []` in `implication.py`, and update `create_inference()` call at line 206 accordingly.
+7. Add integration tests for the new column (write, read-back, accept-inference endpoint).
+
+### CT-2: `test_run_turn_passes_tier1_and_tier2_facts_to_character` is a false positive
+
+**Decided:** Delete and replace with a correct test.
+
+The test asserts `"Chicago" in system_content` after the extractor writes `meeting_location: Chicago` to the legacy `facts` table. It passes because `"Chicago"` appears in the schema description text for `Setting.Location.Name` (`"e.g. 'Chicago Memorial Hospital'"`) — not because the extraction result reached the system prompt. The test's docstring is the opposite of the correct step 3 behavior.
+
+**What to do:**
+
+1. Delete `test_run_turn_passes_tier1_and_tier2_facts_to_character` from `tests/unit/test_chat_service.py`.
+2. Add a replacement test: after the extractor writes a new fact, assert the character system prompt is unchanged (i.e., the blob-derived prompt does not contain the extracted value). Name it `test_run_turn_extraction_does_not_affect_system_prompt` to make the transitional intent explicit.
+
+### CT-3: `_lookup_blob_value()` in `prompt_builder.py` is dead code
+
+**Decided:** Delete it.
+
+`_lookup_blob_value` ([prompt_builder.py:26-38](src/memories/services/prompt_builder.py#L26)) was specified as the helper that `_render_schema_node` should call to resolve a blob leaf. The implementation instead does the lookup inline inside `_render_schema_node` (lines 53-54), so `_lookup_blob_value` is never called. The inline approach is correct in context (the recursive pattern already passes the current sub-dict as `blob_node`, so a top-down path-walk helper isn't needed).
+
+**What to do:** Delete `_lookup_blob_value` from `prompt_builder.py`. No callers to update.
+
+### CT-4: Mock inference payloads in `test_chat_service.py` use the old `source_fact_ids` field name
+
+**Decided:** Update all payloads to use `source_fact_paths`.
+
+Every `new_inferences` payload in `test_chat_service.py` (e.g. lines 444–450, 469–476, 582–588, 619–626, 643–650) contains `"source_fact_ids": []`. `NewInference` now has `source_fact_paths: list[str] = []`. Pydantic silently ignores the old key and defaults `source_fact_paths` to `[]`, so the tests pass without exercising the renamed field.
+
+**What to do:**
+
+1. Replace every `"source_fact_ids": []` with `"source_fact_paths": []` in all `new_inferences` mock dicts in `test_chat_service.py`.
+2. In tests that specifically exercise the path-string content (e.g. depth tests, auto-promote tests), use a realistic value such as `"source_fact_paths": ["Character.Identity.Age"]` to confirm the field flows through.
+
+### CT-5: `decision_log` check in `run_evaluator` contradicts the Pydantic model
+
+**Decided:** Remove the default from `EvaluatorResult.decision_log` so Pydantic enforces the requirement.
+
+`run_evaluator` manually raises `EvaluatorParseError` if `decision_log` is absent from the raw response dict ([evaluator.py:229-230](src/memories/services/evaluator.py#L229)). But `EvaluatorResult` declares `decision_log: str = ""`, so Pydantic would silently accept an absent field. The two places contradict each other.
+
+**What to do:**
+
+1. Change `decision_log: str = ""` to `decision_log: str` in `EvaluatorResult` (no default).
+2. Delete the manual `if "decision_log" not in data` check — Pydantic's `ValidationError` path (already caught and re-raised as `EvaluatorParseError` on line 244) will handle it.
+3. Update `test_evaluator_raises_parse_error_on_missing_verdict` (or add a sibling) to confirm a missing `decision_log` also raises `EvaluatorParseError`.

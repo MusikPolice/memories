@@ -52,7 +52,7 @@ class _AcceptImplicationBody(BaseModel):
 class _AcceptInferenceBody(BaseModel):
     statement: str
     derivation: str
-    source_fact_ids: list[int] = []
+    source_fact_paths: list[str] = []
     source_inference_ids: list[int] = []
     inference_type: str = "probabilistic"
 
@@ -208,7 +208,7 @@ async def accept_inference(
         character_id=session.character_id,
         statement=body.statement,
         derivation=body.derivation,
-        source_fact_ids=body.source_fact_ids,
+        source_fact_paths=body.source_fact_paths,
         source_inference_ids=body.source_inference_ids,
         inference_type=body.inference_type,
         depth=depth,

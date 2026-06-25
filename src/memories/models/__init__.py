@@ -61,6 +61,7 @@ class Inference(BaseModel):
     derivation: str
     source_fact_ids: list[int] = []
     source_inference_ids: list[int] = []
+    source_fact_paths: list[str] = []
     depth: int = 1
     inference_type: str = "logical"
     status: str = "active"

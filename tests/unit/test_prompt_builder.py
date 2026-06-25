@@ -303,6 +303,19 @@ def test_experiences_section_absent_when_none() -> None:
     assert "## Your Experiences" not in prompt
 
 
+def test_integer_leaf_renders_value() -> None:
+    blob: dict[str, Any] = {"Setting": {"Temporal": {"Current-Year": {"Value": 2026}}}}
+    prompt = build_system_prompt(_CHARACTER, blob)
+    assert "Value: 2026" in prompt
+
+
+def test_integer_zero_renders_as_zero_not_not_set() -> None:
+    # Falsy zero must not be mistaken for "unset" (guarded by `is None`, not `not value`)
+    blob: dict[str, Any] = {"Character": {"Identity": {"Age": {"Value": 0}}}}
+    prompt = build_system_prompt(_CHARACTER, blob)
+    assert "Value: 0" in prompt
+
+
 def test_experiences_section_follows_inferences() -> None:
     inferences = [
         Inference(

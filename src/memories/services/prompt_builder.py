@@ -23,21 +23,6 @@ Mutability levels:
 For ENUM facts, only the listed values are valid."""
 
 
-def _lookup_blob_value(
-    blob: dict[str, Any],
-    path_parts: list[str],
-) -> str | int | None:
-    """Walk the blob following path_parts; return the leaf Value or None if absent."""
-    node: Any = blob
-    for part in path_parts:
-        if not isinstance(node, dict) or part not in node:
-            return None
-        node = node[part]
-    if not isinstance(node, dict):
-        return None
-    return node.get("Value")
-
-
 def _render_schema_node(
     schema_node: dict[str, Any],
     blob_node: dict[str, Any],

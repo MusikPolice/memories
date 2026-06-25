@@ -222,3 +222,41 @@ async def test_get_inferences_invalidated_status_filter(db: aiosqlite.Connection
     assert all(i.status == "invalidated" for i in inv_list)
     assert any(i.id == inv_inf.id for i in inv_list)
     assert not any(i.id == active_inf.id for i in inv_list)
+
+
+# ---------------------------------------------------------------------------
+# Step 3 additions — source_fact_paths column
+# ---------------------------------------------------------------------------
+
+
+async def test_source_fact_paths_stored_and_retrieved_as_list(db: aiosqlite.Connection) -> None:
+    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
+    inf = await create_inference(
+        db,
+        character_id=char.id,
+        statement="Alice was born in Iceland",
+        derivation="Character.Background.Hometown=Reykjavik",
+        source_fact_paths=["Character.Background.Hometown"],
+    )
+    assert inf.source_fact_paths == ["Character.Background.Hometown"]
+
+
+async def test_source_fact_paths_empty_list_when_not_set(db: aiosqlite.Connection) -> None:
+    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
+    inf = await create_inference(db, character_id=char.id, statement="Test", derivation="d")
+    assert inf.source_fact_paths == []
+
+
+async def test_source_fact_paths_persisted_on_read_back(db: aiosqlite.Connection) -> None:
+    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
+    paths = ["Character.Identity.Age", "Character.Identity.Occupation"]
+    created = await create_inference(
+        db,
+        character_id=char.id,
+        statement="Alice is mid-career",
+        derivation="age+occupation",
+        source_fact_paths=paths,
+    )
+    fetched = await get_inference(db, created.id)
+    assert fetched is not None
+    assert fetched.source_fact_paths == paths

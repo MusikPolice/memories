@@ -463,13 +463,14 @@ async def test_accept_inference_creates_inference_in_db(
         json={
             "statement": "Alice works long hours",
             "derivation": "occupation=surgeon",
-            "source_fact_ids": [1],
+            "source_fact_paths": ["Character.Identity.Occupation"],
             "inference_type": "probabilistic",
         },
     )
     assert response.status_code == 201
     inferences = await get_inferences(db, character.id)
     assert any(i.statement == "Alice works long hours" for i in inferences)
+    assert any("Character.Identity.Occupation" in i.source_fact_paths for i in inferences)
 
 
 async def test_accept_inference_returns_201_with_inference(
@@ -483,7 +484,7 @@ async def test_accept_inference_returns_201_with_inference(
         json={
             "statement": "Alice works long hours",
             "derivation": "occupation=surgeon",
-            "source_fact_ids": [],
+            "source_fact_paths": [],
             "inference_type": "probabilistic",
         },
     )
@@ -522,7 +523,7 @@ async def test_accept_inference_depth_computed_from_source_inference_ids(
         json={
             "statement": "Derived inference",
             "derivation": "from base",
-            "source_fact_ids": [],
+            "source_fact_paths": [],
             "source_inference_ids": [base.id],
             "inference_type": "probabilistic",
         },
@@ -553,7 +554,7 @@ async def test_accept_inference_exceeding_depth_cap_returns_422(
         json={
             "statement": "Would exceed depth cap",
             "derivation": "from at_max",
-            "source_fact_ids": [],
+            "source_fact_paths": [],
             "source_inference_ids": [at_max.id],
             "inference_type": "probabilistic",
         },

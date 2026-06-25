@@ -446,7 +446,7 @@ async def test_new_inference_logical_creates_inference_row(
             "inference_type": "logical",
             "statement": "Born in 1991",
             "derivation": "age=33, year=2024",
-            "source_fact_ids": [],
+            "source_fact_paths": ["Character.Identity.Age"],
             "source_inference_ids": [],
         }
     ]
@@ -470,7 +470,7 @@ async def test_new_inference_probabilistic_does_not_create_db_row(
             "inference_type": "probabilistic",
             "statement": "Works long hours",
             "derivation": "occupation=surgeon",
-            "source_fact_ids": [],
+            "source_fact_paths": ["Character.Identity.Occupation"],
             "source_inference_ids": [],
         }
     ]
@@ -582,7 +582,7 @@ async def test_lazy_inference_depth_computed_before_storing(
             "inference_type": "logical",
             "statement": "Derived from depth-2 inference",
             "derivation": "from existing",
-            "source_fact_ids": [],
+            "source_fact_paths": [],
             "source_inference_ids": [existing.id],
         }
     ]
@@ -616,7 +616,7 @@ async def test_lazy_inference_at_max_depth_is_stored(
             "inference_type": "logical",
             "statement": "At exactly max depth",
             "derivation": "from source",
-            "source_fact_ids": [],
+            "source_fact_paths": [],
             "source_inference_ids": [existing.id],
         }
     ]
@@ -648,7 +648,7 @@ async def test_lazy_inference_exceeding_depth_cap_not_stored(
             "inference_type": "logical",
             "statement": "Exceeds the cap",
             "derivation": "from source",
-            "source_fact_ids": [],
+            "source_fact_paths": [],
             "source_inference_ids": [existing.id],
         }
     ]
@@ -974,32 +974,37 @@ async def test_run_turn_does_not_write_implicit_proposals_to_db(
     assert isinstance(result[-1], ExtractionResult)
 
 
-async def test_run_turn_passes_tier1_and_tier2_facts_to_character(
+async def test_run_turn_extraction_does_not_affect_system_prompt(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
-    """Character system prompt includes extracted/updated fact values."""
+    """Extractor writes to the legacy facts table; the schema-blob prompt is unchanged.
+
+    This is the correct transitional behaviour for Step 3: the extraction service
+    is still running but its output is invisible to the character system prompt
+    until the World Builder (Step 4) writes directly to character_facts.
+    """
     new_fact = {
         "key": "meeting_location",
-        "value": "Chicago",
+        "value": "UniqueExtractedValue_XYZ",
         "category": "setting",
         "mutability": "low",
-        "source_quote": "We're in Chicago",
+        "source_quote": "We're meeting at UniqueExtractedValue_XYZ",
     }
     with respx.mock:
         route = respx.post(_CHAT_URL).mock(
             side_effect=[
                 httpx.Response(200, content=make_extractor_ndjson(new_facts=[new_fact])),
-                _mock_ok("See you in Chicago."),
+                _mock_ok("Got it."),
                 _mock_eval("pass"),
             ]
         )
-        await run_turn(db, session.id, "We're in Chicago!", ollama)
+        await run_turn(db, session.id, "We're at UniqueExtractedValue_XYZ!", ollama)
 
-    # calls[1] is the character LLM call after extraction
     assert len(route.calls) == 3
     char_body = json.loads(route.calls[1].request.content)
     system_content: str = char_body["messages"][0]["content"]
-    assert "Chicago" in system_content
+    # The extracted value must NOT appear in the schema-blob-derived system prompt
+    assert "UniqueExtractedValue_XYZ" not in system_content
 
 
 async def test_run_turn_character_prompt_does_not_include_implicit_proposals(
