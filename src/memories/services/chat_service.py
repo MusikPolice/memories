@@ -8,15 +8,15 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 import aiosqlite
 
 from memories.database import (
     create_fact,
     create_inference,
-    delete_experience,
     get_character,
-    get_fact_rows,
+    get_facts,
     get_inferences,
     get_messages,
     get_session,
@@ -26,7 +26,7 @@ from memories.database import (
     update_fact,
 )
 from memories.exceptions import NotFoundError, SessionEndedError
-from memories.models import Character, Experience, Fact, Inference
+from memories.models import Character, Experience, Inference
 from memories.services.evaluator import (
     ContradictionNotification,
     EvaluatorParseError,
@@ -37,7 +37,6 @@ from memories.services.experience_service import (
     TOP_K_EXPERIENCES,
     add_active_experiences,
     clear_active_experiences,
-    remove_active_experience,
     retrieve_experiences,
 )
 from memories.services.extraction_service import (
@@ -73,7 +72,7 @@ async def run_contradiction_loop(
     model: str,
     base_messages: list[dict[str, str]],
     character: Character,
-    facts: list[Fact],
+    facts_blob: dict[str, Any],
     user_content: str,
     ollama: OllamaClient,
     think: bool = False,
@@ -116,7 +115,7 @@ async def run_contradiction_loop(
         try:
             ev = await run_evaluator(
                 character,
-                facts,
+                facts_blob,
                 user_content,
                 content,
                 ollama,
@@ -177,9 +176,9 @@ async def run_turn(
         raise SessionEndedError(f"Session {session_id} has ended")
 
     # Parallelize all DB reads that depend only on session, not on each other.
-    character, facts, inferences, history, turn_id = await asyncio.gather(
+    character, facts_blob, inferences, history, turn_id = await asyncio.gather(
         get_character(db, session.character_id),
-        get_fact_rows(db, session.character_id),
+        get_facts(db, session.character_id),
         get_inferences(db, session.character_id),
         get_messages(db, session_id),
         next_turn_id(db, session_id),
@@ -188,10 +187,13 @@ async def run_turn(
 
     # --- Parallel: experience retrieval (embed) + fact extraction (LLM) ---
     # Neither depends on the other: embed only needs user_content; extraction
-    # needs facts/inferences which are already loaded above.
+    # needs inferences which are already loaded above.
     async def _run_extraction_safe() -> ExtractionResult:
         try:
-            return await run_fact_extractor(user_content, character, facts, inferences, ollama)
+            # Pass empty facts list: extractor writes to the legacy facts table
+            # which is invisible to the schema-constrained system prompt.
+            # The extractor is replaced by the World Builder in Step 4.
+            return await run_fact_extractor(user_content, character, [], inferences, ollama)
         except (ExtractionParseError, OllamaConnectionError) as exc:
             _log.warning("fact extraction failed: %s", exc)
             return ExtractionResult()
@@ -209,7 +211,9 @@ async def run_turn(
         add_active_experiences(session_id, active)
         _log.info("session=%d turn=%d retrieved %d experience(s)", session_id, turn_id, len(active))
 
-    # Process extraction results (DB writes happen sequentially after gather)
+    # Process extraction results (DB writes happen sequentially after gather).
+    # These write to the legacy facts table; they do not affect the system prompt
+    # (which reads from character_facts blob). This gap is resolved in Step 4.
     for extracted in extraction_result.new_facts:
         try:
             created = await create_fact(
@@ -230,10 +234,8 @@ async def run_turn(
             _log.warning(
                 "extraction tier2: fact_id=%d not found, skipping update", fact_upd.fact_id
             )
-    if extraction_result.new_facts or extraction_result.fact_updates:
-        facts = await get_fact_rows(db, session.character_id)
 
-    system_prompt = build_system_prompt(character, facts, inferences, active or None)
+    system_prompt = build_system_prompt(character, facts_blob, inferences, active or None)
 
     await store_message(
         db,
@@ -255,7 +257,7 @@ async def run_turn(
         model,
         base_messages,
         character,
-        facts,
+        facts_blob,
         user_content,
         ollama,
         think=think,
@@ -263,28 +265,6 @@ async def run_turn(
         experiences=active or None,
         on_event=on_event,
     )
-
-    # Handle experience_update verdict: delete contradicted experiences
-    if eval_result.verdict == "experience_update":
-        if not eval_result.experience_updates:
-            _log.warning(
-                "session=%d experience_update verdict returned no experience_updates",
-                session_id,
-            )
-        for upd in eval_result.experience_updates:
-            try:
-                await delete_experience(db, upd.contradicted_experience_id)
-                remove_active_experience(session_id, upd.contradicted_experience_id)
-                _log.info(
-                    "session=%d deleted contradicted experience %d",
-                    session_id,
-                    upd.contradicted_experience_id,
-                )
-            except NotFoundError:
-                _log.warning(
-                    "experience_update referenced unknown experience %d",
-                    upd.contradicted_experience_id,
-                )
 
     await store_message(
         db,
@@ -296,12 +276,9 @@ async def run_turn(
     )
 
     # Auto-promote logical inferences with depth cap.
-    # Runs for both "new_inference_logical" and "experience_update" (orthogonal signals).
-    # Only logical inferences are auto-promoted; probabilistic ones require user review
-    # and are silently discarded when they appear alongside experience_update.
     # Append each stored inference to the snapshot so subsequent depth
     # computations in the same batch see the correct chain depth.
-    if eval_result.verdict in ("new_inference_logical", "experience_update"):
+    if eval_result.verdict == "new_inference_logical":
         for inf in eval_result.new_inferences:
             if inf.inference_type != "logical":
                 continue
@@ -313,7 +290,6 @@ async def run_turn(
                 character_id=session.character_id,
                 statement=inf.statement,
                 derivation=inf.derivation,
-                source_fact_ids=inf.source_fact_ids,
                 source_inference_ids=inf.source_inference_ids,
                 inference_type=inf.inference_type,
                 depth=depth,

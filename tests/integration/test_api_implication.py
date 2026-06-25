@@ -220,38 +220,6 @@ async def test_accept_implication_duplicate_key_updates_existing_fact(
     assert siblings.value == "two brothers"
 
 
-async def test_accept_implication_regen_ungrounded_returns_ungrounded_flag(
-    client: AsyncClient,
-    character: Character,
-    implication_session: tuple[Session, int],
-) -> None:
-    """If the regenerated response is itself ungrounded, the endpoint returns ungrounded=True."""
-    session, turn_id = implication_session
-    second_violation = {
-        "type": "implication",
-        "description": "implied a favourite colour",
-        "suggested_fact": {"key": "favourite_colour", "value": "blue"},
-    }
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(
-            side_effect=[
-                httpx.Response(200, content=make_ollama_ndjson("I like blue things.")),
-                httpx.Response(
-                    200,
-                    content=make_evaluator_ndjson("implication", violations=[second_violation]),
-                ),
-            ]
-        )
-        response = await client.post(
-            f"/api/sessions/{session.id}/turns/{turn_id}/accept-implication",
-            json={"key": "siblings", "value": "none"},
-        )
-    assert response.status_code == 200
-    data = response.json()
-    assert data.get("ungrounded") is True
-    assert "violations" in data
-
-
 async def test_accept_implication_regeneration_includes_inferences(
     db: aiosqlite.Connection,
     client: AsyncClient,

@@ -37,7 +37,6 @@ from memories.database import (
     create_inference,
     end_session,
     get_decisions,
-    get_experiences,
     get_fact_rows,
     get_inferences,
     get_messages,
@@ -154,21 +153,6 @@ async def test_new_user_message_appended_last(
     body = json.loads(route.calls[1].request.content)
     assert body["messages"][-1]["role"] == "user"
     assert body["messages"][-1]["content"] == "My specific question"
-
-
-async def test_facts_reflected_in_system_message(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    await create_fact(db, character_id=character.id, key="birthplace", value="Reykjavik")
-
-    with respx.mock:
-        route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
-        await run_turn(db, session.id, "Where are you from?", ollama)
-
-    body = json.loads(route.calls[1].request.content)
-    system_content: str = body["messages"][0]["content"]
-    assert "birthplace" in system_content
-    assert "Reykjavik" in system_content
 
 
 # ---------------------------------------------------------------------------
@@ -858,85 +842,6 @@ async def test_run_turn_active_set_reflects_current_turn_only(
     assert exp1.id not in active_ids  # does not align — not carried over from turn 1
 
 
-async def test_run_turn_experience_update_deletes_experience_from_db(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    exp = await _insert_experience(db, character.id, session.id)
-    exp_updates = [{"contradicted_experience_id": exp.id, "description": "Now in New York"}]
-
-    with respx.mock:
-        respx.post(_EMBED_URL).mock(
-            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
-        )
-        respx.post(_CHAT_URL).mock(
-            side_effect=[
-                _mock_extractor(),
-                _mock_ok("We are in New York."),
-                httpx.Response(
-                    200,
-                    content=make_evaluator_ndjson(
-                        "experience_update", experience_updates=exp_updates
-                    ),
-                ),
-            ]
-        )
-        await run_turn(db, session.id, "Where are we?", ollama)
-
-    remaining = await get_experiences(db, character.id)
-    assert not any(e.id == exp.id for e in remaining)
-
-
-async def test_run_turn_experience_update_removes_from_active_set(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    exp = await _insert_experience(db, character.id, session.id)
-    exp_updates = [{"contradicted_experience_id": exp.id, "description": "Moved to New York"}]
-
-    with respx.mock:
-        respx.post(_EMBED_URL).mock(
-            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
-        )
-        respx.post(_CHAT_URL).mock(
-            side_effect=[
-                _mock_extractor(),
-                _mock_ok("Now in New York."),
-                httpx.Response(
-                    200,
-                    content=make_evaluator_ndjson(
-                        "experience_update", experience_updates=exp_updates
-                    ),
-                ),
-            ]
-        )
-        await run_turn(db, session.id, "Location?", ollama)
-
-    active = get_active_experiences(session.id)
-    assert not any(e.id == exp.id for e in active)
-
-
-async def test_run_turn_experience_update_invalid_id_logs_warning_but_does_not_raise(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    exp_updates = [{"contradicted_experience_id": 99999, "description": "Non-existent"}]
-
-    with respx.mock:
-        respx.post(_EMBED_URL).mock(return_value=httpx.Response(200, content=make_embed_response()))
-        respx.post(_CHAT_URL).mock(
-            side_effect=[
-                _mock_extractor(),
-                _mock_ok("Response."),
-                httpx.Response(
-                    200,
-                    content=make_evaluator_ndjson(
-                        "experience_update", experience_updates=exp_updates
-                    ),
-                ),
-            ]
-        )
-        # Should not raise even though experience ID doesn't exist
-        await run_turn(db, session.id, "Hello", ollama)
-
-
 async def test_run_turn_passes_active_experiences_to_evaluator(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
@@ -952,85 +857,6 @@ async def test_run_turn_passes_active_experiences_to_evaluator(
     eval_body = json.loads(route.calls[2].request.content)
     eval_prompt = eval_body["messages"][1]["content"]
     assert "User lives in Chicago" in eval_prompt
-
-
-async def test_run_turn_experience_update_promotes_logical_inferences(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    exp = await _insert_experience(db, character.id, session.id)
-    new_inferences = [
-        {
-            "inference_type": "logical",
-            "statement": "Character is moving cities",
-            "derivation": "mentioned New York",
-            "source_fact_ids": [],
-            "source_inference_ids": [],
-        }
-    ]
-    exp_updates = [{"contradicted_experience_id": exp.id, "description": "Now in New York"}]
-
-    with respx.mock:
-        respx.post(_EMBED_URL).mock(
-            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
-        )
-        respx.post(_CHAT_URL).mock(
-            side_effect=[
-                _mock_extractor(),
-                _mock_ok("Now in New York."),
-                httpx.Response(
-                    200,
-                    content=make_evaluator_ndjson(
-                        "experience_update",
-                        new_inferences=new_inferences,
-                        experience_updates=exp_updates,
-                    ),
-                ),
-            ]
-        )
-        await run_turn(db, session.id, "Where are we?", ollama)
-
-    stored = await get_inferences(db, character.id)
-    assert any("Character is moving cities" in i.statement for i in stored)
-
-
-async def test_run_turn_experience_update_does_not_promote_probabilistic_inferences(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    """Probabilistic inferences are silently discarded when verdict is experience_update."""
-    exp = await _insert_experience(db, character.id, session.id)
-    new_inferences = [
-        {
-            "inference_type": "probabilistic",
-            "statement": "Character seems nostalgic about Chicago",
-            "derivation": "tone of response",
-            "source_fact_ids": [],
-            "source_inference_ids": [],
-        }
-    ]
-    exp_updates = [{"contradicted_experience_id": exp.id, "description": "Now in New York"}]
-
-    with respx.mock:
-        respx.post(_EMBED_URL).mock(
-            return_value=httpx.Response(200, content=make_embed_response([1.0, 0.0, 0.0, 0.0]))
-        )
-        respx.post(_CHAT_URL).mock(
-            side_effect=[
-                _mock_extractor(),
-                _mock_ok("Now in New York."),
-                httpx.Response(
-                    200,
-                    content=make_evaluator_ndjson(
-                        "experience_update",
-                        new_inferences=new_inferences,
-                        experience_updates=exp_updates,
-                    ),
-                ),
-            ]
-        )
-        await run_turn(db, session.id, "Where are we?", ollama)
-
-    stored = await get_inferences(db, character.id)
-    assert not any("nostalgic about Chicago" in i.statement for i in stored)
 
 
 async def test_run_turn_returns_five_tuple_with_scores_dict(

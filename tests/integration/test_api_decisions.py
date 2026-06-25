@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import aiosqlite
 import httpx
 import respx
 from httpx import AsyncClient
@@ -83,28 +82,3 @@ async def test_get_decisions_ordered_by_turn_id_desc(
 async def test_get_decisions_unknown_session_returns_404(client: AsyncClient) -> None:
     response = await client.get("/api/sessions/9999/decisions")
     assert response.status_code == 404
-
-
-async def test_get_decisions_includes_violations_for_implication(
-    db: aiosqlite.Connection,
-    client: AsyncClient,
-    character: Character,
-    session: Session,
-) -> None:
-    violations = [
-        {"type": "implication", "description": "implied a sibling", "suggested_fact": None}
-    ]
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(
-            side_effect=[
-                httpx.Response(200, content=make_extractor_ndjson()),
-                httpx.Response(200, content=make_ollama_ndjson("I have a sister.")),
-                httpx.Response(
-                    200, content=make_evaluator_ndjson("implication", violations=violations)
-                ),
-            ]
-        )
-        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Family?"})
-    response = await client.get(f"/api/sessions/{session.id}/decisions")
-    data = response.json()
-    assert data[0]["tool_args"]["verdict"] == "implication"

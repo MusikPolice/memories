@@ -16,6 +16,7 @@ from memories.database import (
     get_fact,
     get_fact_by_category_key,
     get_fact_rows,
+    get_facts,
     get_inferences,
     get_messages,
     get_session,
@@ -113,9 +114,9 @@ async def accept_implication(
     # Reload facts and rebuild context for regeneration
     character = await get_character(db, session.character_id)
     assert character is not None
-    facts = await get_fact_rows(db, session.character_id)
+    facts_blob = await get_facts(db, session.character_id)
     inferences = await get_inferences(db, session.character_id)
-    system_prompt = build_system_prompt(character, facts, inferences)
+    system_prompt = build_system_prompt(character, facts_blob, inferences)
 
     # Reconstruct conversation history up to (but not including) this turn's assistant message
     history_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
@@ -134,7 +135,7 @@ async def accept_implication(
         model,
         history_messages,
         character,
-        facts,
+        facts_blob,
         user_text,
         ollama,
         max_retries=MAX_CONTRADICTION_RETRIES,

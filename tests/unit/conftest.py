@@ -59,7 +59,6 @@ def make_evaluator_ndjson(
     new_inferences: list[dict[str, Any]] | None = None,
     violations: list[dict[str, Any]] | None = None,
     decision_log: str = "Response is grounded and clean.",
-    experience_updates: list[dict[str, Any]] | None = None,
 ) -> bytes:
     """Build a minimal Ollama NDJSON body whose content is an evaluator JSON verdict.
 
@@ -73,8 +72,6 @@ def make_evaluator_ndjson(
         "violations": violations or [],
         "decision_log": decision_log,
     }
-    if experience_updates is not None:
-        data["experience_updates"] = experience_updates
     return make_ollama_ndjson(json.dumps(data))
 
 

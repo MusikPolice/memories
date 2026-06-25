@@ -1,65 +1,91 @@
 """System prompt construction for the character LLM call."""
 
-from memories.models import Character, Experience, Fact, Inference
+from __future__ import annotations
 
-_CATEGORY_ORDER = ["user", "character", "setting"]
+from typing import Any
 
-_HEADERS = {
-    "user": "## Facts About The User",
-    "character": "## Facts About You (Character)",
-    "setting": "## Setting",
-}
+from memories.models import Character, Experience, Inference
+from memories.schema_loader import load_schema
 
-_DESCRIPTIONS = {
-    "user": "These are established truths about the person you are talking with.",
-    "character": (
-        "These are established truths about you. Never contradict them and never invent\n"
-        "details that are not listed here."
-    ),
-    "setting": "These are established truths about the current environment.",
-}
+_WORLD_STATE_PREAMBLE = """\
+## World State
+
+The following describes everything known about the world right now.
+Facts are organised by category and grouped by topic.
+
+Mutability levels:
+- IMMUTABLE: fixed permanently once set. You may not invent or change these.
+  If a value is missing and you need it, call require_fact() rather than making one up.
+- MUTABLE: stable but can change with narrative context. If your response implies a
+  change, the evaluator will surface it to the user for approval.
+- FLUID: expected to change freely within a session. Update via the evaluator naturally.
+
+For ENUM facts, only the listed values are valid."""
 
 
-def _fact_line(fact: Fact) -> str:
-    if fact.mutability == "low":
-        annotation = " [low-mutability — changes infrequently and with context]"
-    elif fact.mutability == "high":
-        annotation = " [fluid — may change within a session]"
-    else:
-        annotation = ""
-    return f"{fact.key}: {fact.value}{annotation}"
+def _lookup_blob_value(
+    blob: dict[str, Any],
+    path_parts: list[str],
+) -> str | int | None:
+    """Walk the blob following path_parts; return the leaf Value or None if absent."""
+    node: Any = blob
+    for part in path_parts:
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    if not isinstance(node, dict):
+        return None
+    return node.get("Value")
+
+
+def _render_schema_node(
+    schema_node: dict[str, Any],
+    blob_node: dict[str, Any],
+    prefix: str,
+    lines: list[str],
+) -> None:
+    """Recursively walk schema_node, rendering leaves into lines."""
+    for key, child in schema_node.items():
+        path = f"{prefix}.{key}" if prefix else key
+        if "Type" in child:
+            mutability = child["Mutability"].upper()
+            description = child["Description"]
+            blob_leaf = blob_node.get(key, {}) if isinstance(blob_node, dict) else {}
+            value = blob_leaf.get("Value") if isinstance(blob_leaf, dict) else None
+
+            lines.append(f"[{mutability}] {path} — {description}")
+            if value is None:
+                lines.append("  Value: (not set)")
+            else:
+                lines.append(f"  Value: {value}")
+            if child["Type"] == "Enum":
+                constraint = " | ".join(child["Constraint"])
+                lines.append(f"  Valid values: {constraint}")
+            lines.append("")
+        else:
+            blob_child = blob_node.get(key, {}) if isinstance(blob_node, dict) else {}
+            _render_schema_node(child, blob_child, path, lines)
 
 
 def build_system_prompt(
     character: Character,
-    facts: list[Fact],
+    facts_blob: dict[str, Any],
     inferences: list[Inference] | None = None,
     experiences: list[Experience] | None = None,
 ) -> str:
     lines: list[str] = [
         f"You are {character.name}. Stay in character at all times.",
         "",
+        _WORLD_STATE_PREAMBLE,
+        "",
     ]
 
-    if not facts:
-        lines.append("## Your Facts")
-        lines.append("No facts have been established yet. Do not invent biographical details.")
-    else:
-        by_category: dict[str, list[Fact]] = {cat: [] for cat in _CATEGORY_ORDER}
-        for fact in sorted(facts, key=lambda f: f.id):
-            bucket = fact.category if fact.category in by_category else "character"
-            by_category[bucket].append(fact)
-
-        for cat in _CATEGORY_ORDER:
-            cat_facts = by_category[cat]
-            if not cat_facts:
-                continue
-            lines.append(_HEADERS[cat])
-            lines.append(_DESCRIPTIONS[cat])
-            lines.append("")
-            for fact in cat_facts:
-                lines.append(_fact_line(fact))
-            lines.append("")
+    schema = load_schema()
+    for section_key in schema:
+        lines.append(f"### {section_key}")
+        lines.append("")
+        section_blob = facts_blob.get(section_key, {})
+        _render_schema_node(schema[section_key], section_blob, section_key, lines)
 
     if inferences:
         lines.append("## Your Inferences")

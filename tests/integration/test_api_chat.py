@@ -15,10 +15,10 @@ from memories.database import (
     create_fact,
     create_inference,
     get_decisions,
-    get_experiences,
     get_fact_rows,
     get_inferences,
     get_messages,
+    set_facts,
 )
 from memories.models import Character, Session
 from tests.unit.conftest import make_evaluator_ndjson, make_extractor_ndjson, make_ollama_ndjson
@@ -157,24 +157,6 @@ async def test_send_message_stores_assistant_response(
     assert any(m.role == "assistant" and m.content == "Character says hello." for m in messages)
 
 
-async def test_ollama_receives_system_message_with_facts(
-    db: aiosqlite.Connection,
-    client: AsyncClient,
-    character: Character,
-    session: Session,
-) -> None:
-    await create_fact(db, character_id=character.id, key="birthplace", value="Reykjavik")
-    with respx.mock:
-        route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
-        await client.post(
-            f"/api/sessions/{session.id}/messages", json={"content": "Where am I from?"}
-        )
-    body = json.loads(route.calls[1].request.content)
-    system_content: str = body["messages"][0]["content"]
-    assert "birthplace" in system_content
-    assert "Reykjavik" in system_content
-
-
 async def test_ollama_receives_prior_history(
     client: AsyncClient, character: Character, session: Session
 ) -> None:
@@ -307,77 +289,6 @@ async def test_send_message_pass_verdict_decision_stored(
     decisions = await get_decisions(db, session.id)
     assert len(decisions) == 1
     assert decisions[0].tool_args["verdict"] == "pass"
-
-
-async def test_send_message_implication_verdict_emits_ungrounded_message(
-    client: AsyncClient, character: Character, session: Session
-) -> None:
-    violations = [
-        {
-            "type": "implication",
-            "description": "implied a sibling",
-            "suggested_fact": {"key": "siblings", "value": "one"},
-        }
-    ]
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(
-            side_effect=_mock_turn("I have a sister.", "implication", violations=violations)
-        )
-        response = await client.post(
-            f"/api/sessions/{session.id}/messages", json={"content": "Family?"}
-        )
-    events = _parse_sse(response.text)
-    msg_event = next(e for e in events if e.get("event") == "message")
-    data = json.loads(msg_event["data"])
-    assert data.get("ungrounded") is True
-
-
-async def test_send_message_implication_verdict_emits_sidechannel(
-    client: AsyncClient, character: Character, session: Session
-) -> None:
-    violations = [
-        {
-            "type": "implication",
-            "description": "implied a sibling",
-            "suggested_fact": {"key": "siblings", "value": "one"},
-        }
-    ]
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(
-            side_effect=_mock_turn("I have a sister.", "implication", violations=violations)
-        )
-        response = await client.post(
-            f"/api/sessions/{session.id}/messages", json={"content": "Family?"}
-        )
-    events = _parse_sse(response.text)
-    sidechannel_events = [e for e in events if e.get("event") == "sidechannel"]
-    assert len(sidechannel_events) == 1
-    data = json.loads(sidechannel_events[0]["data"])
-    assert data["type"] == "implication"
-
-
-async def test_send_message_implication_sidechannel_contains_violations(
-    client: AsyncClient, character: Character, session: Session
-) -> None:
-    violations = [
-        {
-            "type": "implication",
-            "description": "implied a sibling",
-            "suggested_fact": {"key": "siblings", "value": "one"},
-        }
-    ]
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(
-            side_effect=_mock_turn("I have a sister.", "implication", violations=violations)
-        )
-        response = await client.post(
-            f"/api/sessions/{session.id}/messages", json={"content": "Family?"}
-        )
-    events = _parse_sse(response.text)
-    sc = next(e for e in events if e.get("event") == "sidechannel")
-    data = json.loads(sc["data"])
-    assert "violations" in data
-    assert data["violations"][0]["suggested_fact"]["key"] == "siblings"
 
 
 async def test_send_message_contradiction_emits_sidechannel_before_message(
@@ -815,16 +726,58 @@ async def test_chat_system_prompt_groups_user_and_character_facts(
     assert "Character" in system_prompt
 
 
-async def test_chat_system_prompt_omits_empty_setting_section(
+async def test_chat_system_prompt_renders_all_schema_sections(
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """Schema-driven prompt always renders all top-level sections, even with no facts set."""
+    with respx.mock:
+        route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
+        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
+
+    char_call_body = json.loads(route.calls[1].request.content)
+    system_prompt = char_call_body["messages"][0]["content"]
+    assert "### Character" in system_prompt
+    assert "### User" in system_prompt
+    assert "### Setting" in system_prompt
+
+
+async def test_chat_system_prompt_shows_blob_fact_value(
     db: aiosqlite.Connection,
     client: AsyncClient,
     character: Character,
     session: Session,
 ) -> None:
-    await create_fact(
-        db, character_id=character.id, key="occupation", value="surgeon", category="character"
+    """A value written to the character_facts blob appears in the schema-rendered prompt."""
+    await set_facts(
+        db,
+        character_id=character.id,
+        blob={"Character": {"Identity": {"Name": {"Value": "Alice Thornton"}}}},
     )
-    # No setting facts
+
+    with respx.mock:
+        route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
+        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Who are you?"})
+
+    char_call_body = json.loads(route.calls[1].request.content)
+    system_prompt = char_call_body["messages"][0]["content"]
+    assert "Character.Identity.Name" in system_prompt
+    assert "Alice Thornton" in system_prompt
+
+
+async def test_chat_system_prompt_annotates_immutable_fact(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    """An IMMUTABLE schema leaf renders with the [IMMUTABLE] tag."""
+    await set_facts(
+        db,
+        character_id=character.id,
+        blob={"Character": {"Identity": {"Name": {"Value": "Alice"}}}},
+    )
 
     with respx.mock:
         route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
@@ -832,19 +785,20 @@ async def test_chat_system_prompt_omits_empty_setting_section(
 
     char_call_body = json.loads(route.calls[1].request.content)
     system_prompt = char_call_body["messages"][0]["content"]
-    lines = system_prompt.split("\n")
-    setting_headers = [ln for ln in lines if ln.startswith("##") and "Setting" in ln]
-    assert len(setting_headers) == 0
+    assert "[IMMUTABLE]" in system_prompt
 
 
-async def test_chat_system_prompt_annotates_high_mutability_fact(
+async def test_chat_system_prompt_annotates_fluid_fact(
     db: aiosqlite.Connection,
     client: AsyncClient,
     character: Character,
     session: Session,
 ) -> None:
-    await create_fact(
-        db, character_id=character.id, key="mood", value="cheerful", mutability="high"
+    """A FLUID schema leaf renders with the [FLUID] tag."""
+    await set_facts(
+        db,
+        character_id=character.id,
+        blob={"Setting": {"Location": {"Weather": {"Value": "Clear"}}}},
     )
 
     with respx.mock:
@@ -853,59 +807,16 @@ async def test_chat_system_prompt_annotates_high_mutability_fact(
 
     char_call_body = json.loads(route.calls[1].request.content)
     system_prompt = char_call_body["messages"][0]["content"]
-    assert "[fluid" in system_prompt
-
-
-async def test_chat_system_prompt_annotates_low_mutability_fact(
-    db: aiosqlite.Connection,
-    client: AsyncClient,
-    character: Character,
-    session: Session,
-) -> None:
-    await create_fact(
-        db, character_id=character.id, key="clothing", value="dark coat", mutability="low"
-    )
-
-    with respx.mock:
-        route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
-        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
-
-    char_call_body = json.loads(route.calls[1].request.content)
-    system_prompt = char_call_body["messages"][0]["content"]
-    assert "[low-mutability" in system_prompt
+    assert "[FLUID]" in system_prompt
 
 
 # ---------------------------------------------------------------------------
-# Phase 5 additions — experience retrieval, active set, and experience_update
+# Phase 5 additions — experience retrieval and active set
 # ---------------------------------------------------------------------------
 
 
 def _mock_embed_ok() -> httpx.Response:
     return httpx.Response(200, json={"embeddings": [_EMBED_VEC]})
-
-
-def _mock_turn_with_embed(
-    character_content: str = "I am fine.",
-    evaluator_verdict: str = "pass",
-    new_inferences: list[dict] | None = None,
-    violations: list[dict] | None = None,
-    experience_updates: list[dict] | None = None,
-) -> tuple[list[httpx.Response], httpx.Response]:
-    """Return (chat_side_effects, embed_response) for a turn that triggers embed."""
-    chat_responses = [
-        _mock_extractor(),
-        httpx.Response(200, content=make_ollama_ndjson(character_content)),
-        httpx.Response(
-            200,
-            content=make_evaluator_ndjson(
-                evaluator_verdict,
-                new_inferences,
-                violations,
-                experience_updates=experience_updates,
-            ),
-        ),
-    ]
-    return chat_responses, _mock_embed_ok()
 
 
 async def test_send_message_no_embed_call_when_no_experiences(
@@ -961,169 +872,6 @@ async def test_send_message_experience_appears_in_system_prompt(
     body = json.loads(chat_route.calls[1].request.content)
     system_content = body["messages"][0]["content"]
     assert "User lives in Chicago" in system_content
-
-
-async def test_send_message_experience_update_verdict_deletes_experience(
-    db: aiosqlite.Connection, client: AsyncClient, character: Character, session: Session
-) -> None:
-    """Evaluator returns experience_update → experience row absent from DB after SSE."""
-    blob = _embedding_to_blob(_EMBED_VEC)
-    exp = await create_experience(
-        db,
-        character_id=character.id,
-        session_id=session.id,
-        statement="Currently in Chicago",
-        source="told_by_user",
-        embedding=blob,
-    )
-    exp_updates = [{"contradicted_experience_id": exp.id, "description": "Character is now in NY"}]
-    chat_responses, embed_resp = _mock_turn_with_embed(
-        "It's good to be back in New York.",
-        evaluator_verdict="experience_update",
-        experience_updates=exp_updates,
-    )
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=chat_responses)
-        respx.post(_EMBED_URL).mock(return_value=embed_resp)
-        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Where are we?"})
-    remaining = await get_experiences(db, character.id)
-    assert not any(e.id == exp.id for e in remaining)
-
-
-async def test_send_message_experience_update_emits_sidechannel_event(
-    db: aiosqlite.Connection, client: AsyncClient, character: Character, session: Session
-) -> None:
-    """SSE stream contains sidechannel event with type: experience_update."""
-    blob = _embedding_to_blob(_EMBED_VEC)
-    exp = await create_experience(
-        db,
-        character_id=character.id,
-        session_id=session.id,
-        statement="Currently in Chicago",
-        source="told_by_user",
-        embedding=blob,
-    )
-    exp_updates = [{"contradicted_experience_id": exp.id, "description": "Now in NY"}]
-    chat_responses, embed_resp = _mock_turn_with_embed(
-        "Good to be in New York.",
-        evaluator_verdict="experience_update",
-        experience_updates=exp_updates,
-    )
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=chat_responses)
-        respx.post(_EMBED_URL).mock(return_value=embed_resp)
-        response = await client.post(
-            f"/api/sessions/{session.id}/messages", json={"content": "Where are we?"}
-        )
-    events = _parse_sse(response.text)
-    sc_events = [e for e in events if e.get("event") == "sidechannel"]
-    assert any(json.loads(e["data"]).get("type") == "experience_update" for e in sc_events)
-
-
-async def test_send_message_experience_update_sidechannel_has_contradicted_id(
-    db: aiosqlite.Connection, client: AsyncClient, character: Character, session: Session
-) -> None:
-    """Sidechannel event payload contains contradicted_experience_id."""
-    blob = _embedding_to_blob(_EMBED_VEC)
-    exp = await create_experience(
-        db,
-        character_id=character.id,
-        session_id=session.id,
-        statement="Currently in Chicago",
-        source="told_by_user",
-        embedding=blob,
-    )
-    exp_updates = [{"contradicted_experience_id": exp.id, "description": "Now in NY"}]
-    chat_responses, embed_resp = _mock_turn_with_embed(
-        "Good to be in New York.",
-        evaluator_verdict="experience_update",
-        experience_updates=exp_updates,
-    )
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=chat_responses)
-        respx.post(_EMBED_URL).mock(return_value=embed_resp)
-        response = await client.post(
-            f"/api/sessions/{session.id}/messages", json={"content": "Where are we?"}
-        )
-    events = _parse_sse(response.text)
-    sc = next(
-        e
-        for e in events
-        if e.get("event") == "sidechannel"
-        and json.loads(e["data"]).get("type") == "experience_update"
-    )
-    payload = json.loads(sc["data"])
-    assert any(
-        u["contradicted_experience_id"] == exp.id for u in payload.get("experience_updates", [])
-    )
-
-
-async def test_send_message_experience_update_sidechannel_after_message_before_done(
-    db: aiosqlite.Connection, client: AsyncClient, character: Character, session: Session
-) -> None:
-    """experience_update sidechannel appears after message event and before done event."""
-    blob = _embedding_to_blob(_EMBED_VEC)
-    exp = await create_experience(
-        db,
-        character_id=character.id,
-        session_id=session.id,
-        statement="Currently in Chicago",
-        source="told_by_user",
-        embedding=blob,
-    )
-    exp_updates = [{"contradicted_experience_id": exp.id, "description": "Now in NY"}]
-    chat_responses, embed_resp = _mock_turn_with_embed(
-        "Good to be in New York.",
-        evaluator_verdict="experience_update",
-        experience_updates=exp_updates,
-    )
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=chat_responses)
-        respx.post(_EMBED_URL).mock(return_value=embed_resp)
-        response = await client.post(
-            f"/api/sessions/{session.id}/messages", json={"content": "Where are we?"}
-        )
-    events = _parse_sse(response.text)
-    msg_idx = next(i for i, e in enumerate(events) if e.get("event") == "message")
-    done_idx = next(i for i, e in enumerate(events) if e.get("event") == "done")
-    sc_idx = next(
-        i
-        for i, e in enumerate(events)
-        if e.get("event") == "sidechannel"
-        and json.loads(e["data"]).get("type") == "experience_update"
-    )
-    assert msg_idx < sc_idx < done_idx
-
-
-async def test_send_message_experience_update_delivers_message(
-    db: aiosqlite.Connection, client: AsyncClient, character: Character, session: Session
-) -> None:
-    """Response message is still emitted when experience_update is the verdict."""
-    blob = _embedding_to_blob(_EMBED_VEC)
-    exp = await create_experience(
-        db,
-        character_id=character.id,
-        session_id=session.id,
-        statement="Currently in Chicago",
-        source="told_by_user",
-        embedding=blob,
-    )
-    exp_updates = [{"contradicted_experience_id": exp.id, "description": "Now in NY"}]
-    chat_responses, embed_resp = _mock_turn_with_embed(
-        "Good to be in New York.",
-        evaluator_verdict="experience_update",
-        experience_updates=exp_updates,
-    )
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=chat_responses)
-        respx.post(_EMBED_URL).mock(return_value=embed_resp)
-        response = await client.post(
-            f"/api/sessions/{session.id}/messages", json={"content": "Where are we?"}
-        )
-    events = _parse_sse(response.text)
-    msg_events = [e for e in events if e.get("event") == "message"]
-    assert len(msg_events) == 1
-    assert json.loads(msg_events[0]["data"])["content"] == "Good to be in New York."
 
 
 async def test_send_message_message_event_includes_active_experience_ids(

@@ -119,15 +119,6 @@ async def send_message(
             }
             yield f"event: sidechannel\ndata: {json.dumps(sc_payload)}\n\n"
 
-        # Emit sidechannel for experience_update verdict
-        if eval_result.verdict == "experience_update":
-            exp_sc_payload: dict[str, object] = {
-                "type": "experience_update",
-                "turn_id": turn_id,
-                "experience_updates": [u.model_dump() for u in eval_result.experience_updates],
-            }
-            yield f"event: sidechannel\ndata: {json.dumps(exp_sc_payload)}\n\n"
-
         # Emit extraction_applied sidechannel for Tier 1/2 auto-applied facts
         if extraction_result.applied_fact_ids or extraction_result.fact_updates:
             ext_payload: dict[str, object] = {

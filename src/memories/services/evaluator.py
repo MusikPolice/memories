@@ -12,17 +12,16 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from memories.models import Character, Experience, Fact, Inference
+from memories.models import Character, Experience, Inference
+from memories.schema_loader import _collect_leaves, load_schema, render_schema_for_prompt
 from memories.services.ollama_client import OllamaClient
 
 _VALID_VERDICTS = frozenset(
     {
         "pass",
         "contradiction",
-        "implication",
         "new_inference_logical",
         "new_inference_probabilistic",
-        "experience_update",
     }
 )
 
@@ -35,14 +34,13 @@ class NewInference(BaseModel):
     inference_type: str
     statement: str
     derivation: str
-    source_fact_ids: list[int] = []
+    source_fact_paths: list[str] = []
     source_inference_ids: list[int] = []
 
 
 class Violation(BaseModel):
     type: str
     description: str
-    suggested_fact: dict[str, str] | None = None
 
 
 class ContradictionNotification(BaseModel):
@@ -50,48 +48,18 @@ class ContradictionNotification(BaseModel):
     description: str
 
 
-class ExperienceUpdate(BaseModel):
-    contradicted_experience_id: int
-    description: str
-
-
 class EvaluatorResult(BaseModel):
     verdict: str
     new_inferences: list[NewInference] = []
     violations: list[Violation] = []
-    experience_updates: list[ExperienceUpdate] = []
     decision_log: str = ""
     contradiction_notifications: list[ContradictionNotification] = []
     max_retries_exceeded: bool = False
 
 
-def _violation_duplicates_existing_fact(
-    suggested_fact: dict[str, str] | None, facts: list[Fact]
-) -> bool:
-    """Return True when suggested_fact is already captured by an existing Fact.
-
-    Catches two cases:
-    - Exact match: the evaluator re-proposes a key+value that already exists verbatim.
-    - Subset match: the suggested value is a component of a composite fact value
-      (e.g. 'oak desk' ⊆ 'oak desk, ergonomic chair, couch').
-    """
-    if not suggested_fact:
-        return False
-    key = suggested_fact.get("key", "").strip().lower()
-    value = suggested_fact.get("value", "").strip().lower()
-    if not key or not value:
-        return False
-    for fact in facts:
-        if fact.key.strip().lower() == key:
-            existing = fact.value.strip().lower()
-            if value == existing or value in existing:
-                return True
-    return False
-
-
 def build_evaluator_prompt(
     character: Character,
-    facts: list[Fact],
+    facts_blob: dict[str, Any],
     user_message: str,
     character_response: str,
     contradiction_hints: list[str] | None = None,
@@ -101,14 +69,37 @@ def build_evaluator_prompt(
     """Build the user-facing content for the evaluator Ollama call."""
     parts: list[str] = [f"Character: {character.name}"]
 
-    parts.append("\n## Established Facts (id: key: value  (category, mutability))")
-    if facts:
-        for f in facts:
-            parts.append(
-                f"[{f.id}] {f.key}: {f.value}  (category: {f.category}, mutability: {f.mutability})"
-            )
+    parts.append("")
+    parts.append(render_schema_for_prompt())
+
+    parts.append("\n## Current Fact Values")
+    schema = load_schema()
+    all_leaves = _collect_leaves(schema)
+    populated: list[str] = []
+    for path, leaf in all_leaves:
+        path_parts = path.split(".")
+        node: Any = facts_blob
+        found = True
+        for part in path_parts:
+            if not isinstance(node, dict) or part not in node:
+                found = False
+                break
+            node = node[part]
+        if not found or not isinstance(node, dict):
+            continue
+        value = node.get("Value")
+        if value is None:
+            continue
+        mutability_tag = f"  [{leaf['Mutability']}]"
+        populated.append(f'{path}: "{value}"{mutability_tag}')
+
+    if populated:
+        for line in populated:
+            parts.append(line)
+        parts.append("")
+        parts.append("(all other schema paths are unset)")
     else:
-        parts.append("(no facts established yet)")
+        parts.append("(all other schema paths are unset)")
 
     parts.append("\n## Established Inferences (id: statement)")
     if inferences:
@@ -134,135 +125,48 @@ def build_evaluator_prompt(
 
     parts.append(
         """
-## Mutability Rules
-These rules govern how you classify violations against established Facts.
-
-MANDATORY FIRST STEP — before looking for new inferences, scan every Fact marked
-`mutability: high` or `mutability: low`. For each one, ask: "Does the character's
-response imply a value different from what this Fact currently states?" If yes for
-any Fact, the verdict must be `implication`. Only proceed to `new_inference_*`
-verdicts after completing this scan and finding no high/low-mutability Fact changes.
-
-- IMMUTABLE facts: any response that contradicts an immutable Fact is a `contradiction`
-  regardless of context. Do not surface these as implications — the value cannot change.
-  Examples: height, birthdate, eye colour, bone structure.
-
-- LOW-mutability facts: these change infrequently and only with clear narrative context
-  (e.g., the character changed their clothes, moved to a new city). If the character's
-  response implies a different value for a low-mutability Fact, return `implication` (not
-  `contradiction`) — the change is plausible but needs user confirmation. Include a
-  violation entry with the new implied value as `suggested_fact`.
-
-- HIGH-mutability facts: these can change fluidly within a session (mood, emotional state,
-  immediate desires, stress level). If the character's response reflects a different value
-  for a high-mutability Fact, return `implication` — the change is expected and natural.
-  Include a violation entry with the new implied value as `suggested_fact`. In the
-  violation description, note that this is a high-mutability change: e.g.,
-  "Stress level appears to have shifted from 'low' to 'high' (high-mutability fact)".
-
-  CRITICAL: `new_inference_*` verdicts are NEVER valid when an existing high-mutability
-  Fact already covers the same domain. If `stress_level: low (mutability: high)` exists
-  and the character says "my stress is through the roof", that is `implication`, NOT
-  `new_inference_probabilistic`. New inferences only apply to domains with no existing
-  Fact at all.
-
-When building a `suggested_fact`, always include a `category` field that reflects whose
-fact it is:
-- `"character"` — something about the character themselves (their own clothing, mood, etc.)
-- `"user"` — something about the person they are talking with
-- `"setting"` — something about the current environment or situation
-
-If the category is unclear, default to `"character"`.
-
 ## Your Task
-Analyze the character's response. Every specific claim must be TRACEABLE to an
-established Fact or strictly derived from one.
+Analyze the character's response against the Fact Schema and Current Fact Values above.
 
-CRITICAL DISTINCTION: "consistent with facts" is NOT the same as "grounded in facts."
-A detail is grounded if it can be directly looked up in the **Established Facts** list,
-found verbatim in the **Established Inferences** list, or is a necessary logical
-consequence of the above. A detail is NOT automatically grounded just because it is
-consistent with the facts or sounds plausible.
-If the character INVENTED a specific detail — clothing, accessories, a hairstyle,
-a location, a relationship, a personal history item — that is an IMPLICATION,
-even if it seems plausible for this type of character.
+IMMUTABLE facts: any response that contradicts an immutable fact that is already set
+is a `contradiction` — the value cannot change and the response must be regenerated.
 
-The `new_inference_*` verdicts apply ONLY when the observation concerns a domain with
-no existing Fact. If an existing Fact (any mutability) already covers that domain,
-use `implication` (high/low mutability) or `contradiction` (immutable) instead.
+MUTABLE facts: if the character implies a change to a mutable fact, note it in
+`decision_log` but do not flag it as a contradiction. It will be surfaced for user
+approval separately.
 
-The new_inference_logical / new_inference_probabilistic verdicts should only fire for
-conclusions that are NOT already in the Established Inferences list AND have no
-existing Fact covering the same domain.
+FLUID facts: changes are expected and accepted silently. Do not flag them.
 
-Examples:
-- Fact `mood: happy (mutability: high)` + character expresses anxiety → implication
-  (NOT new_inference_probabilistic — the mood domain is already covered by a Fact)
-- Fact `stress_level: low (mutability: high)` + character says "stress is through the roof"
-  → implication (NOT new_inference_probabilistic)
-- Character says "I enjoy organising things" (occupation=PA, no mood/preference Fact)
-  → new_inference_probabilistic
-- Character describes wearing a specific outfit not in the facts → implication
-- Character states a birthplace not in the facts → implication
-- Character says their eye colour contradicts the eye colour fact → contradiction
-- Character says "I'm 26" and the age fact is 26 → pass
-
-## Experience Contradiction Rules
-If the character's response contradicts an Active Experience — implying the world has
-changed in a way that invalidates it — return verdict `experience_update`:
-- Unlike `contradiction`, the response IS delivered; no regeneration occurs.
-- Include the contradicted Experience's id in `experience_updates[].contradicted_experience_id`.
-- `experience_update` takes priority over `implication` but lower than `contradiction`.
-
-Note: `contradiction` applies ONLY to immutable Facts. A character response that contradicts
-an Experience is never a `contradiction` — it is always `experience_update`.
+For details the character invented that have no matching schema path, derive an
+inference (`new_inference_logical` or `new_inference_probabilistic`).
 
 Return a JSON object with this exact structure:
 
 {
-  "verdict": "<contradiction|implication|new_inference_logical
-    |new_inference_probabilistic|experience_update|pass>",
+  "verdict": "<pass|contradiction|new_inference_logical|new_inference_probabilistic>",
   "new_inferences": [
     {
       "inference_type": "logical | probabilistic",
       "statement": "...",
       "derivation": "brief explanation of how this follows from the facts",
-      "source_fact_ids": [],
+      "source_fact_paths": ["Character.Identity.Name", ...],
       "source_inference_ids": []
     }
   ],
   "violations": [
     {
-      "type": "contradiction | implication",
-      "description": "what was wrong or what new fact was implied",
-      "suggested_fact": {"key": "...", "value": "...", "category": "user|character|setting"} or null
-    }
-  ],
-  "experience_updates": [
-    {
-      "contradicted_experience_id": 5,
-      "description": "brief description of why this experience was contradicted"
+      "type": "contradiction",
+      "description": "what immutable fact was contradicted"
     }
   ],
   "decision_log": "One-sentence summary of why you chose this verdict."
 }
 
 Verdict definitions (evaluate in this priority order):
-1. contradiction: ONLY for immutable Fact violations — HIGHEST PRIORITY
-2. implication: for low- or high-mutability Fact changes, or invented specific details
-3. new_inference_logical: something strictly provable from Facts by pure logic
-4. new_inference_probabilistic: a broad behavioural/personality tendency likely
-   given the Facts but not a specific new assertion
-5. pass: ONLY when every specific claim in the response is a direct Fact or a
-   strict logical derivation — NOT merely "consistent with" or "plausible for"
-
-BEFORE flagging any implication: check the Established Facts list again. If the
-key AND value you are about to suggest already appear there — verbatim, or as a
-component of a composite value — do NOT flag it. The character is correctly
-referencing an established fact. Only surface implications for details that are
-genuinely new.
-
-pass is the LAST resort. When in doubt, prefer implication or new_inference_*.
+1. contradiction: ONLY for immutable Fact violations (fact already set) — HIGHEST PRIORITY
+2. new_inference_logical: something strictly provable from Facts by pure logic
+3. new_inference_probabilistic: a broad behavioural/personality tendency likely given the Facts
+4. pass: ONLY when every specific claim in the response is a direct Fact or a strict derivation
 
 Return only the JSON object, no other text."""
     )
@@ -272,7 +176,7 @@ Return only the JSON object, no other text."""
 
 async def run_evaluator(
     character: Character,
-    facts: list[Fact],
+    facts_blob: dict[str, Any],
     user_message: str,
     character_response: str,
     ollama: OllamaClient,
@@ -283,7 +187,7 @@ async def run_evaluator(
     """Run the evaluator LLM and return a parsed verdict."""
     prompt = build_evaluator_prompt(
         character,
-        facts,
+        facts_blob,
         user_message,
         character_response,
         contradiction_hints,
@@ -330,31 +234,14 @@ async def run_evaluator(
     if any(v.get("type") == "contradiction" for v in violations_raw):
         data["verdict"] = "contradiction"
 
-    # Coerce source_fact_ids / source_inference_ids: drop any value that isn't an integer.
-    # Small models sometimes put "key: value" strings here instead of the numeric IDs.
+    # Coerce source_inference_ids: drop any value that isn't an integer.
     for inf in data.get("new_inferences", []) or []:
-        for field in ("source_fact_ids", "source_inference_ids"):
-            raw = inf.get(field, []) or []
-            inf[field] = [v for v in raw if isinstance(v, int)]
+        raw = inf.get("source_inference_ids", []) or []
+        inf["source_inference_ids"] = [v for v in raw if isinstance(v, int)]
 
     try:
         result = EvaluatorResult.model_validate(data)
     except ValidationError as exc:
         raise EvaluatorParseError(f"Failed to validate evaluator result: {exc}") from exc
-
-    # Strip any implication violation whose suggested_fact is already an
-    # established Fact (exact match or subset of a composite value).  The
-    # evaluator LLM occasionally re-proposes existing facts, especially when
-    # the character response merely repeats a detail that is already grounded.
-    if result.verdict == "implication" and result.violations:
-        filtered = [
-            v
-            for v in result.violations
-            if not _violation_duplicates_existing_fact(v.suggested_fact, facts)
-        ]
-        if len(filtered) < len(result.violations):
-            result.violations = filtered
-            if not filtered:
-                result.verdict = "pass"
 
     return result
