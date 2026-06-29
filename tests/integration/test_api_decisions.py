@@ -7,14 +7,14 @@ import respx
 from httpx import AsyncClient
 
 from memories.models import Character, Session
-from tests.unit.conftest import make_evaluator_ndjson, make_extractor_ndjson, make_ollama_ndjson
+from tests.unit.conftest import make_evaluator_ndjson, make_ollama_ndjson, make_plain_tool_response
 
 _OLLAMA_CHAT_URL = "http://test-ollama-integration:11434/api/chat"
 
 
 def _mock_turn(character_content: str = "I am fine.") -> list[httpx.Response]:
     return [
-        httpx.Response(200, content=make_extractor_ndjson()),
+        httpx.Response(200, content=make_plain_tool_response("Nothing to extract.")),
         httpx.Response(200, content=make_ollama_ndjson(character_content)),
         httpx.Response(200, content=make_evaluator_ndjson()),
     ]
