@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
 from typing import Any
 
 import aiosqlite
@@ -47,25 +44,12 @@ from memories.services.extraction_service import (
 from memories.services.inference_service import MAX_INFERENCE_DEPTH, compute_depth
 from memories.services.ollama_client import OllamaClient, OllamaConnectionError
 from memories.services.prompt_builder import build_system_prompt
+from memories.services.sse_events import EventCallback as EventCallback
+from memories.services.sse_events import SSEEvent as SSEEvent
 
 _log = logging.getLogger(__name__)
 
 MAX_CONTRADICTION_RETRIES: int = int(os.getenv("MAX_CONTRADICTION_RETRIES", "3"))
-
-
-@dataclass
-class SSEEvent:
-    """A typed SSE event that tool handlers can emit via EventCallback."""
-
-    event: str
-    data: dict[str, object] = field(default_factory=dict)
-
-    def to_sse(self) -> str:
-        """Serialise to SSE wire format: two lines followed by a blank line."""
-        return f"event: {self.event}\ndata: {json.dumps(self.data)}\n\n"
-
-
-EventCallback = Callable[[SSEEvent], Awaitable[None]] | None
 
 
 async def run_contradiction_loop(
