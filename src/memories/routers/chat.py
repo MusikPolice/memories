@@ -71,7 +71,6 @@ async def send_message(
             turn_id,
             eval_result,
             experience_scores,
-            extraction_result,
         ) = _task.result()
 
         # Emit contradiction loop events (Option B: after run_turn returns).
@@ -118,56 +117,6 @@ async def send_message(
                 "new_inferences": [i.model_dump() for i in eval_result.new_inferences],
             }
             yield f"event: sidechannel\ndata: {json.dumps(sc_payload)}\n\n"
-
-        # Emit extraction_applied sidechannel for Tier 1/2 auto-applied facts
-        if extraction_result.applied_fact_ids or extraction_result.fact_updates:
-            ext_payload: dict[str, object] = {
-                "type": "extraction_applied",
-                "turn_id": turn_id,
-                "added": [
-                    {
-                        "fact_id": extraction_result.applied_fact_ids[f.key],
-                        "key": f.key,
-                        "value": f.value,
-                        "category": f.category,
-                        "mutability": f.mutability,
-                        "source_quote": f.source_quote,
-                    }
-                    for f in extraction_result.new_facts
-                    if f.key in extraction_result.applied_fact_ids
-                ],
-                "updated": [
-                    {
-                        "fact_id": u.fact_id,
-                        "key": u.key,
-                        "old_value": u.old_value,
-                        "new_value": u.new_value,
-                        "source_quote": u.source_quote,
-                    }
-                    for u in extraction_result.fact_updates
-                ],
-            }
-            yield f"event: sidechannel\ndata: {json.dumps(ext_payload)}\n\n"
-
-        # Emit implicit_fact_proposed sidechannel for Tier 3/4 proposals
-        if extraction_result.implicit_proposals:
-            new_proposals = [
-                p.model_dump()
-                for p in extraction_result.implicit_proposals
-                if p.existing_fact_id is None
-            ]
-            update_proposals = [
-                p.model_dump()
-                for p in extraction_result.implicit_proposals
-                if p.existing_fact_id is not None
-            ]
-            impl_payload: dict[str, object] = {
-                "type": "implicit_fact_proposed",
-                "turn_id": turn_id,
-                "new_proposals": new_proposals,
-                "update_proposals": update_proposals,
-            }
-            yield f"event: sidechannel\ndata: {json.dumps(impl_payload)}\n\n"
 
         yield "event: done\ndata: {}\n\n"
 

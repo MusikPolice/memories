@@ -6,10 +6,14 @@ orchestration contract of run_turn — what it reads, what it writes, and in
 what order — not the HTTP or SQL layers themselves.
 
 Every successful run_turn call makes THREE /api/chat requests (mocked via _CHAT_URL):
-  calls[0] — extractor LLM (Phase 6 fact extraction)
+  calls[0] — World Builder LLM (Step 4)
   calls[1] — character LLM
   calls[2] — evaluator LLM
 All tests that complete a turn successfully must therefore mock all three calls.
+calls[0] may be more than one HTTP request if the World Builder's mock simulates
+multiple tool-call rounds — the default `_mock_world_builder()` helper used by most
+tests is a single no-op round, preserving the "three calls total" assumption for
+every test that does not specifically exercise World Builder fact-writing.
 
 The embed call (/api/embed, mocked via _EMBED_URL) fires concurrently with calls[0]
 via asyncio.gather when experiences are stored in the DB.  Tests that need the embed
@@ -37,24 +41,26 @@ from memories.database import (
     create_inference,
     end_session,
     get_decisions,
-    get_fact_rows,
+    get_facts,
     get_inferences,
     get_messages,
+    set_facts,
 )
 from memories.exceptions import NotFoundError, SessionEndedError
 from memories.models import Character, Session
 from memories.services.chat_service import MAX_CONTRADICTION_RETRIES, run_turn
 from memories.services.evaluator import EvaluatorResult
 from memories.services.experience_service import get_active_experiences
-from memories.services.extraction_service import ExtractionResult
 from memories.services.inference_service import MAX_INFERENCE_DEPTH
 from memories.services.ollama_client import OllamaClient, OllamaConnectionError
+from memories.services.sse_events import SSEEvent
 from tests.unit.conftest import (
     OLLAMA_BASE_URL,
     make_embed_response,
     make_evaluator_ndjson,
-    make_extractor_ndjson,
     make_ollama_ndjson,
+    make_plain_tool_response,
+    make_tool_call_response,
 )
 
 _CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
@@ -73,9 +79,9 @@ def _mock_eval(
     return httpx.Response(200, content=make_evaluator_ndjson(verdict, new_inferences, violations))
 
 
-def _mock_extractor() -> httpx.Response:
-    """Return an empty-extraction response for the Phase 6 extractor call (calls[0])."""
-    return httpx.Response(200, content=make_extractor_ndjson())
+def _mock_world_builder() -> httpx.Response:
+    """Return a no-op World Builder response (no tool call) for calls[0]."""
+    return httpx.Response(200, content=make_plain_tool_response("Nothing to extract."))
 
 
 def _mock_turn(
@@ -84,9 +90,9 @@ def _mock_turn(
     new_inferences: list[dict] | None = None,
     violations: list[dict] | None = None,
 ) -> list[httpx.Response]:
-    """Return side_effect list for one complete turn (extractor + character + evaluator)."""
+    """Return side_effect list for one complete turn (World Builder + character + evaluator)."""
     return [
-        _mock_extractor(),
+        _mock_world_builder(),
         _mock_ok(character_content),
         _mock_eval(evaluator_verdict, new_inferences, violations),
     ]
@@ -233,7 +239,7 @@ async def test_evaluator_called_after_character_response(
     with respx.mock:
         route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn("Character response"))
         await run_turn(db, session.id, "Hello", ollama)
-    # Three calls: extractor then character then evaluator
+    # Three calls: World Builder then character then evaluator
     assert len(route.calls) == 3
 
 
@@ -294,7 +300,7 @@ async def test_contradiction_response_not_stored_on_first_attempt(
     with respx.mock:
         respx.post(_CHAT_URL).mock(
             side_effect=[
-                _mock_extractor(),  # extractor (call 0)
+                _mock_world_builder(),  # World Builder (call 0)
                 _mock_ok("I'm from London."),  # character (contradicts)
                 _mock_eval("contradiction", violations=contradiction_violation),
                 _mock_ok("I'm from Reykjavik."),  # character regenerated (clean)
@@ -317,7 +323,7 @@ async def test_contradiction_triggers_second_character_call(
     with respx.mock:
         route = respx.post(_CHAT_URL).mock(
             side_effect=[
-                _mock_extractor(),  # extractor (call 0)
+                _mock_world_builder(),  # World Builder (call 0)
                 _mock_ok("Wrong answer."),
                 _mock_eval("contradiction", violations=contradiction_violation),
                 _mock_ok("Correct answer."),
@@ -338,7 +344,7 @@ async def test_contradiction_second_call_messages_include_system_note(
     with respx.mock:
         route = respx.post(_CHAT_URL).mock(
             side_effect=[
-                _mock_extractor(),  # extractor (call 0)
+                _mock_world_builder(),  # World Builder (call 0)
                 _mock_ok("Wrong."),
                 _mock_eval("contradiction", violations=contradiction_violation),
                 _mock_ok("Right."),
@@ -361,7 +367,7 @@ async def test_contradiction_loop_exits_on_pass(
     with respx.mock:
         route = respx.post(_CHAT_URL).mock(
             side_effect=[
-                _mock_extractor(),  # extractor (call 0)
+                _mock_world_builder(),  # World Builder (call 0)
                 _mock_ok("Bad."),
                 _mock_eval("contradiction", violations=contradiction_violation),
                 _mock_ok("Good."),
@@ -383,7 +389,7 @@ async def test_contradiction_loop_final_response_is_stored(
     with respx.mock:
         respx.post(_CHAT_URL).mock(
             side_effect=[
-                _mock_extractor(),  # extractor (call 0)
+                _mock_world_builder(),  # World Builder (call 0)
                 _mock_ok("Bad."),
                 _mock_eval("contradiction", violations=contradiction_violation),
                 _mock_ok("Clean response."),
@@ -402,8 +408,8 @@ async def test_contradiction_max_retries_exceeded_delivers_anyway(
     contradiction_violation = [
         {"type": "contradiction", "description": "always wrong", "suggested_fact": None}
     ]
-    # One extractor call + (max_retries + 1) pairs of [character, evaluator] calls
-    side_effects: list[httpx.Response] = [_mock_extractor()]
+    # One World Builder call + (max_retries + 1) pairs of [character, evaluator] calls
+    side_effects: list[httpx.Response] = [_mock_world_builder()]
     for _ in range(MAX_CONTRADICTION_RETRIES + 1):
         side_effects.append(_mock_ok("Still wrong."))
         side_effects.append(_mock_eval("contradiction", violations=contradiction_violation))
@@ -425,7 +431,7 @@ async def test_contradiction_notifications_collected_per_iteration(
     with respx.mock:
         respx.post(_CHAT_URL).mock(
             side_effect=[
-                _mock_extractor(),  # extractor (call 0)
+                _mock_world_builder(),  # World Builder (call 0)
                 _mock_ok("Wrong 1."),
                 _mock_eval("contradiction", violations=contradiction_violation),
                 _mock_ok("Wrong 2."),
@@ -508,12 +514,12 @@ async def test_run_turn_falls_back_to_pass_on_evaluator_parse_error(
     with respx.mock:
         respx.post(_CHAT_URL).mock(
             side_effect=[
-                _mock_extractor(),
+                _mock_world_builder(),
                 _mock_ok("I am fine."),
                 httpx.Response(200, content=malformed_eval),
             ]
         )
-        content, _, _, result, _, _ = await run_turn(db, session.id, "How are you?", ollama)
+        content, _, _, result, _ = await run_turn(db, session.id, "How are you?", ollama)
 
     assert content == "I am fine."
     assert result.verdict == "pass"
@@ -777,10 +783,10 @@ async def test_run_turn_embed_query_uses_user_message(
     assert any("Hello there" in inp for inp in inputs)
 
 
-async def test_run_turn_embed_and_extractor_both_called_when_experiences_present(
+async def test_run_turn_embed_and_world_builder_both_called_when_experiences_present(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
-    """With experiences in DB, embed (retrieve) and extractor (LLM) both fire before character."""
+    """With experiences in DB, embed (retrieve) and World Builder (LLM) both fire."""
     await _insert_experience(db, character.id, session.id)
     with respx.mock:
         embed_route = respx.post(_EMBED_URL).mock(
@@ -789,7 +795,7 @@ async def test_run_turn_embed_and_extractor_both_called_when_experiences_present
         chat_route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
         await run_turn(db, session.id, "Hello", ollama)
     assert embed_route.called
-    assert len(chat_route.calls) == 3  # extractor + character + evaluator
+    assert len(chat_route.calls) == 3  # World Builder + character + evaluator
 
 
 async def test_run_turn_active_set_reflects_current_turn_only(
@@ -867,288 +873,189 @@ async def test_run_turn_returns_five_tuple_with_scores_dict(
         respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
         result = await run_turn(db, session.id, "Hello", ollama)
 
-    assert len(result) == 6
-    *_, scores, _ = result
+    assert len(result) == 5
+    *_, scores = result
     assert isinstance(scores, dict)
 
 
 # ---------------------------------------------------------------------------
-# Phase 6 additions — fact extraction pre-turn hook
+# Step 4 additions — World Builder pre-turn hook
 # ---------------------------------------------------------------------------
 
 
-async def test_run_turn_calls_extractor_before_character_llm(
+def _mock_world_builder_writes(path: str, value: str) -> list[httpx.Response]:
+    """side_effect entries for a World Builder pass that writes one fact via author_set_facts.
+
+    Two HTTP round-trips: the tool call itself, then the terminal plain reply that
+    chat_with_tools requires before it will stop looping.
+    """
+    return [
+        httpx.Response(
+            200,
+            content=make_tool_call_response(
+                "author_set_facts", {"facts": [{"path": path, "value": value}]}
+            ),
+        ),
+        httpx.Response(200, content=make_plain_tool_response("Done.")),
+    ]
+
+
+async def test_run_turn_world_builder_runs_before_character_llm(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
-    """Extractor Ollama call precedes character Ollama call (respx call order)."""
+    """calls[0] is the World Builder (uses tools); calls[1] is the character LLM (no tools)."""
+    with respx.mock:
+        route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Hello", ollama)
+
+    wb_body = json.loads(route.calls[0].request.content)
+    assert wb_body["tools"][0]["function"]["name"] == "author_set_facts"
+    char_body = json.loads(route.calls[1].request.content)
+    assert "tools" not in char_body
+
+
+async def test_run_turn_world_builder_writes_fact_to_character_facts_blob(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                *_mock_world_builder_writes("Character.State-Of-Mind.Mood", "Anxious"),
+                _mock_ok("I hear you."),
+                _mock_eval("pass"),
+            ]
+        )
+        await run_turn(db, session.id, "I'm feeling really anxious", ollama)
+
+    facts = await get_facts(db, character.id)
+    assert facts["Character"]["State-Of-Mind"]["Mood"]["Value"] == "Anxious"
+
+
+async def test_run_turn_world_builder_fact_appears_in_character_system_prompt(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
     with respx.mock:
         route = respx.post(_CHAT_URL).mock(
             side_effect=[
-                httpx.Response(200, content=make_extractor_ndjson()),  # extractor (call 0)
-                _mock_ok("I hear you."),  # character (call 1)
-                _mock_eval("pass"),  # evaluator (call 2)
+                *_mock_world_builder_writes("Character.State-Of-Mind.Mood", "Anxious"),
+                _mock_ok("I hear you."),
+                _mock_eval("pass"),
+            ]
+        )
+        await run_turn(db, session.id, "I'm feeling really anxious", ollama)
+
+    # calls[2] is the character LLM call (calls[0]/[1] are the World Builder's two rounds)
+    char_body = json.loads(route.calls[2].request.content)
+    system_content = char_body["messages"][0]["content"]
+    assert "Anxious" in system_content
+
+
+async def test_run_turn_world_builder_preserves_facts_not_touched_by_this_turn(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    name_blob = {"Character": {"Identity": {"Name": {"Value": "Alice"}}}}
+    await set_facts(db, character_id=character.id, blob=name_blob)
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Hello", ollama)
+
+    facts = await get_facts(db, character.id)
+    assert facts["Character"]["Identity"]["Name"]["Value"] == "Alice"
+
+
+async def test_run_turn_world_builder_failure_continues_with_unchanged_facts(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    name_blob = {"Character": {"Identity": {"Name": {"Value": "Alice"}}}}
+    await set_facts(db, character_id=character.id, blob=name_blob)
+    with respx.mock:
+        route = respx.post(_CHAT_URL).mock(
+            side_effect=[
+                httpx.ConnectError("refused"),
+                _mock_ok("Hi there."),
+                _mock_eval("pass"),
             ]
         )
         await run_turn(db, session.id, "Hello", ollama)
 
-    # Phase 6: extractor + character + evaluator = 3 calls
-    assert len(route.calls) == 3
-
-
-async def test_run_turn_auto_adds_tier1_facts(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    """new_facts in extractor result → create_fact called for each before character call."""
-    new_fact = {
-        "key": "meeting_location",
-        "value": "Chicago",
-        "category": "setting",
-        "mutability": "low",
-        "source_quote": "We're meeting in Chicago",
-    }
-    with respx.mock:
-        respx.post(_CHAT_URL).mock(
-            side_effect=[
-                httpx.Response(200, content=make_extractor_ndjson(new_facts=[new_fact])),
-                _mock_ok("See you in Chicago."),
-                _mock_eval("pass"),
-            ]
-        )
-        await run_turn(db, session.id, "We're meeting in Chicago!", ollama)
-
-    facts = await get_fact_rows(db, character.id)
-    assert any(f.key == "meeting_location" and f.value == "Chicago" for f in facts)
-
-
-async def test_run_turn_auto_updates_tier2_facts(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    """fact_updates in extractor result → update_fact called for each before character call."""
-    existing = await create_fact(db, character_id=character.id, key="home_city", value="Reykjavik")
-    update = {
-        "fact_id": existing.id,
-        "key": "home_city",
-        "old_value": "Reykjavik",
-        "new_value": "Chicago",
-        "source_quote": "I moved to Chicago",
-    }
-    with respx.mock:
-        respx.post(_CHAT_URL).mock(
-            side_effect=[
-                httpx.Response(200, content=make_extractor_ndjson(fact_updates=[update])),
-                _mock_ok("Chicago is a great city."),
-                _mock_eval("pass"),
-            ]
-        )
-        await run_turn(db, session.id, "I moved to Chicago last month.", ollama)
-
-    facts = await get_fact_rows(db, character.id)
-    updated = next(f for f in facts if f.key == "home_city")
-    assert updated.value == "Chicago"
-
-
-async def test_run_turn_does_not_write_implicit_proposals_to_db(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    """implicit_proposals in extractor result → no create_fact or update_fact called for them."""
-    proposal = {
-        "key": "mood",
-        "value": "anxious",
-        "category": "user",
-        "mutability": "high",
-        "source_quote": "feeling off all week",
-    }
-    with respx.mock:
-        respx.post(_CHAT_URL).mock(
-            side_effect=[
-                httpx.Response(200, content=make_extractor_ndjson(implicit_proposals=[proposal])),
-                _mock_ok("I can hear some tension in your voice."),
-                _mock_eval("pass"),
-            ]
-        )
-        result = await run_turn(db, session.id, "I've been feeling off.", ollama)
-
-    facts = await get_fact_rows(db, character.id)
-    assert not any(f.key == "mood" for f in facts)
-    # The ExtractionResult in the return value should carry the proposals
-    assert isinstance(result[-1], ExtractionResult)
-
-
-async def test_run_turn_extraction_does_not_affect_system_prompt(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    """Extractor writes to the legacy facts table; the schema-blob prompt is unchanged.
-
-    This is the correct transitional behaviour for Step 3: the extraction service
-    is still running but its output is invisible to the character system prompt
-    until the World Builder (Step 4) writes directly to character_facts.
-    """
-    new_fact = {
-        "key": "meeting_location",
-        "value": "UniqueExtractedValue_XYZ",
-        "category": "setting",
-        "mutability": "low",
-        "source_quote": "We're meeting at UniqueExtractedValue_XYZ",
-    }
-    with respx.mock:
-        route = respx.post(_CHAT_URL).mock(
-            side_effect=[
-                httpx.Response(200, content=make_extractor_ndjson(new_facts=[new_fact])),
-                _mock_ok("Got it."),
-                _mock_eval("pass"),
-            ]
-        )
-        await run_turn(db, session.id, "We're at UniqueExtractedValue_XYZ!", ollama)
-
-    assert len(route.calls) == 3
     char_body = json.loads(route.calls[1].request.content)
-    system_content: str = char_body["messages"][0]["content"]
-    # The extracted value must NOT appear in the schema-blob-derived system prompt
-    assert "UniqueExtractedValue_XYZ" not in system_content
+    system_content = char_body["messages"][0]["content"]
+    assert "Alice" in system_content
 
 
-async def test_run_turn_character_prompt_does_not_include_implicit_proposals(
+async def test_run_turn_world_builder_decision_logged_when_facts_written(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
-    """System prompt does not contain proposed-but-unconfirmed values from implicit_proposals."""
-    proposal = {
-        "key": "current_feeling",
-        "value": "very anxious",
-        "category": "user",
-        "mutability": "high",
-        "source_quote": "anxious",
-    }
     with respx.mock:
-        route = respx.post(_CHAT_URL).mock(
+        respx.post(_CHAT_URL).mock(
             side_effect=[
-                httpx.Response(200, content=make_extractor_ndjson(implicit_proposals=[proposal])),
-                _mock_ok("Take it easy."),
+                *_mock_world_builder_writes("Character.Identity.Name", "Beatrice"),
+                _mock_ok("Hi Beatrice."),
                 _mock_eval("pass"),
             ]
         )
-        result = await run_turn(db, session.id, "Feeling anxious today.", ollama)
+        await run_turn(db, session.id, "My name is Beatrice", ollama)
 
-    assert len(route.calls) == 3
+    decisions = await get_decisions(db, session.id)
+    assert len(decisions) == 2
+    assert any(d.pass_name == "world_builder" for d in decisions)
+
+
+async def test_run_turn_no_world_builder_decision_when_no_facts_written(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Hello", ollama)
+
+    decisions = await get_decisions(db, session.id)
+    assert len(decisions) == 1
+    assert decisions[0].pass_name == "character_evaluator"
+
+
+async def test_run_turn_character_llm_request_has_no_tools_key(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    with respx.mock:
+        route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Hello", ollama)
+
     char_body = json.loads(route.calls[1].request.content)
-    system_content: str = char_body["messages"][0]["content"]
-    assert "very anxious" not in system_content
-    # ExtractionResult should carry the unwritten proposals
-    assert isinstance(result[-1], ExtractionResult)
-    assert len(result[-1].implicit_proposals) == 1
+    assert "tools" not in char_body
 
 
-async def test_run_turn_returns_extraction_result(
+async def test_run_turn_world_builder_sidechannel_emitted_via_on_event(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
-    """run_turn return value includes the full ExtractionResult."""
+    events: list[SSEEvent] = []
+
+    async def _on_event(ev: SSEEvent) -> None:
+        events.append(ev)
+
     with respx.mock:
         respx.post(_CHAT_URL).mock(
             side_effect=[
-                httpx.Response(200, content=make_extractor_ndjson()),
-                _mock_ok("Hello."),
+                *_mock_world_builder_writes("Character.Identity.Name", "Beatrice"),
+                _mock_ok("Hi Beatrice."),
                 _mock_eval("pass"),
             ]
         )
-        result = await run_turn(db, session.id, "Hello", ollama)
+        await run_turn(db, session.id, "My name is Beatrice", ollama, on_event=_on_event)
 
-    assert isinstance(result[-1], ExtractionResult)
+    wb_events = [e for e in events if e.data.get("type") == "world_builder_applied"]
+    assert len(wb_events) == 1
 
 
-async def test_run_turn_on_extraction_failure_continues_with_empty_result(
+async def test_run_turn_world_builder_no_sidechannel_when_no_facts_written(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
-    """ExtractionParseError → turn completes; extraction result is empty."""
-    # First response is invalid JSON (triggers ExtractionParseError in extractor)
-    invalid_extractor = make_ollama_ndjson("not valid extraction json")
-    with respx.mock:
-        respx.post(_CHAT_URL).mock(
-            side_effect=[
-                httpx.Response(200, content=invalid_extractor),
-                _mock_ok("Still responding."),
-                _mock_eval("pass"),
-            ]
-        )
-        result = await run_turn(db, session.id, "Hello", ollama)
+    events: list[SSEEvent] = []
 
-    assert isinstance(result[-1], ExtractionResult)
-    extraction = result[-1]
-    assert extraction.new_facts == []
-    assert extraction.fact_updates == []
-    assert extraction.implicit_proposals == []
-
-
-async def test_run_turn_on_ollama_connection_error_during_extraction_continues(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    """Ollama connection failure during extraction → turn continues; warning logged."""
-    with respx.mock:
-        respx.post(_CHAT_URL).mock(
-            side_effect=[
-                httpx.ConnectError("connection refused"),  # extraction fails
-                _mock_ok("Still responding."),
-                _mock_eval("pass"),
-            ]
-        )
-        # Phase 6: extraction failure is non-fatal; character call proceeds
-        result = await run_turn(db, session.id, "Hello", ollama)
-
-    assert isinstance(result[-1], ExtractionResult)
-    assert result[-1].new_facts == []
-
-
-async def test_run_turn_deduplicates_tier1_facts_that_already_exist(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    """Extractor proposes a new fact with existing key/category → IntegrityError caught silently."""
-    # Pre-existing fact with same key
-    await create_fact(db, character_id=character.id, key="occupation", value="surgeon")
-
-    duplicate = {
-        "key": "occupation",
-        "value": "retired surgeon",
-        "category": "character",
-        "mutability": "immutable",
-        "source_quote": "I used to be a surgeon",
-    }
-    with respx.mock:
-        respx.post(_CHAT_URL).mock(
-            side_effect=[
-                httpx.Response(200, content=make_extractor_ndjson(new_facts=[duplicate])),
-                _mock_ok("Yes, I was."),
-                _mock_eval("pass"),
-            ]
-        )
-        # Should not raise; IntegrityError on the duplicate should be swallowed
-        result = await run_turn(db, session.id, "Were you a surgeon?", ollama)
-
-    facts = await get_fact_rows(db, character.id)
-    # Original fact must still be there; duplicate (different value) was suppressed
-    occupation_facts = [f for f in facts if f.key == "occupation"]
-    assert len(occupation_facts) == 1
-    # Phase 6: result must include ExtractionResult (fails before implementation)
-    assert isinstance(result[-1], ExtractionResult)
-
-
-async def test_run_turn_empty_extraction_result_does_not_change_facts(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    """All three extraction lists empty → no fact writes; turn proceeds normally."""
-    await create_fact(db, character_id=character.id, key="occupation", value="surgeon")
+    async def _on_event(ev: SSEEvent) -> None:
+        events.append(ev)
 
     with respx.mock:
-        route = respx.post(_CHAT_URL).mock(
-            side_effect=[
-                httpx.Response(200, content=make_extractor_ndjson()),  # empty extraction
-                _mock_ok("Hello."),
-                _mock_eval("pass"),
-            ]
-        )
-        result = await run_turn(db, session.id, "Hello", ollama)
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Hello", ollama, on_event=_on_event)
 
-    # Extraction call happened (3 total calls)
-    assert len(route.calls) == 3
-    facts = await get_fact_rows(db, character.id)
-    assert len(facts) == 1
-    assert facts[0].key == "occupation"
-    assert isinstance(result[-1], ExtractionResult)
-    assert result[-1].new_facts == []
+    assert not any(e.data.get("type") == "world_builder_applied" for e in events)

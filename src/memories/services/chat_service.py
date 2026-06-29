@@ -5,12 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any
+from typing import Any, cast
 
 import aiosqlite
 
 from memories.database import (
-    create_fact,
     create_inference,
     get_character,
     get_facts,
@@ -20,7 +19,6 @@ from memories.database import (
     next_turn_id,
     store_decision,
     store_message,
-    update_fact,
 )
 from memories.exceptions import NotFoundError, SessionEndedError
 from memories.models import Character, Experience, Inference
@@ -36,16 +34,16 @@ from memories.services.experience_service import (
     clear_active_experiences,
     retrieve_experiences,
 )
-from memories.services.extraction_service import (
-    ExtractionParseError,
-    ExtractionResult,
-    run_fact_extractor,
-)
 from memories.services.inference_service import MAX_INFERENCE_DEPTH, compute_depth
-from memories.services.ollama_client import OllamaClient, OllamaConnectionError
+from memories.services.ollama_client import (
+    OllamaClient,
+    OllamaConnectionError,
+    OllamaResponseError,
+)
 from memories.services.prompt_builder import build_system_prompt
 from memories.services.sse_events import EventCallback as EventCallback
 from memories.services.sse_events import SSEEvent as SSEEvent
+from memories.services.world_builder import run_world_builder
 
 _log = logging.getLogger(__name__)
 
@@ -145,11 +143,11 @@ async def run_turn(
     ollama: OllamaClient,
     think: bool = False,
     on_event: EventCallback = None,
-) -> tuple[str, str, int, EvaluatorResult, dict[int, float], ExtractionResult]:
+) -> tuple[str, str, int, EvaluatorResult, dict[int, float]]:
     """Execute one conversation turn.
 
     Returns ``(response_content, thinking_text, turn_id, evaluator_result,
-    experience_scores, extraction_result)``.
+    experience_scores)``.
     The assistant message is stored only after the evaluator confirms the
     response is not a contradiction (or retries are exhausted).
     """
@@ -169,24 +167,31 @@ async def run_turn(
     )
     assert character is not None
 
-    # --- Parallel: experience retrieval (embed) + fact extraction (LLM) ---
-    # Neither depends on the other: embed only needs user_content; extraction
-    # needs inferences which are already loaded above.
-    async def _run_extraction_safe() -> ExtractionResult:
+    # --- Parallel: experience retrieval (embed) + World Builder (LLM + DB writes) ---
+    # Neither depends on the other: embed only needs user_content; the World
+    # Builder needs inferences which are already loaded above.
+    async def _run_world_builder_safe() -> dict[str, Any]:
         try:
-            # Pass empty facts list: extractor writes to the legacy facts table
-            # which is invisible to the schema-constrained system prompt.
-            # The extractor is replaced by the World Builder in Step 4.
-            return await run_fact_extractor(user_content, character, [], inferences, ollama)
-        except (ExtractionParseError, OllamaConnectionError) as exc:
-            _log.warning("fact extraction failed: %s", exc)
-            return ExtractionResult()
+            return await run_world_builder(
+                db,
+                character,
+                session_id,
+                turn_id,
+                user_content,
+                facts_blob,
+                inferences,
+                ollama,
+                on_event=on_event,
+            )
+        except (OllamaConnectionError, OllamaResponseError) as exc:
+            _log.warning("world builder failed: %s", exc)
+            return cast(dict[str, Any], facts_blob)
 
-    (active, experience_scores), extraction_result = await asyncio.gather(
+    (active, experience_scores), facts_blob = await asyncio.gather(
         retrieve_experiences(
             db, session.character_id, user_content, ollama, top_k=TOP_K_EXPERIENCES
         ),
-        _run_extraction_safe(),
+        _run_world_builder_safe(),
     )
 
     # Process experience results
@@ -194,30 +199,6 @@ async def run_turn(
     if active:
         add_active_experiences(session_id, active)
         _log.info("session=%d turn=%d retrieved %d experience(s)", session_id, turn_id, len(active))
-
-    # Process extraction results (DB writes happen sequentially after gather).
-    # These write to the legacy facts table; they do not affect the system prompt
-    # (which reads from character_facts blob). This gap is resolved in Step 4.
-    for extracted in extraction_result.new_facts:
-        try:
-            created = await create_fact(
-                db,
-                character_id=session.character_id,
-                key=extracted.key,
-                value=extracted.value,
-                category=extracted.category,
-                mutability=extracted.mutability,
-            )
-            extraction_result.applied_fact_ids[extracted.key] = created.id
-        except aiosqlite.IntegrityError:
-            _log.debug("extraction tier1: skipping duplicate fact key=%s", extracted.key)
-    for fact_upd in extraction_result.fact_updates:
-        try:
-            await update_fact(db, fact_id=fact_upd.fact_id, value=fact_upd.new_value)
-        except NotFoundError:
-            _log.warning(
-                "extraction tier2: fact_id=%d not found, skipping update", fact_upd.fact_id
-            )
 
     system_prompt = build_system_prompt(character, facts_blob, inferences, active or None)
 
@@ -305,4 +286,4 @@ async def run_turn(
         eval_result.verdict,
         len(eval_result.violations),
     )
-    return char_content, char_thinking, turn_id, eval_result, experience_scores, extraction_result
+    return char_content, char_thinking, turn_id, eval_result, experience_scores
