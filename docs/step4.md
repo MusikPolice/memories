@@ -1068,3 +1068,20 @@ No changes to `database.py`, `models/__init__.py`, `routers/facts.py`,
 ## Post-Implementation Cleanup Tasks
 
 (Populated by `/review-step` after implementation.)
+
+### CT-1: `make_extractor_ndjson` is dead code in `tests/unit/conftest.py`
+
+**Decided:** Fix in follow-up
+
+`make_extractor_ndjson()` (`tests/unit/conftest.py:78-94`) built the JSON-verdict NDJSON
+body for the Phase 6 fact extractor's `/api/chat` response. Every call site was deleted
+in this step: `test_extraction_service.py` is gone, and the three integration files that
+used it (`test_api_chat.py`, `test_api_implication.py`, `test_api_decisions.py`) were
+all switched to `make_plain_tool_response(...)` per the World Builder's tool-call
+response shape. `grep -rn "make_extractor_ndjson" src/ tests/` now returns only its own
+definition. It is a 17-line leftover with no caller, harmless but pure clutter.
+
+**What to do:**
+1. Delete `make_extractor_ndjson()` from `tests/unit/conftest.py:78-94`.
+2. Re-run `grep -rn "make_extractor_ndjson"` to confirm no remaining references, then
+   run `uv run pytest --no-cov` to confirm nothing broke.
