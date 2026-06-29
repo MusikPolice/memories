@@ -13,7 +13,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from memories.models import Character, Experience, Inference
-from memories.schema_loader import _collect_leaves, load_schema, render_schema_for_prompt
+from memories.schema_loader import render_current_fact_values, render_schema_for_prompt
 from memories.services.ollama_client import OllamaClient
 
 _VALID_VERDICTS = frozenset(
@@ -72,34 +72,8 @@ def build_evaluator_prompt(
     parts.append("")
     parts.append(render_schema_for_prompt())
 
-    parts.append("\n## Current Fact Values")
-    schema = load_schema()
-    all_leaves = _collect_leaves(schema)
-    populated: list[str] = []
-    for path, leaf in all_leaves:
-        path_parts = path.split(".")
-        node: Any = facts_blob
-        found = True
-        for part in path_parts:
-            if not isinstance(node, dict) or part not in node:
-                found = False
-                break
-            node = node[part]
-        if not found or not isinstance(node, dict):
-            continue
-        value = node.get("Value")
-        if value is None:
-            continue
-        mutability_tag = f"  [{leaf['Mutability']}]"
-        populated.append(f'{path}: "{value}"{mutability_tag}')
-
-    if populated:
-        for line in populated:
-            parts.append(line)
-        parts.append("")
-        parts.append("(all other schema paths are unset)")
-    else:
-        parts.append("(all other schema paths are unset)")
+    parts.append("")
+    parts.append(render_current_fact_values(facts_blob))
 
     parts.append("\n## Established Inferences (id: statement)")
     if inferences:

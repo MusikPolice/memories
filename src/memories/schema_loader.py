@@ -114,6 +114,43 @@ def render_schema_for_prompt(schema: dict[str, Any] | None = None) -> str:
     return "\n".join(lines)
 
 
+def render_current_fact_values(
+    facts_blob: dict[str, Any],
+    schema: dict[str, Any] | None = None,
+) -> str:
+    """Render every populated schema leaf as `path: "value"  [Mutability]`.
+
+    Unpopulated leaves are summarised by a single trailing note rather than
+    enumerated, keeping the block compact when most paths are unset.
+    """
+    if schema is None:
+        schema = load_schema()
+    leaves = _collect_leaves(schema)
+
+    lines = ["## Current Fact Values"]
+    populated: list[str] = []
+    for path, leaf in leaves:
+        parts = path.split(".")
+        node: Any = facts_blob
+        found = True
+        for part in parts:
+            if not isinstance(node, dict) or part not in node:
+                found = False
+                break
+            node = node[part]
+        if not found or not isinstance(node, dict):
+            continue
+        value = node.get("Value")
+        if value is None:
+            continue
+        populated.append(f'{path}: "{value}"  [{leaf["Mutability"]}]')
+
+    lines.extend(populated)
+    lines.append("")
+    lines.append("(all other schema paths are unset)")
+    return "\n".join(lines)
+
+
 def _collect_leaves(
     node: dict[str, Any],
     prefix: str = "",

@@ -7,7 +7,12 @@ from typing import Any
 import pytest
 
 from memories import schema_loader
-from memories.schema_loader import apply_mask, check_write_permitted, render_schema_for_prompt
+from memories.schema_loader import (
+    apply_mask,
+    check_write_permitted,
+    render_current_fact_values,
+    render_schema_for_prompt,
+)
 
 _TEST_SCHEMA: dict[str, Any] = {
     "Character": {
@@ -298,3 +303,33 @@ def test_render_schema_for_prompt_empty_section_omitted() -> None:
     lines = result.splitlines()
     assert not any(line.strip().startswith("MUTABLE") for line in lines)
     assert not any(line.strip().startswith("FLUID") for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# render_current_fact_values tests
+# ---------------------------------------------------------------------------
+
+
+def test_render_current_fact_values_header_present() -> None:
+    result = render_current_fact_values({}, schema=_TEST_SCHEMA)
+    assert "## Current Fact Values" in result
+
+
+def test_render_current_fact_values_empty_blob_shows_unset_note() -> None:
+    result = render_current_fact_values({}, schema=_TEST_SCHEMA)
+    assert "(all other schema paths are unset)" in result
+    lines = [line for line in result.splitlines() if ":" in line and "[" in line]
+    assert lines == []
+
+
+def test_render_current_fact_values_populated_leaf_shown_with_mutability_tag() -> None:
+    blob = {"Character": {"Identity": {"Name": {"Value": "Sarah"}}}}
+    result = render_current_fact_values(blob, schema=_TEST_SCHEMA)
+    assert 'Character.Identity.Name: "Sarah"  [Immutable]' in result
+
+
+def test_render_current_fact_values_only_lists_populated_leaves() -> None:
+    blob = {"Character": {"Identity": {"Name": {"Value": "Sarah"}}}}
+    result = render_current_fact_values(blob, schema=_TEST_SCHEMA)
+    assert "Character.Identity.Name" in result
+    assert "Character.Identity.Age" not in result
