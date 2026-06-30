@@ -592,6 +592,70 @@ async def test_set_fact_unknown_path_returns_error(
     assert blob == {}
 
 
+@respx.mock
+async def test_set_fact_fluid_path_integer_coerced_from_string(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    """Integer value supplied as a string is coerced to int before being stored.
+
+    The schema has no Fluid Integer leaf, so check_write_permitted is monkeypatched
+    to return "Fluid" for Setting.Temporal.Current-Year (a real Integer leaf).
+    """
+    import unittest.mock
+
+    _path = "Setting.Temporal.Current-Year"
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    with unittest.mock.patch(
+        "memories.services.evaluator.check_write_permitted", return_value="Fluid"
+    ):
+        respx.post(_CHAT_URL).mock(
+            return_value=httpx.Response(
+                200,
+                content=make_multi_tool_call_response(
+                    [
+                        ("set_fact", {"path": _path, "value": "2024"}),
+                        ("report_pass", {}),
+                    ]
+                ),
+            )
+        )
+        _, blob = await run_evaluator(db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama)
+
+    node: Any = blob
+    for part in _path.split("."):
+        node = node[part]
+    assert node["Value"] == 2024
+    assert isinstance(node["Value"], int)
+
+
+@respx.mock
+async def test_set_fact_fluid_path_integer_invalid_string_returns_error_and_path_unwritten(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    """A non-integer string for an Integer leaf returns an error; blob is unchanged."""
+    import unittest.mock
+
+    _path = "Setting.Temporal.Current-Year"
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    with unittest.mock.patch(
+        "memories.services.evaluator.check_write_permitted", return_value="Fluid"
+    ):
+        respx.post(_CHAT_URL).mock(
+            return_value=httpx.Response(
+                200,
+                content=make_multi_tool_call_response(
+                    [
+                        ("set_fact", {"path": _path, "value": "not-a-number"}),
+                        ("report_pass", {}),
+                    ]
+                ),
+            )
+        )
+        _, blob = await run_evaluator(db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama)
+
+    assert "Setting" not in blob
+
+
 # ---------------------------------------------------------------------------
 # _handle_set_fact — immutable path
 # ---------------------------------------------------------------------------
