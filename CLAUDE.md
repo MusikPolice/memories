@@ -143,6 +143,10 @@ src/memories/
 
 **Model warmup**: at lifespan start, `_warmup_models()` sends `POST /api/generate` with `keep_alive: 10m` for every model in the DB. Connection/response errors are logged as warnings and do not block startup.
 
+**`_set_leaf` type convention**: helper functions that write a value into the blob use `str | int | float | bool | None` for the `value` parameter — never `Any`. Using `Any` triggers ruff `ANN401`. The same convention applies to any function that reads a leaf value out of the blob (`-> str | int | float | bool | None`). See `world_builder.py` and `evaluator.py` for the established pattern.
+
+**`pass_name` bandit false positive**: `store_decision(..., pass_name="character_evaluator", ...)` triggers bandit `B106` ("hardcoded password funcarg"). Add `# nosec B106` on the `pass_name=` line to suppress it. Every call site in the codebase already follows this pattern.
+
 ### Test layout
 
 ```

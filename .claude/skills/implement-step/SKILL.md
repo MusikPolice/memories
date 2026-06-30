@@ -26,15 +26,23 @@ Pay particular attention to:
 
 Also read `CLAUDE.md` for architecture conventions and the key patterns section.
 
-## 2. See the current failure picture
+## 2. Check that the test suite exists
 
-Before writing any code, run the tests to understand what's failing and why:
+Run the tests first:
 
 ```
 uv run pytest --no-cov -x 2>&1 | head -80
 ```
 
-This tells you the exact import errors, attribute errors, and assertion failures
+**If all tests pass (exit 0, zero failures):** the step N tests have not been
+written yet — `/write-step-tests N` was never run. Do not proceed with
+implementation. Stop and tell the user:
+
+> "No failing tests found for step N. Run `/write-step-tests N` first so there
+> is something to implement against, then re-run `/implement-step N`."
+
+**If tests fail:** you have the right starting state. Read the failure output —
+it tells you the exact import errors, attribute errors, and assertion failures
 you need to resolve, and in what order.
 
 ## 3. Implement in dependency order
@@ -85,6 +93,16 @@ This fires frequently when wrapping library exceptions in project-specific ones.
 
 **mypy** — runs on `src/` only (not `tests/`). Fix all type errors. Common
 causes: missing `Optional`, wrong return type, unguarded `None` access.
+
+**ruff ANN401** — `Any` in a type annotation (`value: Any`, `-> Any | None`).
+Use concrete union types instead: `str | int | float | bool | None` for blob
+leaf values. The `Any` annotation itself is what triggers ANN401; removing the
+annotation entirely or using a union type both fix it.
+
+**bandit B106** — `pass_name="character_evaluator"` (and similar string
+literals in `pass_name=` arguments) triggers "hardcoded password" false
+positives. Add `# nosec B106` on the same line as the `pass_name=` argument.
+This is already the pattern in `world_builder.py` and `chat_service.py`.
 
 **bandit** — security scan. The most common false positive in this project is
 `B101` (assert in non-test code); the `pyproject.toml` bandit config skips it
