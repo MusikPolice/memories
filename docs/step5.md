@@ -1779,4 +1779,31 @@ No changes to `src/memories/database.py`, `src/memories/models/__init__.py`,
 
 ## Post-Implementation Cleanup Tasks
 
-(Populated by `/review-step` after implementation.)
+### CT-1: Integer coercion branch in `_handle_set_fact` is dead code with no test
+
+**Decided:** Fix in follow-up
+
+The `elif leaf["Type"] == "Integer": coerced = int(value)` branch inside the
+`if mutability == "Fluid":` block of `_handle_set_fact` in
+`src/memories/services/evaluator.py` (lines ~315–319) can never be reached with
+the current schema — every Integer leaf (`Character.Identity.Age`,
+`User.Identity.Age`, `Setting.Temporal.Current-Year`) is Immutable or Mutable,
+not Fluid. The spec listed `test_set_fact_fluid_path_integer_coerced_from_string`
+explicitly in the Test Plan and acknowledged the schema gap, directing the
+implementer to either add a Fluid Integer leaf to a test-local schema fixture or
+monkeypatch `check_write_permitted`. Neither was done. If a Fluid Integer leaf is
+added to the schema later, a model could silently write the string `"42"` instead
+of the int `42`, corrupting the blob without any test to catch it.
+
+**What to do:**
+1. In `tests/unit/test_evaluator_service.py`, add
+   `test_set_fact_fluid_path_integer_coerced_from_string` that exercises the
+   Integer coercion branch. The cleanest approach is to patch
+   `memories.services.evaluator.leaves_by_path` (or monkeypatch
+   `check_write_permitted`) to make one path resolve to
+   `{"Type": "Integer", "Mutability": "Fluid"}`, then confirm that after calling
+   `run_evaluator` with a string `"42"`, the returned blob contains the integer
+   `42`, not the string `"42"`.
+2. Also add a companion test that confirms an invalid integer string (e.g.
+   `"not-a-number"`) returns an error starting with `"Error:"` and leaves the
+   blob unchanged.
