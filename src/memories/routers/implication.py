@@ -21,7 +21,6 @@ from memories.database import (
     get_messages,
     get_session,
     replace_message_content,
-    store_decision,
     update_fact,
 )
 from memories.deps import get_db, get_ollama
@@ -132,6 +131,9 @@ async def accept_implication(
     user_text = user_msg.content if user_msg else ""
 
     new_content, _, ev = await run_contradiction_loop(
+        db,
+        session_id,
+        turn_id,
         model,
         history_messages,
         character,
@@ -149,17 +151,6 @@ async def accept_implication(
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail="Turn not found") from exc
-
-    await store_decision(
-        db,
-        character_id=session.character_id,
-        session_id=session_id,
-        turn_id=turn_id,
-        pass_name="character_evaluator",  # nosec B106
-        tool_name="evaluator_verdict",
-        tool_args={"verdict": ev.verdict},
-        user_input=None,
-    )
 
     response: dict[str, Any] = {"content": new_content, "turn_id": turn_id}
     # If the regenerated response is itself ungrounded, surface that to the caller

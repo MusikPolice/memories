@@ -8,7 +8,8 @@ what order — not the HTTP or SQL layers themselves.
 Every successful run_turn call makes THREE /api/chat requests (mocked via _CHAT_URL):
   calls[0] — World Builder LLM (Step 4)
   calls[1] — character LLM
-  calls[2] — evaluator LLM
+  calls[2] — evaluator LLM (tool-calling, non-streaming; may be more than one HTTP
+              request if nudge/retry behaviour is exercised)
 All tests that complete a turn successfully must therefore mock all three calls.
 calls[0] may be more than one HTTP request if the World Builder's mock simulates
 multiple tool-call rounds — the default `_mock_world_builder()` helper used by most
@@ -51,13 +52,12 @@ from memories.models import Character, Session
 from memories.services.chat_service import MAX_CONTRADICTION_RETRIES, run_turn
 from memories.services.evaluator import EvaluatorResult
 from memories.services.experience_service import get_active_experiences
-from memories.services.inference_service import MAX_INFERENCE_DEPTH
 from memories.services.ollama_client import OllamaClient, OllamaConnectionError
 from memories.services.sse_events import SSEEvent
 from tests.unit.conftest import (
     OLLAMA_BASE_URL,
     make_embed_response,
-    make_evaluator_ndjson,
+    make_multi_tool_call_response,
     make_ollama_ndjson,
     make_plain_tool_response,
     make_tool_call_response,
@@ -73,10 +73,15 @@ def _mock_ok(content: str = "I am fine, thank you.") -> httpx.Response:
 
 def _mock_eval(
     verdict: str = "pass",
-    new_inferences: list[dict] | None = None,
     violations: list[dict] | None = None,
 ) -> httpx.Response:
-    return httpx.Response(200, content=make_evaluator_ndjson(verdict, new_inferences, violations))
+    if verdict == "contradiction":
+        description = (violations or [{}])[0].get("description", "contradiction")
+        return httpx.Response(
+            200,
+            content=make_tool_call_response("report_contradiction", {"description": description}),
+        )
+    return httpx.Response(200, content=make_tool_call_response("report_pass", {}))
 
 
 def _mock_world_builder() -> httpx.Response:
@@ -87,14 +92,13 @@ def _mock_world_builder() -> httpx.Response:
 def _mock_turn(
     character_content: str = "I am fine, thank you.",
     evaluator_verdict: str = "pass",
-    new_inferences: list[dict] | None = None,
     violations: list[dict] | None = None,
 ) -> list[httpx.Response]:
     """Return side_effect list for one complete turn (World Builder + character + evaluator)."""
     return [
         _mock_world_builder(),
         _mock_ok(character_content),
-        _mock_eval(evaluator_verdict, new_inferences, violations),
+        _mock_eval(evaluator_verdict, violations),
     ]
 
 
@@ -283,7 +287,7 @@ async def test_pass_verdict_decision_stored(
         await run_turn(db, session.id, "Hello", ollama)
     decisions = await get_decisions(db, session.id)
     assert len(decisions) == 1
-    assert decisions[0].tool_args["verdict"] == "pass"
+    assert decisions[0].tool_name == "report_pass"
 
 
 async def test_contradiction_response_not_stored_on_first_attempt(
@@ -444,53 +448,6 @@ async def test_contradiction_notifications_collected_per_iteration(
     assert len(eval_result.contradiction_notifications) == 2
 
 
-async def test_new_inference_logical_creates_inference_row(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    inferences = [
-        {
-            "inference_type": "logical",
-            "statement": "Born in 1991",
-            "derivation": "age=33, year=2024",
-            "source_fact_paths": ["Character.Identity.Age"],
-            "source_inference_ids": [],
-        }
-    ]
-    with respx.mock:
-        respx.post(_CHAT_URL).mock(
-            side_effect=_mock_turn(
-                "I was born in 1991.", "new_inference_logical", new_inferences=inferences
-            )
-        )
-        await run_turn(db, session.id, "When were you born?", ollama)
-    stored = await get_inferences(db, character.id)
-    assert any(i.statement == "Born in 1991" for i in stored)
-
-
-async def test_new_inference_probabilistic_does_not_create_db_row(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    """Probabilistic inferences require user confirmation before being stored."""
-    inferences = [
-        {
-            "inference_type": "probabilistic",
-            "statement": "Works long hours",
-            "derivation": "occupation=surgeon",
-            "source_fact_paths": ["Character.Identity.Occupation"],
-            "source_inference_ids": [],
-        }
-    ]
-    with respx.mock:
-        respx.post(_CHAT_URL).mock(
-            side_effect=_mock_turn(
-                "I work very long hours.", "new_inference_probabilistic", new_inferences=inferences
-            )
-        )
-        await run_turn(db, session.id, "Your schedule?", ollama)
-    stored = await get_inferences(db, character.id)
-    assert stored == []
-
-
 async def test_decision_stored_for_every_completed_turn(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
@@ -505,30 +462,8 @@ async def test_decision_stored_for_every_completed_turn(
     assert len(decisions) == 2
 
 
-async def test_run_turn_falls_back_to_pass_on_evaluator_parse_error(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    """EvaluatorParseError (e.g. unescaped quote in LLM output) must not crash the request."""
-    # Evaluator LLM returns JSON with an unescaped " — invalid JSON that json.loads rejects.
-    malformed_eval = make_ollama_ndjson('{"verdict": "pass", "decision_log": "height 5\'6" tall"}')
-    with respx.mock:
-        respx.post(_CHAT_URL).mock(
-            side_effect=[
-                _mock_world_builder(),
-                _mock_ok("I am fine."),
-                httpx.Response(200, content=malformed_eval),
-            ]
-        )
-        content, _, _, result, _ = await run_turn(db, session.id, "How are you?", ollama)
-
-    assert content == "I am fine."
-    assert result.verdict == "pass"
-    msgs = await get_messages(db, session.id)
-    assert any(m.role == "assistant" and m.content == "I am fine." for m in msgs)
-
-
 # ---------------------------------------------------------------------------
-# Phase 3 additions — inference loading and depth capping
+# Phase 3 additions — inference loading
 # ---------------------------------------------------------------------------
 
 
@@ -570,104 +505,6 @@ async def test_run_turn_system_message_includes_inference_text(
     body = json.loads(route.calls[1].request.content)
     system_msg = body["messages"][0]["content"]
     assert "Alice likely works weekends" in system_msg
-
-
-async def test_lazy_inference_depth_computed_before_storing(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    """Lazy-discovered logical inference with an existing source at depth 2 is stored at depth 3."""
-    existing = await create_inference(
-        db,
-        character_id=character.id,
-        statement="Existing inference at depth 2",
-        derivation="d",
-        depth=2,
-    )
-    new_inf_payload = [
-        {
-            "inference_type": "logical",
-            "statement": "Derived from depth-2 inference",
-            "derivation": "from existing",
-            "source_fact_paths": [],
-            "source_inference_ids": [existing.id],
-        }
-    ]
-    with respx.mock:
-        respx.post(_CHAT_URL).mock(
-            side_effect=_mock_turn(
-                "Derived statement.", "new_inference_logical", new_inferences=new_inf_payload
-            )
-        )
-        await run_turn(db, session.id, "Tell me more", ollama)
-
-    stored = await get_inferences(db, character.id)
-    new_inf = next((i for i in stored if "Derived from depth-2" in i.statement), None)
-    assert new_inf is not None
-    assert new_inf.depth == 3
-
-
-async def test_lazy_inference_at_max_depth_is_stored(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    """Inference at exactly MAX_INFERENCE_DEPTH is stored (not discarded)."""
-    existing = await create_inference(
-        db,
-        character_id=character.id,
-        statement="Source at max-1 depth",
-        derivation="d",
-        depth=MAX_INFERENCE_DEPTH - 1,
-    )
-    new_inf_payload = [
-        {
-            "inference_type": "logical",
-            "statement": "At exactly max depth",
-            "derivation": "from source",
-            "source_fact_paths": [],
-            "source_inference_ids": [existing.id],
-        }
-    ]
-    with respx.mock:
-        respx.post(_CHAT_URL).mock(
-            side_effect=_mock_turn(
-                "At the limit.", "new_inference_logical", new_inferences=new_inf_payload
-            )
-        )
-        await run_turn(db, session.id, "Depth test", ollama)
-
-    stored = await get_inferences(db, character.id)
-    assert any("At exactly max depth" in i.statement for i in stored)
-
-
-async def test_lazy_inference_exceeding_depth_cap_not_stored(
-    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
-) -> None:
-    """Inference whose depth would exceed MAX_INFERENCE_DEPTH is silently discarded."""
-    existing = await create_inference(
-        db,
-        character_id=character.id,
-        statement="Source at max depth",
-        derivation="d",
-        depth=MAX_INFERENCE_DEPTH,
-    )
-    new_inf_payload = [
-        {
-            "inference_type": "logical",
-            "statement": "Exceeds the cap",
-            "derivation": "from source",
-            "source_fact_paths": [],
-            "source_inference_ids": [existing.id],
-        }
-    ]
-    with respx.mock:
-        respx.post(_CHAT_URL).mock(
-            side_effect=_mock_turn(
-                "Too deep.", "new_inference_logical", new_inferences=new_inf_payload
-            )
-        )
-        await run_turn(db, session.id, "Depth exceeded", ollama)
-
-    stored = await get_inferences(db, character.id)
-    assert not any("Exceeds the cap" in i.statement for i in stored)
 
 
 async def test_evaluator_called_with_inferences(
@@ -1059,3 +896,118 @@ async def test_run_turn_world_builder_no_sidechannel_when_no_facts_written(
         await run_turn(db, session.id, "Hello", ollama, on_event=_on_event)
 
     assert not any(e.data.get("type") == "world_builder_applied" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Step 5 additions — evaluator tool-call integration
+# ---------------------------------------------------------------------------
+
+
+async def test_run_turn_evaluator_fluid_set_fact_writes_to_blob(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                _mock_ok("I am feeling anxious."),
+                httpx.Response(
+                    200,
+                    content=make_multi_tool_call_response(
+                        [
+                            (
+                                "set_fact",
+                                {
+                                    "path": "Character.State-Of-Mind.Mood",
+                                    "value": "Anxious",
+                                },
+                            ),
+                            ("report_pass", {}),
+                        ]
+                    ),
+                ),
+            ]
+        )
+        await run_turn(db, session.id, "How are you feeling?", ollama)
+
+    facts = await get_facts(db, character.id)
+    assert facts["Character"]["State-Of-Mind"]["Mood"]["Value"] == "Anxious"
+
+
+async def test_run_turn_evaluator_fluid_set_fact_emits_sidechannel(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    events: list[SSEEvent] = []
+
+    async def _on_event(ev: SSEEvent) -> None:
+        events.append(ev)
+
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                _mock_ok("I am feeling anxious."),
+                httpx.Response(
+                    200,
+                    content=make_multi_tool_call_response(
+                        [
+                            (
+                                "set_fact",
+                                {
+                                    "path": "Character.State-Of-Mind.Mood",
+                                    "value": "Anxious",
+                                },
+                            ),
+                            ("report_pass", {}),
+                        ]
+                    ),
+                ),
+            ]
+        )
+        await run_turn(db, session.id, "How are you?", ollama, on_event=_on_event)
+
+    sc_events = [e for e in events if e.event == "sidechannel"]
+    assert any(e.data.get("type") == "fact_update_fluid" for e in sc_events)
+
+
+async def test_run_turn_evaluator_propose_inference_writes_row(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                _mock_ok("I work very long hours as a surgeon."),
+                httpx.Response(
+                    200,
+                    content=make_multi_tool_call_response(
+                        [
+                            (
+                                "propose_inference",
+                                {
+                                    "statement": "Alice works long hours",
+                                    "derivation": "occupation=surgeon",
+                                },
+                            ),
+                            ("report_pass", {}),
+                        ]
+                    ),
+                ),
+            ]
+        )
+        await run_turn(db, session.id, "Your schedule?", ollama)
+
+    stored = await get_inferences(db, character.id)
+    assert any(i.statement == "Alice works long hours" for i in stored)
+
+
+async def test_run_turn_decisions_no_longer_include_evaluator_verdict_tool_name(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """Regression guard: no decision row should ever have tool_name='evaluator_verdict'."""
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Hello", ollama)
+
+    decisions = await get_decisions(db, session.id)
+    assert not any(d.tool_name == "evaluator_verdict" for d in decisions)

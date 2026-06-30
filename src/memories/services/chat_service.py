@@ -10,14 +10,12 @@ from typing import Any, cast
 import aiosqlite
 
 from memories.database import (
-    create_inference,
     get_character,
     get_facts,
     get_inferences,
     get_messages,
     get_session,
     next_turn_id,
-    store_decision,
     store_message,
 )
 from memories.exceptions import NotFoundError, SessionEndedError
@@ -34,7 +32,6 @@ from memories.services.experience_service import (
     clear_active_experiences,
     retrieve_experiences,
 )
-from memories.services.inference_service import MAX_INFERENCE_DEPTH, compute_depth
 from memories.services.ollama_client import (
     OllamaClient,
     OllamaConnectionError,
@@ -51,6 +48,9 @@ MAX_CONTRADICTION_RETRIES: int = int(os.getenv("MAX_CONTRADICTION_RETRIES", "3")
 
 
 async def run_contradiction_loop(
+    db: aiosqlite.Connection,
+    session_id: int,
+    turn_id: int,
     model: str,
     base_messages: list[dict[str, str]],
     character: Character,
@@ -95,8 +95,11 @@ async def run_contradiction_loop(
         if attempt == 0 and on_event is not None:
             await on_event(SSEEvent(event="status", data={"state": "reviewing"}))
         try:
-            ev = await run_evaluator(
+            ev, facts_blob = await run_evaluator(
+                db,
                 character,
+                session_id,
+                turn_id,
                 facts_blob,
                 user_content,
                 content,
@@ -104,6 +107,7 @@ async def run_contradiction_loop(
                 contradiction_hints=contradiction_hints or None,
                 inferences=inferences or None,
                 experiences=experiences or None,
+                on_event=on_event,
             )
         except EvaluatorParseError:
             _log.warning(
@@ -219,6 +223,9 @@ async def run_turn(
     model = character.current_model_name or character.modelfile_base
 
     char_content, char_thinking, eval_result = await run_contradiction_loop(
+        db,
+        session_id,
+        turn_id,
         model,
         base_messages,
         character,
@@ -238,39 +245,6 @@ async def run_turn(
         role="assistant",
         content=char_content,
         turn_id=turn_id,
-    )
-
-    # Auto-promote logical inferences with depth cap.
-    # Append each stored inference to the snapshot so subsequent depth
-    # computations in the same batch see the correct chain depth.
-    if eval_result.verdict == "new_inference_logical":
-        for inf in eval_result.new_inferences:
-            if inf.inference_type != "logical":
-                continue
-            depth = compute_depth(inf.source_inference_ids, inferences)
-            if depth > MAX_INFERENCE_DEPTH:
-                continue
-            stored = await create_inference(
-                db,
-                character_id=session.character_id,
-                statement=inf.statement,
-                derivation=inf.derivation,
-                source_inference_ids=inf.source_inference_ids,
-                source_fact_paths=inf.source_fact_paths,
-                inference_type=inf.inference_type,
-                depth=depth,
-            )
-            inferences.append(stored)
-
-    await store_decision(
-        db,
-        character_id=session.character_id,
-        session_id=session_id,
-        turn_id=turn_id,
-        pass_name="character_evaluator",  # nosec B106
-        tool_name="evaluator_verdict",
-        tool_args={"verdict": eval_result.verdict},
-        user_input=None,
     )
 
     if eval_result.max_retries_exceeded:

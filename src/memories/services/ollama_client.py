@@ -33,6 +33,11 @@ class ToolCallResult:
     history: list[dict[str, Any]]  # full message history including all tool turns
     rounds: int  # number of HTTP round-trips made
     cap_reached: bool  # True if the loop was cut short by max_rounds
+    # Set when a round contains a call to a tool named in chat_with_tools()'s
+    # terminal_tools argument.  {"name": str, "arguments": dict, "result": str}
+    # for the first such call; None if terminal_tools was not passed or no
+    # terminal tool was called before the loop ended.
+    terminal_call: dict[str, Any] | None = None
 
 
 class OllamaConnectionError(Exception):
@@ -154,14 +159,20 @@ class OllamaClient:
         tools: list[dict[str, Any]],
         tool_handlers: dict[str, ToolHandler],
         max_rounds: int = MAX_TOOL_CALL_ROUNDS,
+        terminal_tools: frozenset[str] | None = None,
     ) -> ToolCallResult:
         """Drive a tool-calling loop against POST /api/chat with ``stream: false``.
 
         Re-invokes the model after each batch of tool calls until it returns
         plain content or ``max_rounds`` is exhausted.  Returns a
         ``ToolCallResult`` whose ``cap_reached`` flag signals whether the loop
-        was cut short.  ``OllamaConnectionError`` and ``OllamaResponseError``
-        propagate unchanged — infrastructure failures are not recoverable here.
+        was cut short.  If ``terminal_tools`` is given, the loop returns as soon
+        as a round contains a call to one of those tool names —
+        ``ToolCallResult.terminal_call`` carries that call's name, arguments,
+        and result.  Pass ``None`` (the default) to preserve the original
+        behaviour of looping until the model returns plain content or
+        ``max_rounds`` is exhausted.  ``OllamaConnectionError`` and
+        ``OllamaResponseError`` propagate unchanged.
         """
         url = f"{self.base_url}/api/chat"
         history: list[dict[str, Any]] = list(messages)
@@ -219,6 +230,7 @@ class OllamaClient:
                 ],
             )
 
+            terminal_call: dict[str, Any] | None = None
             for call in tool_calls:
                 fn: dict[str, Any] = call["function"]
                 name: str = fn["name"]
@@ -242,6 +254,21 @@ class OllamaClient:
                     # results to calls and loops indefinitely.
                     tool_msg["tool_call_id"] = call_id
                 history.append(tool_msg)
+
+                if terminal_tools is not None and terminal_call is None and name in terminal_tools:
+                    terminal_call = {"name": name, "arguments": args, "result": result}
+
+            if terminal_call is not None:
+                log.debug(
+                    "chat_with_tools terminal_call=%s rounds=%d", terminal_call["name"], rounds
+                )
+                return ToolCallResult(
+                    content=content,
+                    history=history,
+                    rounds=rounds,
+                    cap_reached=False,
+                    terminal_call=terminal_call,
+                )
 
         log.debug("chat_with_tools cap_reached rounds=%d", rounds)
         return ToolCallResult(content=content, history=history, rounds=rounds, cap_reached=True)

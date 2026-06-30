@@ -7,7 +7,11 @@ import respx
 from httpx import AsyncClient
 
 from memories.models import Character, Session
-from tests.unit.conftest import make_evaluator_ndjson, make_ollama_ndjson, make_plain_tool_response
+from tests.unit.conftest import (
+    make_ollama_ndjson,
+    make_plain_tool_response,
+    make_tool_call_response,
+)
 
 _OLLAMA_CHAT_URL = "http://test-ollama-integration:11434/api/chat"
 
@@ -16,7 +20,7 @@ def _mock_turn(character_content: str = "I am fine.") -> list[httpx.Response]:
     return [
         httpx.Response(200, content=make_plain_tool_response("Nothing to extract.")),
         httpx.Response(200, content=make_ollama_ndjson(character_content)),
-        httpx.Response(200, content=make_evaluator_ndjson()),
+        httpx.Response(200, content=make_tool_call_response("report_pass", {})),
     ]
 
 
@@ -39,7 +43,7 @@ async def test_get_decisions_after_one_turn(
     assert len(response.json()) == 1
 
 
-async def test_get_decisions_contains_verdict_field(
+async def test_get_decisions_contains_tool_name_field(
     client: AsyncClient, character: Character, session: Session
 ) -> None:
     with respx.mock:
@@ -47,8 +51,8 @@ async def test_get_decisions_contains_verdict_field(
         await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
     response = await client.get(f"/api/sessions/{session.id}/decisions")
     data = response.json()
-    assert "tool_args" in data[0]
-    assert "verdict" in data[0]["tool_args"]
+    assert "tool_name" in data[0]
+    assert data[0]["tool_name"] == "report_pass"
 
 
 async def test_get_decisions_contains_reasoning_field(

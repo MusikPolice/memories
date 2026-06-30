@@ -529,3 +529,192 @@ async def test_handler_is_callable_with_arguments_dict(ollama: OllamaClient) -> 
 
     assert len(received) == 1
     assert isinstance(received[0], dict)
+
+
+# ---------------------------------------------------------------------------
+# Terminal tool behaviour
+# ---------------------------------------------------------------------------
+
+_REPORT_PASS_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {"name": "report_pass", "parameters": {"type": "object", "properties": {}}},
+}
+
+_REPORT_CONTRADICTION_TOOL_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "report_contradiction",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+_TERMINAL_TOOLS_BOTH = frozenset({"report_pass", "report_contradiction"})
+
+
+@respx.mock
+async def test_terminal_tools_none_preserves_existing_behaviour(
+    ollama: OllamaClient,
+) -> None:
+    """When terminal_tools is None, plain-content response ends loop with terminal_call=None."""
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=make_plain_tool_response("Hello!"))
+    )
+    result = await ollama.chat_with_tools(
+        "qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler}, terminal_tools=None
+    )
+
+    assert result.terminal_call is None
+    assert result.cap_reached is False
+    assert result.content == "Hello!"
+
+
+@respx.mock
+async def test_terminal_call_set_when_terminal_tool_invoked(ollama: OllamaClient) -> None:
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=make_tool_call_response("report_pass", {}))
+    )
+    result = await ollama.chat_with_tools(
+        "qwen3:7b",
+        _MESSAGES,
+        [_SET_FACT_TOOL, _REPORT_PASS_TOOL],
+        {"set_fact": _ok_handler, "report_pass": _ok_handler},
+        terminal_tools=frozenset({"report_pass"}),
+    )
+
+    assert result.terminal_call is not None
+    assert result.terminal_call["name"] == "report_pass"
+    assert result.terminal_call["arguments"] == {}
+    assert result.terminal_call["result"] == "OK"
+    assert result.cap_reached is False
+
+
+@respx.mock
+async def test_terminal_call_stops_loop_without_further_http_calls(
+    ollama: OllamaClient,
+) -> None:
+    """After a terminal tool fires, no additional HTTP round-trip should occur."""
+    route = respx.post(_CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(200, content=make_tool_call_response("report_pass", {})),
+        ]
+    )
+    await ollama.chat_with_tools(
+        "qwen3:7b",
+        _MESSAGES,
+        [_REPORT_PASS_TOOL],
+        {"report_pass": _ok_handler},
+        terminal_tools=frozenset({"report_pass"}),
+    )
+
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_terminal_call_processes_other_calls_in_same_round_first(
+    ollama: OllamaClient,
+) -> None:
+    """Non-terminal calls in the same batch are executed before the loop stops."""
+    set_fact_log: list[dict[str, Any]] = []
+
+    async def _log_handler(args: dict[str, Any]) -> str:
+        set_fact_log.append(args)
+        return "OK"
+
+    sf_args: dict[str, Any] = {"path": "Character.State-Of-Mind.Mood", "value": "Anxious"}
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_multi_tool_call_response([("set_fact", sf_args), ("report_pass", {})]),
+        )
+    )
+    result = await ollama.chat_with_tools(
+        "qwen3:7b",
+        _MESSAGES,
+        [_SET_FACT_TOOL, _REPORT_PASS_TOOL],
+        {"set_fact": _log_handler, "report_pass": _ok_handler},
+        terminal_tools=frozenset({"report_pass"}),
+    )
+
+    assert len(set_fact_log) == 1
+    assert set_fact_log[0] == sf_args
+    assert result.terminal_call is not None
+    assert result.terminal_call["name"] == "report_pass"
+
+
+@respx.mock
+async def test_terminal_call_takes_first_match_when_multiple_in_one_round(
+    ollama: OllamaClient,
+) -> None:
+    """When multiple terminal tools fire in one round, the first in call order wins."""
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_multi_tool_call_response(
+                [("report_pass", {}), ("report_contradiction", {})]
+            ),
+        )
+    )
+    result = await ollama.chat_with_tools(
+        "qwen3:7b",
+        _MESSAGES,
+        [_REPORT_PASS_TOOL, _REPORT_CONTRADICTION_TOOL_SCHEMA],
+        {"report_pass": _ok_handler, "report_contradiction": _ok_handler},
+        terminal_tools=_TERMINAL_TOOLS_BOTH,
+    )
+
+    assert result.terminal_call is not None
+    assert result.terminal_call["name"] == "report_pass"
+
+
+@respx.mock
+async def test_non_terminal_tool_calls_continue_looping_as_before(
+    ollama: OllamaClient,
+) -> None:
+    """`terminal_tools` given but model only calls set_fact → loops until plain content."""
+    call_log: list[dict[str, Any]] = []
+
+    async def handler(args: dict[str, Any]) -> str:
+        call_log.append(args)
+        return "OK"
+
+    respx.post(_CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(200, content=make_tool_call_response("set_fact", _DEFAULT_ARGS)),
+            httpx.Response(200, content=make_plain_tool_response("Done.")),
+        ]
+    )
+    result = await ollama.chat_with_tools(
+        "qwen3:7b",
+        _MESSAGES,
+        [_SET_FACT_TOOL, _REPORT_PASS_TOOL],
+        {"set_fact": handler, "report_pass": _ok_handler},
+        terminal_tools=frozenset({"report_pass"}),
+    )
+
+    assert result.terminal_call is None
+    assert result.content == "Done."
+    assert len(call_log) == 1
+
+
+@respx.mock
+async def test_cap_reached_with_terminal_tools_and_no_terminal_call(
+    ollama: OllamaClient,
+) -> None:
+    """`max_rounds` exhausted without a terminal tool → cap_reached=True, terminal_call=None."""
+    respx.post(_CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(200, content=make_tool_call_response("set_fact", _DEFAULT_ARGS)),
+            httpx.Response(200, content=make_tool_call_response("set_fact", _DEFAULT_ARGS)),
+        ]
+    )
+    result = await ollama.chat_with_tools(
+        "qwen3:7b",
+        _MESSAGES,
+        [_SET_FACT_TOOL, _REPORT_PASS_TOOL],
+        {"set_fact": _ok_handler, "report_pass": _ok_handler},
+        max_rounds=2,
+        terminal_tools=frozenset({"report_pass"}),
+    )
+
+    assert result.cap_reached is True
+    assert result.terminal_call is None

@@ -18,7 +18,11 @@ from memories.database import (
     get_messages,
 )
 from memories.models import Character, Session
-from tests.unit.conftest import make_evaluator_ndjson, make_ollama_ndjson, make_plain_tool_response
+from tests.unit.conftest import (
+    make_ollama_ndjson,
+    make_plain_tool_response,
+    make_tool_call_response,
+)
 
 _OLLAMA_CHAT_URL = "http://test-ollama-integration:11434/api/chat"
 
@@ -37,14 +41,11 @@ _INFERENCE_VIOLATION = {
 def _implication_turn(
     character_content: str = "I have a sister, actually.",
 ) -> list[httpx.Response]:
-    """Mock a turn that produces an implication verdict."""
+    """Mock a turn that produces an assistant message (evaluator always returns pass)."""
     return [
         httpx.Response(200, content=make_plain_tool_response("Nothing to extract.")),
         httpx.Response(200, content=make_ollama_ndjson(character_content)),
-        httpx.Response(
-            200,
-            content=make_evaluator_ndjson("implication", violations=[_VIOLATION]),
-        ),
+        httpx.Response(200, content=make_tool_call_response("report_pass", {})),
     ]
 
 
@@ -52,7 +53,7 @@ def _pass_turn(character_content: str = "I am an only child.") -> list[httpx.Res
     """Mock a regeneration turn that produces a pass verdict."""
     return [
         httpx.Response(200, content=make_ollama_ndjson(character_content)),
-        httpx.Response(200, content=make_evaluator_ndjson()),
+        httpx.Response(200, content=make_tool_call_response("report_pass", {})),
     ]
 
 
@@ -160,9 +161,9 @@ async def test_accept_implication_stores_new_decision(
             json={"key": "siblings", "value": "none"},
         )
     decisions = await get_decisions(db, session.id)
-    # Two decisions: one from the original turn (implication), one from the regen (pass)
+    # Two decisions: one from the original turn (report_pass), one from the regen (report_pass)
     assert len(decisions) == 2
-    regen_decision = next(d for d in decisions if d.tool_args.get("verdict") == "pass")
+    regen_decision = next(d for d in decisions if d.tool_name == "report_pass")
     assert regen_decision.turn_id == turn_id
 
 
@@ -182,20 +183,11 @@ async def test_accept_implication_duplicate_key_updates_existing_fact(
             json={"key": "siblings", "value": "one sister"},
         )
 
-    # Trigger a second implication turn where the evaluator proposes a CHANGED
-    # value for the same key.  The filter only strips violations whose suggested
-    # value already matches an existing fact; a different value must still surface.
-    changed_violation = {
-        "type": "implication",
-        "description": "Character now mentions two brothers instead",
-        "suggested_fact": {"key": "siblings", "value": "two brothers"},
-    }
+    # Trigger a second turn to create a new assistant message for the second accept
     second_turn_side_effect = [
         httpx.Response(200, content=make_plain_tool_response("Nothing to extract.")),
         httpx.Response(200, content=make_ollama_ndjson("Actually I have two brothers.")),
-        httpx.Response(
-            200, content=make_evaluator_ndjson("implication", violations=[changed_violation])
-        ),
+        httpx.Response(200, content=make_tool_call_response("report_pass", {})),
     ]
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(side_effect=second_turn_side_effect)
@@ -358,26 +350,12 @@ async def test_accept_second_implication_on_same_turn_succeeds(
     The first accept clears ungrounded_implications on the stored message; the second
     accept was previously blocked by a guard that checked that field.
     """
-    v1 = {
-        "type": "implication",
-        "description": "implied a sister",
-        "suggested_fact": {"key": "siblings", "value": "one sister"},
-    }
-    v2 = {
-        "type": "implication",
-        "description": "implied eye colour",
-        "suggested_fact": {"key": "eye_colour", "value": "brown"},
-    }
-
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(
             side_effect=[
                 httpx.Response(200, content=make_plain_tool_response("Nothing to extract.")),
                 httpx.Response(200, content=make_ollama_ndjson("I have brown eyes and a sister.")),
-                httpx.Response(
-                    200,
-                    content=make_evaluator_ndjson("implication", violations=[v1, v2]),
-                ),
+                httpx.Response(200, content=make_tool_call_response("report_pass", {})),
             ]
         )
         await client.post(
@@ -421,26 +399,12 @@ async def probabilistic_session(
     session: Session,
 ) -> tuple[Session, int]:
     """Set up a session with one completed new_inference_probabilistic verdict turn."""
-    inferences = [
-        {
-            "inference_type": "probabilistic",
-            "statement": "Alice works long hours",
-            "derivation": "occupation=surgeon",
-            "source_fact_ids": [1],
-            "source_inference_ids": [],
-        }
-    ]
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(
             side_effect=[
                 httpx.Response(200, content=make_plain_tool_response("Nothing to extract.")),
                 httpx.Response(200, content=make_ollama_ndjson("I work very long hours.")),
-                httpx.Response(
-                    200,
-                    content=make_evaluator_ndjson(
-                        "new_inference_probabilistic", new_inferences=inferences
-                    ),
-                ),
+                httpx.Response(200, content=make_tool_call_response("report_pass", {})),
             ]
         )
         await client.post(

@@ -17,13 +17,12 @@ from memories.database import (
     get_decisions,
     get_fact_rows,
     get_facts,
-    get_inferences,
     get_messages,
     set_facts,
 )
 from memories.models import Character, Session
 from tests.unit.conftest import (
-    make_evaluator_ndjson,
+    make_multi_tool_call_response,
     make_ollama_ndjson,
     make_plain_tool_response,
     make_tool_call_response,
@@ -44,23 +43,27 @@ def _mock_world_builder() -> httpx.Response:
 
 def _mock_eval(
     verdict: str = "pass",
-    new_inferences: list[dict] | None = None,
     violations: list[dict] | None = None,
 ) -> httpx.Response:
-    return httpx.Response(200, content=make_evaluator_ndjson(verdict, new_inferences, violations))
+    if verdict == "contradiction":
+        description = (violations or [{}])[0].get("description", "contradiction")
+        return httpx.Response(
+            200,
+            content=make_tool_call_response("report_contradiction", {"description": description}),
+        )
+    return httpx.Response(200, content=make_tool_call_response("report_pass", {}))
 
 
 def _mock_turn(
     character_content: str = "I am fine.",
     evaluator_verdict: str = "pass",
-    new_inferences: list[dict] | None = None,
     violations: list[dict] | None = None,
 ) -> list[httpx.Response]:
     """Return a side_effect list for one complete turn (World Builder + character + evaluator)."""
     return [
         _mock_world_builder(),
         _mock_ok(character_content),
-        _mock_eval(evaluator_verdict, new_inferences, violations),
+        _mock_eval(evaluator_verdict, violations),
     ]
 
 
@@ -307,7 +310,7 @@ async def test_send_message_pass_verdict_decision_stored(
         await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
     decisions = await get_decisions(db, session.id)
     assert len(decisions) == 1
-    assert decisions[0].tool_args["verdict"] == "pass"
+    assert decisions[0].tool_name == "report_pass"
 
 
 async def test_send_message_contradiction_emits_sidechannel_before_message(
@@ -413,58 +416,6 @@ async def test_send_message_max_retries_exceeded_flag_in_message(
     assert data.get("contradiction_exhausted") is True
 
 
-async def test_send_message_new_inference_logical_stored(
-    db: aiosqlite.Connection,
-    client: AsyncClient,
-    character: Character,
-    session: Session,
-) -> None:
-    inferences = [
-        {
-            "inference_type": "logical",
-            "statement": "Born in 1991",
-            "derivation": "age=33, year=2024",
-            "source_fact_ids": [],
-            "source_inference_ids": [],
-        }
-    ]
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(
-            side_effect=_mock_turn(
-                "Born in 1991.", "new_inference_logical", new_inferences=inferences
-            )
-        )
-        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "When born?"})
-    stored = await get_inferences(db, character.id)
-    assert any(i.statement == "Born in 1991" for i in stored)
-
-
-async def test_send_message_new_inference_probabilistic_emits_sidechannel(
-    client: AsyncClient, character: Character, session: Session
-) -> None:
-    inferences = [
-        {
-            "inference_type": "probabilistic",
-            "statement": "Works long hours",
-            "derivation": "occupation=surgeon",
-            "source_fact_ids": [],
-            "source_inference_ids": [],
-        }
-    ]
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(
-            side_effect=_mock_turn(
-                "I work very long hours.", "new_inference_probabilistic", new_inferences=inferences
-            )
-        )
-        response = await client.post(
-            f"/api/sessions/{session.id}/messages", json={"content": "Your schedule?"}
-        )
-    events = _parse_sse(response.text)
-    sc_events = [e for e in events if e.get("event") == "sidechannel"]
-    assert any(json.loads(e["data"])["type"] == "new_inference_probabilistic" for e in sc_events)
-
-
 async def test_send_message_status_event_order_for_pass(
     client: AsyncClient, character: Character, session: Session
 ) -> None:
@@ -556,167 +507,105 @@ async def test_send_message_no_inferences_section_when_none_exist(
     assert "## Your Inferences" not in system_content
 
 
-async def test_send_message_lazy_logical_inference_stored_with_depth(
-    db: aiosqlite.Connection,
-    client: AsyncClient,
-    character: Character,
-    session: Session,
+# ---------------------------------------------------------------------------
+# Step 5 additions — evaluator tool-call SSE events
+# ---------------------------------------------------------------------------
+
+
+async def test_send_message_fact_update_fluid_emits_sidechannel(
+    client: AsyncClient, character: Character, session: Session
 ) -> None:
-    """new_inference_logical with source_inference_ids=[existing_id] → stored with depth=2."""
-    existing = await create_inference(
-        db,
-        character_id=character.id,
-        statement="Existing at depth 1",
-        derivation="d",
-        depth=1,
-    )
-    new_inf_payload = [
-        {
-            "inference_type": "logical",
-            "statement": "Derived from existing",
-            "derivation": "from existing",
-            "source_fact_ids": [],
-            "source_inference_ids": [existing.id],
-        }
+    """When evaluator calls set_fact on a Fluid path, a fact_update_fluid sidechannel fires."""
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                _mock_ok("I feel anxious today."),
+                httpx.Response(
+                    200,
+                    content=make_multi_tool_call_response(
+                        [
+                            (
+                                "set_fact",
+                                {
+                                    "path": "Character.State-Of-Mind.Mood",
+                                    "value": "Anxious",
+                                },
+                            ),
+                            ("report_pass", {}),
+                        ]
+                    ),
+                ),
+            ]
+        )
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages", json={"content": "How are you?"}
+        )
+    events = _parse_sse(response.text)
+    sc_events = [e for e in events if e.get("event") == "sidechannel"]
+    assert any(json.loads(e["data"]).get("type") == "fact_update_fluid" for e in sc_events)
+
+
+async def test_send_message_inference_proposed_emits_sidechannel(
+    client: AsyncClient, character: Character, session: Session
+) -> None:
+    """When evaluator calls propose_inference, an inference_proposed sidechannel fires."""
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                _mock_ok("I work very long hours as a surgeon."),
+                httpx.Response(
+                    200,
+                    content=make_multi_tool_call_response(
+                        [
+                            (
+                                "propose_inference",
+                                {
+                                    "statement": "Alice works long hours",
+                                    "derivation": "occupation=surgeon",
+                                },
+                            ),
+                            ("report_pass", {}),
+                        ]
+                    ),
+                ),
+            ]
+        )
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages", json={"content": "Your schedule?"}
+        )
+    events = _parse_sse(response.text)
+    sc_events = [e for e in events if e.get("event") == "sidechannel"]
+    assert any(json.loads(e["data"]).get("type") == "inference_proposed" for e in sc_events)
+
+
+async def test_send_message_evaluator_contradiction_still_triggers_regeneration(
+    client: AsyncClient, character: Character, session: Session
+) -> None:
+    """report_contradiction from the evaluator still triggers a contradiction sidechannel and
+    regeneration, the same as before."""
+    contradiction_violation = [
+        {"type": "contradiction", "description": "wrong city", "suggested_fact": None}
     ]
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(
-            side_effect=_mock_turn(
-                "Statement.", "new_inference_logical", new_inferences=new_inf_payload
-            )
+            side_effect=[
+                _mock_world_builder(),
+                _mock_ok("I'm from London."),
+                _mock_eval("contradiction", violations=contradiction_violation),
+                _mock_ok("I'm from Reykjavik."),
+                _mock_eval("pass"),
+            ]
         )
-        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Tell me"})
-
-    stored = await get_inferences(db, character.id)
-    derived = next((i for i in stored if "Derived from existing" in i.statement), None)
-    assert derived is not None
-    assert derived.depth == 2
-
-
-async def test_send_message_lazy_inference_at_max_depth_is_stored(
-    db: aiosqlite.Connection,
-    client: AsyncClient,
-    character: Character,
-    session: Session,
-) -> None:
-    """Lazy inference at exactly MAX_INFERENCE_DEPTH is stored."""
-    from memories.services.inference_service import MAX_INFERENCE_DEPTH
-
-    existing = await create_inference(
-        db,
-        character_id=character.id,
-        statement="At max-1 depth",
-        derivation="d",
-        depth=MAX_INFERENCE_DEPTH - 1,
-    )
-    new_inf_payload = [
-        {
-            "inference_type": "logical",
-            "statement": "At exactly max depth",
-            "derivation": "from existing",
-            "source_fact_ids": [],
-            "source_inference_ids": [existing.id],
-        }
-    ]
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(
-            side_effect=_mock_turn(
-                "Statement.", "new_inference_logical", new_inferences=new_inf_payload
-            )
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages", json={"content": "Where from?"}
         )
-        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Tell me"})
-
-    stored = await get_inferences(db, character.id)
-    assert any("At exactly max depth" in i.statement for i in stored)
-
-
-async def test_send_message_lazy_inference_exceeding_depth_not_stored(
-    db: aiosqlite.Connection,
-    client: AsyncClient,
-    character: Character,
-    session: Session,
-) -> None:
-    """Lazy inference at depth > MAX_INFERENCE_DEPTH is not stored."""
-    from memories.services.inference_service import MAX_INFERENCE_DEPTH
-
-    existing = await create_inference(
-        db,
-        character_id=character.id,
-        statement="At max depth",
-        derivation="d",
-        depth=MAX_INFERENCE_DEPTH,
-    )
-    new_inf_payload = [
-        {
-            "inference_type": "logical",
-            "statement": "Exceeds depth cap",
-            "derivation": "from existing",
-            "source_fact_ids": [],
-            "source_inference_ids": [existing.id],
-        }
-    ]
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(
-            side_effect=_mock_turn(
-                "Statement.", "new_inference_logical", new_inferences=new_inf_payload
-            )
-        )
-        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Tell me"})
-
-    stored = await get_inferences(db, character.id)
-    assert not any("Exceeds depth cap" in i.statement for i in stored)
-
-
-async def test_send_message_lazy_batch_second_inference_sees_first_in_depth_snapshot(
-    db: aiosqlite.Connection,
-    client: AsyncClient,
-    character: Character,
-    session: Session,
-) -> None:
-    """Depth snapshot is refreshed per-inference in a batch so B cites A correctly.
-
-    Scenario: E exists at depth 1.  Evaluator returns [A (cites E, depth=2),
-    B (cites A, should be depth=3)].  Without the snapshot-append fix, B would
-    not see A in the snapshot and fall back to depth=1.
-    """
-    existing = await create_inference(
-        db, character_id=character.id, statement="E at depth 1", derivation="e", depth=1
-    )
-    # Determine A's expected database id so we can reference it in B's payload
-    row = await (await db.execute("SELECT COALESCE(MAX(id), 0) FROM inferences")).fetchone()
-    assert row is not None
-    a_expected_id = row[0] + 1
-
-    new_inf_payload = [
-        {
-            "inference_type": "logical",
-            "statement": "Inference A (cites E)",
-            "derivation": "from E",
-            "source_fact_ids": [],
-            "source_inference_ids": [existing.id],
-        },
-        {
-            "inference_type": "logical",
-            "statement": "Inference B (cites A)",
-            "derivation": "from A",
-            "source_fact_ids": [],
-            "source_inference_ids": [a_expected_id],
-        },
-    ]
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(
-            side_effect=_mock_turn(
-                "Statement.", "new_inference_logical", new_inferences=new_inf_payload
-            )
-        )
-        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Tell me"})
-
-    stored = await get_inferences(db, character.id)
-    inf_a = next(i for i in stored if "Inference A" in i.statement)
-    inf_b = next(i for i in stored if "Inference B" in i.statement)
-    assert inf_a.depth == 2
-    # Without the snapshot refresh, B's compute_depth would not find A and return 1
-    assert inf_b.depth == 3
+    events = _parse_sse(response.text)
+    sc_events = [e for e in events if e.get("event") == "sidechannel"]
+    assert any(json.loads(e["data"]).get("type") == "contradiction" for e in sc_events)
+    msg_event = next(e for e in events if e.get("event") == "message")
+    assert json.loads(msg_event["data"])["content"] == "I'm from Reykjavik."
 
 
 # ---------------------------------------------------------------------------
@@ -1128,9 +1017,7 @@ async def test_accept_implication_on_high_mutability_fact_preserves_mutability(
             side_effect=[
                 _mock_world_builder(),
                 httpx.Response(200, content=make_ollama_ndjson("I feel anxious today.")),
-                httpx.Response(
-                    200, content=make_evaluator_ndjson("implication", violations=[_VIOLATION])
-                ),
+                httpx.Response(200, content=make_tool_call_response("report_pass", {})),
             ]
         )
         await client.post(f"/api/sessions/{session.id}/messages", json={"content": "How are you?"})
