@@ -718,3 +718,116 @@ async def test_cap_reached_with_terminal_tools_and_no_terminal_call(
 
     assert result.cap_reached is True
     assert result.terminal_call is None
+
+
+# ---------------------------------------------------------------------------
+# think / thinking behaviour
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_think_false_sent_by_default(ollama: OllamaClient) -> None:
+    route = respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=make_plain_tool_response("Hello!"))
+    )
+    await ollama.chat_with_tools("qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler})
+
+    body = json.loads(route.calls[0].request.content)
+    assert body["think"] is False
+
+
+@respx.mock
+async def test_think_true_sent_when_requested(ollama: OllamaClient) -> None:
+    route = respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=make_plain_tool_response("Hello!"))
+    )
+    await ollama.chat_with_tools(
+        "qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler}, think=True
+    )
+
+    body = json.loads(route.calls[0].request.content)
+    assert body["think"] is True
+
+
+@respx.mock
+async def test_think_sent_in_every_round(ollama: OllamaClient) -> None:
+    route = respx.post(_CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(200, content=make_tool_call_response("set_fact", _DEFAULT_ARGS)),
+            httpx.Response(200, content=make_plain_tool_response("Done.")),
+        ]
+    )
+    await ollama.chat_with_tools(
+        "qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler}, think=True
+    )
+
+    assert len(route.calls) == 2
+    for call in route.calls:
+        body = json.loads(call.request.content)
+        assert body["think"] is True
+
+
+@respx.mock
+async def test_thinking_empty_by_default(ollama: OllamaClient) -> None:
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=make_plain_tool_response("Hello!"))
+    )
+    result = await ollama.chat_with_tools("qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler})
+
+    assert result.thinking == ""
+
+
+@respx.mock
+async def test_thinking_captured_from_plain_content_response(ollama: OllamaClient) -> None:
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200, content=make_plain_tool_response("Hi.", thinking="Considering...")
+        )
+    )
+    result = await ollama.chat_with_tools(
+        "qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler}, think=True
+    )
+
+    assert result.thinking == "Considering..."
+    assert result.content == "Hi."
+
+
+@respx.mock
+async def test_thinking_accumulated_across_tool_and_final_rounds(ollama: OllamaClient) -> None:
+    respx.post(_CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                content=make_tool_call_response_with_thinking(
+                    "set_fact", _DEFAULT_ARGS, thinking="Step one."
+                ),
+            ),
+            httpx.Response(200, content=make_plain_tool_response("Done.", thinking="Step two.")),
+        ]
+    )
+    result = await ollama.chat_with_tools(
+        "qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler}, think=True
+    )
+
+    assert result.thinking == "Step one.Step two."
+    assert result.content == "Done."
+
+
+@respx.mock
+async def test_thinking_still_stripped_from_history(ollama: OllamaClient) -> None:
+    """Thinking is captured on ToolCallResult but not fed back as conversation context."""
+    respx.post(_CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                content=make_tool_call_response_with_thinking(
+                    "set_fact", _DEFAULT_ARGS, thinking="I should record the mood."
+                ),
+            ),
+            httpx.Response(200, content=make_plain_tool_response("Done.")),
+        ]
+    )
+    result = await ollama.chat_with_tools("qwen3:7b", _MESSAGES, _TOOLS, {"set_fact": _ok_handler})
+
+    assert all("thinking" not in m for m in result.history)
+    assert result.thinking != ""

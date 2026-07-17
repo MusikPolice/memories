@@ -23,7 +23,6 @@ from memories.database import (
 from memories.models import Character, Session
 from tests.unit.conftest import (
     make_multi_tool_call_response,
-    make_ollama_ndjson,
     make_plain_tool_response,
     make_tool_call_response,
 )
@@ -34,7 +33,7 @@ _EMBED_VEC = [1.0, 0.0, 0.0, 0.0]
 
 
 def _mock_ok(content: str = "I am fine.") -> httpx.Response:
-    return httpx.Response(200, content=make_ollama_ndjson(content))
+    return httpx.Response(200, content=make_plain_tool_response(content))
 
 
 def _mock_world_builder() -> httpx.Response:
@@ -207,7 +206,7 @@ async def test_thinking_event_emitted_when_model_thinks(
                 _mock_world_builder(),
                 httpx.Response(
                     200,
-                    content=make_ollama_ndjson(
+                    content=make_plain_tool_response(
                         "My answer.", thinking="Let me consider this carefully."
                     ),
                 ),
@@ -1016,7 +1015,7 @@ async def test_accept_implication_on_high_mutability_fact_preserves_mutability(
         respx.post(_OLLAMA_CHAT_URL).mock(
             side_effect=[
                 _mock_world_builder(),
-                httpx.Response(200, content=make_ollama_ndjson("I feel anxious today.")),
+                httpx.Response(200, content=make_plain_tool_response("I feel anxious today.")),
                 httpx.Response(200, content=make_tool_call_response("report_pass", {})),
             ]
         )

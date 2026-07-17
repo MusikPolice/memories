@@ -153,7 +153,7 @@ async def test_undo_user_fact_triggers_cascade(
     fact_with_inference,
 ) -> None:
     """Fact with downstream inferences → stale_inferences non-empty in response."""
-    fact, inference = fact_with_inference
+    fact, _inference = fact_with_inference
     # Change the fact value first so the cascade has something to find
     await update_fact(db, fact_id=fact.id, value="Chicago")
 
@@ -343,7 +343,7 @@ async def test_accept_implicit_fact_tier4_triggers_cascade(
     fact_with_inference,
 ) -> None:
     """Tier 4 acceptance on fact with downstream inferences → stale_inferences non-empty."""
-    fact, inference = fact_with_inference
+    fact, _inference = fact_with_inference
 
     with respx.mock:
         stale_eval = httpx.Response(

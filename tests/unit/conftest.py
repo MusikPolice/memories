@@ -180,12 +180,17 @@ def make_tool_call_response_with_thinking(
     return json.dumps(obj).encode()
 
 
-def make_plain_tool_response(content: str) -> bytes:
-    """Build a non-streaming Ollama JSON response with plain content and no tool calls."""
-    obj = {
-        "message": {"role": "assistant", "content": content, "tool_calls": None},
-        "done": True,
-    }
+def make_plain_tool_response(content: str, thinking: str = "") -> bytes:
+    """Build a non-streaming Ollama JSON response with plain content and no tool calls.
+
+    Pass *thinking* to simulate a final round that both thinks and replies in plain
+    text — the shape `chat_with_tools()` must handle when `think=True` is requested
+    for the Character LLM.
+    """
+    message: dict[str, Any] = {"role": "assistant", "content": content, "tool_calls": None}
+    if thinking:
+        message["thinking"] = thinking
+    obj = {"message": message, "done": True}
     return json.dumps(obj).encode()
 
 

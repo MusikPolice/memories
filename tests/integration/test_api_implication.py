@@ -19,7 +19,6 @@ from memories.database import (
 )
 from memories.models import Character, Session
 from tests.unit.conftest import (
-    make_ollama_ndjson,
     make_plain_tool_response,
     make_tool_call_response,
 )
@@ -44,7 +43,7 @@ def _implication_turn(
     """Mock a turn that produces an assistant message (evaluator always returns pass)."""
     return [
         httpx.Response(200, content=make_plain_tool_response("Nothing to extract.")),
-        httpx.Response(200, content=make_ollama_ndjson(character_content)),
+        httpx.Response(200, content=make_plain_tool_response(character_content)),
         httpx.Response(200, content=make_tool_call_response("report_pass", {})),
     ]
 
@@ -52,7 +51,7 @@ def _implication_turn(
 def _pass_turn(character_content: str = "I am an only child.") -> list[httpx.Response]:
     """Mock a regeneration turn that produces a pass verdict."""
     return [
-        httpx.Response(200, content=make_ollama_ndjson(character_content)),
+        httpx.Response(200, content=make_plain_tool_response(character_content)),
         httpx.Response(200, content=make_tool_call_response("report_pass", {})),
     ]
 
@@ -186,7 +185,7 @@ async def test_accept_implication_duplicate_key_updates_existing_fact(
     # Trigger a second turn to create a new assistant message for the second accept
     second_turn_side_effect = [
         httpx.Response(200, content=make_plain_tool_response("Nothing to extract.")),
-        httpx.Response(200, content=make_ollama_ndjson("Actually I have two brothers.")),
+        httpx.Response(200, content=make_plain_tool_response("Actually I have two brothers.")),
         httpx.Response(200, content=make_tool_call_response("report_pass", {})),
     ]
     with respx.mock:
@@ -354,7 +353,9 @@ async def test_accept_second_implication_on_same_turn_succeeds(
         respx.post(_OLLAMA_CHAT_URL).mock(
             side_effect=[
                 httpx.Response(200, content=make_plain_tool_response("Nothing to extract.")),
-                httpx.Response(200, content=make_ollama_ndjson("I have brown eyes and a sister.")),
+                httpx.Response(
+                    200, content=make_plain_tool_response("I have brown eyes and a sister.")
+                ),
                 httpx.Response(200, content=make_tool_call_response("report_pass", {})),
             ]
         )
@@ -403,7 +404,7 @@ async def probabilistic_session(
         respx.post(_OLLAMA_CHAT_URL).mock(
             side_effect=[
                 httpx.Response(200, content=make_plain_tool_response("Nothing to extract.")),
-                httpx.Response(200, content=make_ollama_ndjson("I work very long hours.")),
+                httpx.Response(200, content=make_plain_tool_response("I work very long hours.")),
                 httpx.Response(200, content=make_tool_call_response("report_pass", {})),
             ]
         )

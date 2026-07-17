@@ -28,6 +28,7 @@ reaches the LLM only via the manually appended base_messages entry, not via hist
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import aiosqlite
@@ -35,6 +36,7 @@ import httpx
 import pytest
 import respx
 
+import memories.services.tool_gate as tool_gate_module
 from memories.database import (
     _embedding_to_blob,
     create_experience,
@@ -54,11 +56,11 @@ from memories.services.evaluator import EvaluatorResult
 from memories.services.experience_service import get_active_experiences
 from memories.services.ollama_client import OllamaClient, OllamaConnectionError
 from memories.services.sse_events import SSEEvent
+from memories.services.tool_gate import resolve_gate
 from tests.unit.conftest import (
     OLLAMA_BASE_URL,
     make_embed_response,
     make_multi_tool_call_response,
-    make_ollama_ndjson,
     make_plain_tool_response,
     make_tool_call_response,
 )
@@ -68,7 +70,7 @@ _EMBED_URL = f"{OLLAMA_BASE_URL}/api/embed"
 
 
 def _mock_ok(content: str = "I am fine, thank you.") -> httpx.Response:
-    return httpx.Response(200, content=make_ollama_ndjson(content))
+    return httpx.Response(200, content=make_plain_tool_response(content))
 
 
 def _mock_eval(
@@ -740,15 +742,13 @@ def _mock_world_builder_writes(path: str, value: str) -> list[httpx.Response]:
 async def test_run_turn_world_builder_runs_before_character_llm(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
-    """calls[0] is the World Builder (uses tools); calls[1] is the character LLM (no tools)."""
+    """calls[0] is the World Builder (uses author_set_facts); calls[1] is the character LLM."""
     with respx.mock:
         route = respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
         await run_turn(db, session.id, "Hello", ollama)
 
     wb_body = json.loads(route.calls[0].request.content)
     assert wb_body["tools"][0]["function"]["name"] == "author_set_facts"
-    char_body = json.loads(route.calls[1].request.content)
-    assert "tools" not in char_body
 
 
 async def test_run_turn_world_builder_writes_fact_to_character_facts_blob(
@@ -850,7 +850,7 @@ async def test_run_turn_no_world_builder_decision_when_no_facts_written(
     assert decisions[0].pass_name == "character_evaluator"
 
 
-async def test_run_turn_character_llm_request_has_no_tools_key(
+async def test_run_turn_character_llm_tools_list_is_require_fact_only(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     with respx.mock:
@@ -858,7 +858,8 @@ async def test_run_turn_character_llm_request_has_no_tools_key(
         await run_turn(db, session.id, "Hello", ollama)
 
     char_body = json.loads(route.calls[1].request.content)
-    assert "tools" not in char_body
+    assert char_body["tools"][0]["function"]["name"] == "require_fact"
+    assert len(char_body["tools"]) == 1
 
 
 async def test_run_turn_world_builder_sidechannel_emitted_via_on_event(
@@ -1011,3 +1012,525 @@ async def test_run_turn_decisions_no_longer_include_evaluator_verdict_tool_name(
 
     decisions = await get_decisions(db, session.id)
     assert not any(d.tool_name == "evaluator_verdict" for d in decisions)
+
+
+# ---------------------------------------------------------------------------
+# Step 6 additions — require_fact
+# ---------------------------------------------------------------------------
+
+
+async def test_run_turn_character_require_fact_suspends_and_resumes(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    events: list[SSEEvent] = []
+    seen = asyncio.Event()
+
+    async def _on_event(ev: SSEEvent) -> None:
+        events.append(ev)
+        if ev.data.get("type") == "require_fact":
+            seen.set()
+
+    async def _resolver() -> None:
+        try:
+            await asyncio.wait_for(seen.wait(), timeout=5.0)
+        except TimeoutError:
+            return
+        resolve_gate(session.id, 1, "Sarah")
+
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                httpx.Response(
+                    200,
+                    content=make_tool_call_response(
+                        "require_fact",
+                        {
+                            "path": "Character.Identity.Name",
+                            "reason": "I need my name to introduce myself",
+                            "suggested_value": "Elena",
+                        },
+                    ),
+                ),
+                httpx.Response(200, content=make_plain_tool_response("Hi, I'm Sarah.")),
+                _mock_eval("pass"),
+            ]
+        )
+        (content, *_rest), _ = await asyncio.gather(
+            run_turn(db, session.id, "What's your name?", ollama, on_event=_on_event),
+            _resolver(),
+        )
+
+    assert content == "Hi, I'm Sarah."
+
+
+async def test_run_turn_character_require_fact_writes_value_to_blob(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    seen = asyncio.Event()
+
+    async def _on_event(ev: SSEEvent) -> None:
+        if ev.data.get("type") == "require_fact":
+            seen.set()
+
+    async def _resolver() -> None:
+        try:
+            await asyncio.wait_for(seen.wait(), timeout=5.0)
+        except TimeoutError:
+            return
+        resolve_gate(session.id, 1, "Sarah")
+
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                httpx.Response(
+                    200,
+                    content=make_tool_call_response(
+                        "require_fact",
+                        {
+                            "path": "Character.Identity.Name",
+                            "reason": "Need name",
+                        },
+                    ),
+                ),
+                httpx.Response(200, content=make_plain_tool_response("Hi, I'm Sarah.")),
+                _mock_eval("pass"),
+            ]
+        )
+        await asyncio.gather(
+            run_turn(db, session.id, "Hello", ollama, on_event=_on_event),
+            _resolver(),
+        )
+
+    facts = await get_facts(db, character.id)
+    assert facts["Character"]["Identity"]["Name"]["Value"] == "Sarah"
+
+
+async def test_run_turn_character_require_fact_dismiss_leaves_path_unset(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    seen = asyncio.Event()
+
+    async def _on_event(ev: SSEEvent) -> None:
+        if ev.data.get("type") == "require_fact":
+            seen.set()
+
+    async def _resolver() -> None:
+        try:
+            await asyncio.wait_for(seen.wait(), timeout=5.0)
+        except TimeoutError:
+            return
+        resolve_gate(session.id, 1, None)
+
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                httpx.Response(
+                    200,
+                    content=make_tool_call_response(
+                        "require_fact",
+                        {
+                            "path": "Character.Identity.Name",
+                            "reason": "Need name",
+                        },
+                    ),
+                ),
+                httpx.Response(200, content=make_plain_tool_response("I'll proceed without it.")),
+                _mock_eval("pass"),
+            ]
+        )
+        (content, *_), _ = await asyncio.gather(
+            run_turn(db, session.id, "Hello", ollama, on_event=_on_event),
+            _resolver(),
+        )
+
+    # After a dismiss the model should acknowledge it can't use the value.
+    assert content == "I'll proceed without it."
+    facts = await get_facts(db, character.id)
+    assert "Name" not in facts.get("Character", {}).get("Identity", {})
+
+
+async def test_run_turn_character_require_fact_logs_decision_with_user_input(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    seen = asyncio.Event()
+
+    async def _on_event(ev: SSEEvent) -> None:
+        if ev.data.get("type") == "require_fact":
+            seen.set()
+
+    async def _resolver() -> None:
+        try:
+            await asyncio.wait_for(seen.wait(), timeout=5.0)
+        except TimeoutError:
+            return
+        resolve_gate(session.id, 1, "Sarah")
+
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                httpx.Response(
+                    200,
+                    content=make_tool_call_response(
+                        "require_fact",
+                        {
+                            "path": "Character.Identity.Name",
+                            "reason": "Need name",
+                        },
+                    ),
+                ),
+                httpx.Response(200, content=make_plain_tool_response("Hi, I'm Sarah.")),
+                _mock_eval("pass"),
+            ]
+        )
+        await asyncio.gather(
+            run_turn(db, session.id, "Hello", ollama, on_event=_on_event),
+            _resolver(),
+        )
+
+    decisions = await get_decisions(db, session.id)
+    rf_decision = next((d for d in decisions if d.tool_name == "require_fact"), None)
+    assert rf_decision is not None
+    assert rf_decision.pass_name == "character_llm"
+    assert rf_decision.user_input == {"value": "Sarah"}
+
+
+async def test_run_turn_character_require_fact_emits_sidechannel_before_suspension(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    events: list[SSEEvent] = []
+    seen = asyncio.Event()
+
+    async def _on_event(ev: SSEEvent) -> None:
+        events.append(ev)
+        if ev.data.get("type") == "require_fact":
+            seen.set()
+
+    async def _resolver() -> None:
+        try:
+            await asyncio.wait_for(seen.wait(), timeout=5.0)
+        except TimeoutError:
+            return
+        resolve_gate(session.id, 1, "Sarah")
+
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                httpx.Response(
+                    200,
+                    content=make_tool_call_response(
+                        "require_fact",
+                        {
+                            "path": "Character.Identity.Name",
+                            "reason": "I need my name to respond",
+                            "suggested_value": "Elena",
+                        },
+                    ),
+                ),
+                httpx.Response(200, content=make_plain_tool_response("Hi, I'm Sarah.")),
+                _mock_eval("pass"),
+            ]
+        )
+        await asyncio.gather(
+            run_turn(db, session.id, "Hello", ollama, on_event=_on_event),
+            _resolver(),
+        )
+
+    rf_events = [e for e in events if e.data.get("type") == "require_fact"]
+    assert len(rf_events) == 1
+    assert rf_events[0].data["path"] == "Character.Identity.Name"
+    assert "reason" in rf_events[0].data
+    assert "suggested_value" in rf_events[0].data
+
+
+async def test_run_turn_gate_removed_after_turn_completes(
+    db: aiosqlite.Connection,
+    character: Character,
+    session: Session,
+    ollama: OllamaClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import memories.services.chat_service as _cs
+
+    create_calls: list[tuple[int, int]] = []
+    _original_create = _cs.create_gate
+    monkeypatch.setattr(
+        _cs, "create_gate", lambda s, t: (create_calls.append((s, t)), _original_create(s, t))[1]
+    )
+
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(side_effect=_mock_turn())
+        await run_turn(db, session.id, "Hello", ollama)
+
+    assert len(create_calls) == 1  # FAILS without implementation (create_gate never called)
+    assert (session.id, 1) not in tool_gate_module._pending
+
+
+async def test_run_turn_gate_removed_after_character_llm_connection_error(
+    db: aiosqlite.Connection,
+    character: Character,
+    session: Session,
+    ollama: OllamaClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import memories.services.chat_service as _cs
+
+    create_calls: list[tuple[int, int]] = []
+    _original_create = _cs.create_gate
+    monkeypatch.setattr(
+        _cs, "create_gate", lambda s, t: (create_calls.append((s, t)), _original_create(s, t))[1]
+    )
+
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                httpx.ConnectError("refused"),
+            ]
+        )
+        with pytest.raises(OllamaConnectionError):
+            await run_turn(db, session.id, "Hello", ollama)
+
+    assert len(create_calls) == 1  # FAILS without implementation (create_gate never called)
+    assert (session.id, 1) not in tool_gate_module._pending
+
+
+async def test_run_turn_character_require_fact_immutable_already_set_returns_error(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    await set_facts(db, character.id, {"Character": {"Identity": {"Name": {"Value": "Alice"}}}})
+    events: list[SSEEvent] = []
+
+    async def _on_event(ev: SSEEvent) -> None:
+        events.append(ev)
+
+    with respx.mock:
+        route = respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                httpx.Response(
+                    200,
+                    content=make_tool_call_response(
+                        "require_fact",
+                        {"path": "Character.Identity.Name", "reason": "Need name"},
+                    ),
+                ),
+                httpx.Response(200, content=make_plain_tool_response("Alice it is.")),
+                _mock_eval("pass"),
+            ]
+        )
+        content, *_ = await run_turn(db, session.id, "Hello", ollama, on_event=_on_event)
+
+    assert content == "Alice it is."
+    assert not any(e.data.get("type") == "require_fact" for e in events)
+    assert len(route.calls) == 4
+
+
+async def test_run_turn_character_require_fact_mutable_path_returns_error(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    events: list[SSEEvent] = []
+
+    async def _on_event(ev: SSEEvent) -> None:
+        events.append(ev)
+
+    with respx.mock:
+        route = respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                httpx.Response(
+                    200,
+                    content=make_tool_call_response(
+                        "require_fact",
+                        {"path": "Character.Identity.Occupation", "reason": "Need job"},
+                    ),
+                ),
+                httpx.Response(200, content=make_plain_tool_response("I'll respond anyway.")),
+                _mock_eval("pass"),
+            ]
+        )
+        content, *_ = await run_turn(db, session.id, "Hello", ollama, on_event=_on_event)
+
+    assert content == "I'll respond anyway."
+    assert not any(e.data.get("type") == "require_fact" for e in events)
+    assert len(route.calls) == 4
+
+
+async def test_run_turn_character_require_fact_unknown_path_returns_error(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    events: list[SSEEvent] = []
+
+    async def _on_event(ev: SSEEvent) -> None:
+        events.append(ev)
+
+    with respx.mock:
+        route = respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                httpx.Response(
+                    200,
+                    content=make_tool_call_response(
+                        "require_fact",
+                        {"path": "Nonexistent.Path", "reason": "Unknown"},
+                    ),
+                ),
+                httpx.Response(200, content=make_plain_tool_response("Proceeding without.")),
+                _mock_eval("pass"),
+            ]
+        )
+        content, *_ = await run_turn(db, session.id, "Hello", ollama, on_event=_on_event)
+
+    assert content == "Proceeding without."
+    assert not any(e.data.get("type") == "require_fact" for e in events)
+    assert len(route.calls) == 4
+
+
+async def test_run_turn_character_require_fact_enum_path_coerced_case_insensitively(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    seen = asyncio.Event()
+
+    async def _on_event(ev: SSEEvent) -> None:
+        if ev.data.get("type") == "require_fact":
+            seen.set()
+
+    async def _resolver() -> None:
+        try:
+            await asyncio.wait_for(seen.wait(), timeout=5.0)
+        except TimeoutError:
+            return
+        resolve_gate(session.id, 1, "athletic")  # lowercase — should be coerced to "Athletic"
+
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                httpx.Response(
+                    200,
+                    content=make_tool_call_response(
+                        "require_fact",
+                        {
+                            "path": "Character.Appearance.Body.Build",
+                            "reason": "Need build to describe character",
+                        },
+                    ),
+                ),
+                httpx.Response(200, content=make_plain_tool_response("I have an athletic build.")),
+                _mock_eval("pass"),
+            ]
+        )
+        await asyncio.gather(
+            run_turn(db, session.id, "Describe yourself", ollama, on_event=_on_event),
+            _resolver(),
+        )
+
+    facts = await get_facts(db, character.id)
+    assert facts["Character"]["Appearance"]["Body"]["Build"]["Value"] == "Athletic"
+
+
+async def test_run_turn_character_require_fact_integer_path_coerced_from_string(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    seen = asyncio.Event()
+
+    async def _on_event(ev: SSEEvent) -> None:
+        if ev.data.get("type") == "require_fact":
+            seen.set()
+
+    async def _resolver() -> None:
+        try:
+            await asyncio.wait_for(seen.wait(), timeout=5.0)
+        except TimeoutError:
+            return
+        resolve_gate(session.id, 1, "34")  # string — should be coerced to int 34
+
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                httpx.Response(
+                    200,
+                    content=make_tool_call_response(
+                        "require_fact",
+                        {
+                            "path": "Character.Identity.Age",
+                            "reason": "Need age",
+                        },
+                    ),
+                ),
+                httpx.Response(200, content=make_plain_tool_response("I am 34 years old.")),
+                _mock_eval("pass"),
+            ]
+        )
+        await asyncio.gather(
+            run_turn(db, session.id, "How old are you?", ollama, on_event=_on_event),
+            _resolver(),
+        )
+
+    facts = await get_facts(db, character.id)
+    assert facts["Character"]["Identity"]["Age"]["Value"] == 34
+
+
+async def test_run_turn_character_two_sequential_require_fact_calls_same_turn(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """The single per-turn gate supports multiple sequential suspend/resume cycles."""
+    name_seen = asyncio.Event()
+    pronouns_seen = asyncio.Event()
+    events: list[SSEEvent] = []
+
+    async def _on_event(ev: SSEEvent) -> None:
+        events.append(ev)
+        if ev.data.get("type") == "require_fact":
+            if ev.data.get("path") == "Character.Identity.Name":
+                name_seen.set()
+            elif ev.data.get("path") == "Character.Identity.Pronouns":
+                pronouns_seen.set()
+
+    async def _resolver() -> None:
+        try:
+            await asyncio.wait_for(name_seen.wait(), timeout=5.0)
+        except TimeoutError:
+            return
+        resolve_gate(session.id, 1, "Sarah")
+        try:
+            await asyncio.wait_for(pronouns_seen.wait(), timeout=5.0)
+        except TimeoutError:
+            return
+        resolve_gate(session.id, 1, "she/her")
+
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                httpx.Response(
+                    200,
+                    content=make_tool_call_response(
+                        "require_fact",
+                        {"path": "Character.Identity.Name", "reason": "Need name"},
+                    ),
+                ),
+                httpx.Response(
+                    200,
+                    content=make_tool_call_response(
+                        "require_fact",
+                        {"path": "Character.Identity.Pronouns", "reason": "Need pronouns"},
+                    ),
+                ),
+                httpx.Response(200, content=make_plain_tool_response("Hi, I'm Sarah, she/her.")),
+                _mock_eval("pass"),
+            ]
+        )
+        (content, *_rest), _ = await asyncio.gather(
+            run_turn(db, session.id, "Who are you?", ollama, on_event=_on_event),
+            _resolver(),
+        )
+
+    assert content == "Hi, I'm Sarah, she/her."
+    rf_events = [e for e in events if e.data.get("type") == "require_fact"]
+    assert len(rf_events) == 2
