@@ -53,7 +53,11 @@ from memories.database import (
 )
 from memories.exceptions import NotFoundError, SessionEndedError
 from memories.models import Character, Session
-from memories.services.chat_service import MAX_CONTRADICTION_RETRIES, run_turn
+from memories.services.chat_service import (
+    MAX_CONTRADICTION_RETRIES,
+    run_contradiction_loop,
+    run_turn,
+)
 from memories.services.evaluator import EvaluatorResult
 from memories.services.experience_service import get_active_experiences
 from memories.services.ollama_client import OllamaClient, OllamaConnectionError
@@ -1587,3 +1591,125 @@ async def test_run_turn_character_two_sequential_require_fact_calls_same_turn(
     assert content == "Hi, I'm Sarah, she/her."
     rf_events = [e for e in events if e.data.get("type") == "require_fact"]
     assert len(rf_events) == 2
+
+
+# ---------------------------------------------------------------------------
+# Step 7 additions — needs_regeneration handling
+# ---------------------------------------------------------------------------
+
+
+async def test_run_contradiction_loop_needs_regeneration_causes_extra_iteration(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    import unittest.mock
+
+    call_count = 0
+
+    async def _fake_evaluator(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return (
+                EvaluatorResult(verdict="pass", decision_log="regen", needs_regeneration=True),
+                {},
+            )
+        return EvaluatorResult(verdict="pass", decision_log="ok"), {}
+
+    model = character.current_model_name or character.modelfile_base
+    messages = [{"role": "user", "content": "hi"}]
+    with (
+        unittest.mock.patch("memories.services.chat_service.run_evaluator", _fake_evaluator),
+        respx.mock,
+    ):
+        route = respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_ok("Response 1"),
+                _mock_ok("Response 2"),
+            ]
+        )
+        content, _, _ = await run_contradiction_loop(
+            db, session.id, 1, model, messages, character, {}, "hi", ollama
+        )
+
+    assert content == "Response 2"
+    assert call_count == 2
+    assert route.call_count == 2
+
+
+async def test_run_contradiction_loop_needs_regeneration_does_not_increment_contradiction_count(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    import unittest.mock
+
+    call_count = 0
+
+    async def _fake_evaluator(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return (
+                EvaluatorResult(verdict="pass", decision_log="regen", needs_regeneration=True),
+                {},
+            )
+        return EvaluatorResult(verdict="pass", decision_log="ok"), {}
+
+    model = character.current_model_name or character.modelfile_base
+    messages = [{"role": "user", "content": "hi"}]
+    with (
+        unittest.mock.patch("memories.services.chat_service.run_evaluator", _fake_evaluator),
+        respx.mock,
+    ):
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_ok("Response 1"),
+                _mock_ok("Response 2"),
+            ]
+        )
+        _, _, eval_result = await run_contradiction_loop(
+            db, session.id, 1, model, messages, character, {}, "hi", ollama
+        )
+
+    assert call_count == 2
+    assert eval_result.contradiction_notifications == []
+
+
+async def test_run_contradiction_loop_needs_regeneration_uses_updated_blob(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    import unittest.mock
+
+    call_count = 0
+    captured_blob: dict = {}
+
+    async def _fake_evaluator(  # type: ignore[no-untyped-def]
+        db, character, session_id, turn_id, facts_blob, *args, **kwargs
+    ):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            updated = dict(facts_blob)
+            updated["_injected"] = True
+            return (
+                EvaluatorResult(verdict="pass", decision_log="regen", needs_regeneration=True),
+                updated,
+            )
+        captured_blob.update(facts_blob)
+        return EvaluatorResult(verdict="pass", decision_log="ok"), facts_blob
+
+    model = character.current_model_name or character.modelfile_base
+    messages = [{"role": "user", "content": "hi"}]
+    with (
+        unittest.mock.patch("memories.services.chat_service.run_evaluator", _fake_evaluator),
+        respx.mock,
+    ):
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_ok("Response 1"),
+                _mock_ok("Response 2"),
+            ]
+        )
+        await run_contradiction_loop(
+            db, session.id, 1, model, messages, character, {}, "hi", ollama
+        )
+
+    assert captured_blob.get("_injected") is True

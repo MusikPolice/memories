@@ -1262,3 +1262,23 @@ async def test_turn_decisions_includes_world_builder_row_when_facts_written(
     response = await client.get(f"/api/sessions/{session.id}/decisions")
     decisions = response.json()
     assert any(d["pass_name"] == "world_builder" for d in decisions)
+
+
+async def test_message_event_has_no_ungrounded_key(
+    db: aiosqlite.Connection,
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+) -> None:
+    with respx.mock:
+        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn("Clean reply."))
+        response = await client.post(
+            f"/api/sessions/{session.id}/messages",
+            json={"content": "Hello."},
+        )
+
+    events = _parse_sse(response.text)
+    message_events = [e for e in events if e.get("event") == "message"]
+    assert len(message_events) == 1
+    msg_data = json.loads(message_events[0]["data"])
+    assert "ungrounded" not in msg_data

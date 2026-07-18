@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from typing import Any
@@ -21,6 +22,7 @@ from memories.services.evaluator import (
 )
 from memories.services.ollama_client import OllamaClient
 from memories.services.sse_events import SSEEvent
+from memories.services.tool_gate import create_gate, resolve_gate
 from tests.unit.conftest import (
     OLLAMA_BASE_URL,
     make_multi_tool_call_response,
@@ -662,29 +664,6 @@ async def test_set_fact_fluid_path_integer_invalid_string_returns_error_and_path
 
 
 @respx.mock
-async def test_set_fact_immutable_unset_returns_stub_error(
-    db: aiosqlite.Connection, ollama: OllamaClient
-) -> None:
-    # Immutable path with no pre-seeded value
-    respx.post(_CHAT_URL).mock(
-        side_effect=[
-            httpx.Response(
-                200,
-                content=make_multi_tool_call_response(
-                    [
-                        ("set_fact", {"path": "Character.Identity.Name", "value": "Bob"}),
-                        ("report_pass", {}),
-                    ]
-                ),
-            ),
-        ]
-    )
-    _, blob = await run_evaluator(db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama)
-    # Stub error returned; no value written
-    assert "Character" not in blob or "Identity" not in blob.get("Character", {})
-
-
-@respx.mock
 async def test_set_fact_immutable_already_set_returns_contradiction_hint(
     db: aiosqlite.Connection, ollama: OllamaClient
 ) -> None:
@@ -754,35 +733,567 @@ async def test_set_fact_immutable_already_set_value_unchanged_in_returned_blob(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# _handle_set_fact — immutable-unset path
+# ---------------------------------------------------------------------------
+
+_IMMU_PATH = "Character.Identity.Name"
+_IMMU_BLOB: dict[str, Any] = {}
+
+
+def _make_gate_resolver(payload: str, gate_opened: asyncio.Event) -> Any:
+    async def _resolver() -> None:
+        try:
+            await asyncio.wait_for(gate_opened.wait(), timeout=2.0)
+        except TimeoutError:
+            return
+        resolve_gate(1, 1, payload)
+
+    return _resolver
+
+
 @respx.mock
-async def test_set_fact_mutable_path_returns_stub_error_regardless_of_current_value(
+async def test_set_fact_immutable_unset_accept_writes_value(
     db: aiosqlite.Connection, ollama: OllamaClient
 ) -> None:
-    tool_results: list[str] = []
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    gate_opened = asyncio.Event()
+    events: list[SSEEvent] = []
 
+    async def on_event(ev: SSEEvent) -> None:
+        events.append(ev)
+        if ev.data.get("type") == "fact_update_immutable_unset":
+            gate_opened.set()
+
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_multi_tool_call_response(
+                [
+                    ("set_fact", {"path": _IMMU_PATH, "value": "Sarah"}),
+                    ("report_pass", {}),
+                ]
+            ),
+        )
+    )
+    create_gate(1, 1)
+    (result, blob), _ = await asyncio.gather(
+        run_evaluator(
+            db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama, on_event=on_event
+        ),
+        _make_gate_resolver(json.dumps({"action": "accept"}), gate_opened)(),
+    )
+
+    assert blob["Character"]["Identity"]["Name"]["Value"] == "Sarah"
+    assert result.verdict == "pass"
+    assert result.needs_regeneration is False
+
+
+@respx.mock
+async def test_set_fact_immutable_unset_accept_logs_decision(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    gate_opened = asyncio.Event()
+
+    async def on_event(ev: SSEEvent) -> None:
+        if ev.data.get("type") == "fact_update_immutable_unset":
+            gate_opened.set()
+
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_multi_tool_call_response(
+                [
+                    ("set_fact", {"path": _IMMU_PATH, "value": "Sarah"}),
+                    ("report_pass", {}),
+                ]
+            ),
+        )
+    )
+    create_gate(1, 1)
+    await asyncio.gather(
+        run_evaluator(
+            db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama, on_event=on_event
+        ),
+        _make_gate_resolver(json.dumps({"action": "accept"}), gate_opened)(),
+    )
+
+    cursor = await db.execute(
+        "SELECT tool_name, tool_args, user_input FROM decisions WHERE character_id = ?",
+        (_CHARACTER.id,),
+    )
+    rows = await cursor.fetchall()
+    sf_row = next(r for r in rows if r[0] == "set_fact")
+    assert json.loads(sf_row[1]) == {"path": _IMMU_PATH, "value": "Sarah"}
+    assert json.loads(sf_row[2]) == {"action": "accept", "value": None}
+
+
+@respx.mock
+async def test_set_fact_immutable_unset_edit_writes_user_value_and_sets_needs_regeneration(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    gate_opened = asyncio.Event()
+
+    async def on_event(ev: SSEEvent) -> None:
+        if ev.data.get("type") == "fact_update_immutable_unset":
+            gate_opened.set()
+
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_multi_tool_call_response(
+                [
+                    ("set_fact", {"path": _IMMU_PATH, "value": "Sarah"}),
+                    ("report_pass", {}),
+                ]
+            ),
+        )
+    )
+    create_gate(1, 1)
+    (result, blob), _ = await asyncio.gather(
+        run_evaluator(
+            db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama, on_event=on_event
+        ),
+        _make_gate_resolver(json.dumps({"action": "edit", "value": "Alice"}), gate_opened)(),
+    )
+
+    assert blob["Character"]["Identity"]["Name"]["Value"] == "Alice"
+    assert result.needs_regeneration is True
+
+
+@respx.mock
+async def test_set_fact_immutable_unset_dismiss_does_not_write_and_no_regeneration(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    gate_opened = asyncio.Event()
+
+    async def on_event(ev: SSEEvent) -> None:
+        if ev.data.get("type") == "fact_update_immutable_unset":
+            gate_opened.set()
+
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_multi_tool_call_response(
+                [
+                    ("set_fact", {"path": _IMMU_PATH, "value": "Sarah"}),
+                    ("report_pass", {}),
+                ]
+            ),
+        )
+    )
+    create_gate(1, 1)
+    (result, blob), _ = await asyncio.gather(
+        run_evaluator(
+            db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama, on_event=on_event
+        ),
+        _make_gate_resolver(json.dumps({"action": "dismiss"}), gate_opened)(),
+    )
+
+    assert "Identity" not in blob.get("Character", {})
+    assert result.needs_regeneration is False
+
+
+@respx.mock
+async def test_set_fact_immutable_unset_emits_sidechannel_card(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    events: list[SSEEvent] = []
+    gate_opened = asyncio.Event()
+
+    async def on_event(ev: SSEEvent) -> None:
+        events.append(ev)
+        if ev.data.get("type") == "fact_update_immutable_unset":
+            gate_opened.set()
+
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_multi_tool_call_response(
+                [
+                    ("set_fact", {"path": _IMMU_PATH, "value": "Sarah"}),
+                    ("report_pass", {}),
+                ]
+            ),
+        )
+    )
+    create_gate(1, 1)
+    await asyncio.gather(
+        run_evaluator(
+            db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama, on_event=on_event
+        ),
+        _make_gate_resolver(json.dumps({"action": "dismiss"}), gate_opened)(),
+    )
+
+    sc = [e for e in events if e.data.get("type") == "fact_update_immutable_unset"]
+    assert len(sc) == 1
+    assert sc[0].data["path"] == _IMMU_PATH
+    assert sc[0].data["proposed"] == "Sarah"
+
+
+@respx.mock
+async def test_set_fact_immutable_unset_invalid_enum_returns_error_before_suspension(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    # Character.Appearance.Body.Build is Immutable+Enum; "Gigantic" is not in its constraint.
+    # The error must be returned before any gate suspension (no gate created).
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_multi_tool_call_response(
+                [
+                    ("set_fact", {"path": "Character.Appearance.Body.Build", "value": "Gigantic"}),
+                    ("report_pass", {}),
+                ]
+            ),
+        )
+    )
+    # No create_gate call — if the impl calls await_gate, it raises KeyError
+    result, blob = await run_evaluator(db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama)
+    assert "Appearance" not in blob.get("Character", {})
+    assert result.needs_regeneration is False
+
+
+@respx.mock
+async def test_set_fact_immutable_unset_edit_enum_coerced_case_insensitively(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    # Character.Appearance.Body.Build is Immutable+Enum; "athletic" should coerce to "Athletic"
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    gate_opened = asyncio.Event()
+
+    async def on_event(ev: SSEEvent) -> None:
+        if ev.data.get("type") == "fact_update_immutable_unset":
+            gate_opened.set()
+
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_multi_tool_call_response(
+                [
+                    (
+                        "set_fact",
+                        {"path": "Character.Appearance.Body.Build", "value": "Athletic"},
+                    ),
+                    ("report_pass", {}),
+                ]
+            ),
+        )
+    )
+    create_gate(1, 1)
+    (_result, blob), _ = await asyncio.gather(
+        run_evaluator(
+            db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama, on_event=on_event
+        ),
+        _make_gate_resolver(json.dumps({"action": "edit", "value": "athletic"}), gate_opened)(),
+    )
+
+    assert blob["Character"]["Appearance"]["Body"]["Build"]["Value"] == "Athletic"
+
+
+@respx.mock
+async def test_set_fact_immutable_unset_edit_integer_coerced_from_string(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
     import unittest.mock
 
-    from memories.services.ollama_client import ToolCallResult
+    _path = "Setting.Temporal.Current-Year"
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    gate_opened = asyncio.Event()
 
-    async def _capturing(self: Any, *args: Any, **kwargs: Any) -> Any:
-        handlers = args[3] if len(args) > 3 else kwargs.get("tool_handlers", {})
-        handler = handlers.get("set_fact")
-        if handler:
-            result = await handler({"path": "Character.Identity.Occupation", "value": "engineer"})
-            tool_results.append(result)
-        return ToolCallResult(
-            content="",
-            history=[],
-            rounds=1,
-            cap_reached=False,
-            terminal_call={"name": "report_pass", "arguments": {}, "result": "Pass recorded."},
+    async def on_event(ev: SSEEvent) -> None:
+        if ev.data.get("type") == "fact_update_immutable_unset":
+            gate_opened.set()
+
+    with unittest.mock.patch(
+        "memories.services.evaluator.check_write_permitted", return_value="Immutable"
+    ):
+        respx.post(_CHAT_URL).mock(
+            return_value=httpx.Response(
+                200,
+                content=make_multi_tool_call_response(
+                    [
+                        ("set_fact", {"path": _path, "value": "2024"}),
+                        ("report_pass", {}),
+                    ]
+                ),
+            )
+        )
+        create_gate(1, 1)
+        (_result, blob), _ = await asyncio.gather(
+            run_evaluator(
+                db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama, on_event=on_event
+            ),
+            _make_gate_resolver(json.dumps({"action": "edit", "value": "2025"}), gate_opened)(),
         )
 
-    with unittest.mock.patch.object(OllamaClient, "chat_with_tools", _capturing):
-        await run_evaluator(db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama)
+    node: Any = blob
+    for part in _path.split("."):
+        node = node[part]
+    assert node["Value"] == 2025
+    assert isinstance(node["Value"], int)
 
-    assert len(tool_results) == 1
-    assert "not implemented" in tool_results[0].lower() or tool_results[0].startswith("Error:")
+
+# ---------------------------------------------------------------------------
+# _handle_set_fact — mutable path
+# ---------------------------------------------------------------------------
+
+_MUT_PATH = "Character.Identity.Occupation"
+
+
+@respx.mock
+async def test_set_fact_mutable_accept_writes_value(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    gate_opened = asyncio.Event()
+
+    async def on_event(ev: SSEEvent) -> None:
+        if ev.data.get("type") == "fact_update_mutable":
+            gate_opened.set()
+
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_multi_tool_call_response(
+                [
+                    ("set_fact", {"path": _MUT_PATH, "value": "engineer"}),
+                    ("report_pass", {}),
+                ]
+            ),
+        )
+    )
+    create_gate(1, 1)
+    (result, blob), _ = await asyncio.gather(
+        run_evaluator(
+            db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama, on_event=on_event
+        ),
+        _make_gate_resolver(json.dumps({"action": "accept"}), gate_opened)(),
+    )
+
+    assert blob["Character"]["Identity"]["Occupation"]["Value"] == "engineer"
+    assert result.verdict == "pass"
+    assert result.needs_regeneration is False
+
+
+@respx.mock
+async def test_set_fact_mutable_accept_logs_decision(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    gate_opened = asyncio.Event()
+
+    async def on_event(ev: SSEEvent) -> None:
+        if ev.data.get("type") == "fact_update_mutable":
+            gate_opened.set()
+
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_multi_tool_call_response(
+                [
+                    ("set_fact", {"path": _MUT_PATH, "value": "engineer"}),
+                    ("report_pass", {}),
+                ]
+            ),
+        )
+    )
+    create_gate(1, 1)
+    await asyncio.gather(
+        run_evaluator(
+            db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama, on_event=on_event
+        ),
+        _make_gate_resolver(json.dumps({"action": "accept"}), gate_opened)(),
+    )
+
+    cursor = await db.execute(
+        "SELECT tool_name, tool_args, user_input FROM decisions WHERE character_id = ?",
+        (_CHARACTER.id,),
+    )
+    rows = await cursor.fetchall()
+    sf_row = next(r for r in rows if r[0] == "set_fact")
+    assert json.loads(sf_row[1]) == {"path": _MUT_PATH, "value": "engineer"}
+    assert json.loads(sf_row[2]) == {"action": "accept", "value": None}
+
+
+@respx.mock
+async def test_set_fact_mutable_edit_writes_user_value_and_sets_needs_regeneration(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    gate_opened = asyncio.Event()
+
+    async def on_event(ev: SSEEvent) -> None:
+        if ev.data.get("type") == "fact_update_mutable":
+            gate_opened.set()
+
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_multi_tool_call_response(
+                [
+                    ("set_fact", {"path": _MUT_PATH, "value": "engineer"}),
+                    ("report_pass", {}),
+                ]
+            ),
+        )
+    )
+    create_gate(1, 1)
+    (result, blob), _ = await asyncio.gather(
+        run_evaluator(
+            db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama, on_event=on_event
+        ),
+        _make_gate_resolver(json.dumps({"action": "edit", "value": "doctor"}), gate_opened)(),
+    )
+
+    assert blob["Character"]["Identity"]["Occupation"]["Value"] == "doctor"
+    assert result.needs_regeneration is True
+
+
+@respx.mock
+async def test_set_fact_mutable_reject_does_not_write_and_sets_needs_regeneration(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    gate_opened = asyncio.Event()
+
+    async def on_event(ev: SSEEvent) -> None:
+        if ev.data.get("type") == "fact_update_mutable":
+            gate_opened.set()
+
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_multi_tool_call_response(
+                [
+                    ("set_fact", {"path": _MUT_PATH, "value": "engineer"}),
+                    ("report_pass", {}),
+                ]
+            ),
+        )
+    )
+    create_gate(1, 1)
+    (result, blob), _ = await asyncio.gather(
+        run_evaluator(
+            db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama, on_event=on_event
+        ),
+        _make_gate_resolver(json.dumps({"action": "reject"}), gate_opened)(),
+    )
+
+    assert "Occupation" not in blob.get("Character", {}).get("Identity", {})
+    assert result.needs_regeneration is True
+
+
+@respx.mock
+async def test_set_fact_mutable_emits_sidechannel_card(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    events: list[SSEEvent] = []
+    gate_opened = asyncio.Event()
+
+    async def on_event(ev: SSEEvent) -> None:
+        events.append(ev)
+        if ev.data.get("type") == "fact_update_mutable":
+            gate_opened.set()
+
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_multi_tool_call_response(
+                [
+                    ("set_fact", {"path": _MUT_PATH, "value": "engineer"}),
+                    ("report_pass", {}),
+                ]
+            ),
+        )
+    )
+    create_gate(1, 1)
+    await asyncio.gather(
+        run_evaluator(
+            db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama, on_event=on_event
+        ),
+        _make_gate_resolver(json.dumps({"action": "accept"}), gate_opened)(),
+    )
+
+    sc = [e for e in events if e.data.get("type") == "fact_update_mutable"]
+    assert len(sc) == 1
+    assert sc[0].data["path"] == _MUT_PATH
+    assert sc[0].data["proposed"] == "engineer"
+
+
+@respx.mock
+async def test_set_fact_mutable_invalid_enum_returns_error_before_suspension(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    import unittest.mock
+
+    # Patch Body.Build (Enum+Immutable) to behave as Mutable to test Mutable+Enum validation.
+    await set_facts(db, character_id=_CHARACTER.id, blob={})
+    with unittest.mock.patch(
+        "memories.services.evaluator.check_write_permitted", return_value="Mutable"
+    ):
+        respx.post(_CHAT_URL).mock(
+            return_value=httpx.Response(
+                200,
+                content=make_multi_tool_call_response(
+                    [
+                        (
+                            "set_fact",
+                            {"path": "Character.Appearance.Body.Build", "value": "Gigantic"},
+                        ),
+                        ("report_pass", {}),
+                    ]
+                ),
+            )
+        )
+        # No create_gate — if impl calls await_gate without a gate, raises KeyError
+        result, blob = await run_evaluator(
+            db, _CHARACTER, 1, 1, {}, _USER_MSG, _CHAR_RESPONSE, ollama
+        )
+
+    assert "Appearance" not in blob.get("Character", {})
+    assert result.needs_regeneration is False
+
+
+# ---------------------------------------------------------------------------
+# EvaluatorResult.needs_regeneration
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_evaluator_result_needs_regeneration_defaults_to_false(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(200, content=make_tool_call_response("report_pass", {}))
+    )
+    result, _ = await run_evaluator(
+        db, _CHARACTER, 1, 1, _FACTS_BLOB, _USER_MSG, _CHAR_RESPONSE, ollama
+    )
+    assert result.needs_regeneration is False
+
+
+@respx.mock
+async def test_evaluator_result_needs_regeneration_false_on_contradiction(
+    db: aiosqlite.Connection, ollama: OllamaClient
+) -> None:
+    respx.post(_CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=make_tool_call_response("report_contradiction", {"description": "wrong city"}),
+        )
+    )
+    result, _ = await run_evaluator(
+        db, _CHARACTER, 1, 1, _FACTS_BLOB, _USER_MSG, _CHAR_RESPONSE, ollama
+    )
+    assert result.verdict == "contradiction"
+    assert result.needs_regeneration is False
 
 
 # ---------------------------------------------------------------------------
