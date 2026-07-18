@@ -1293,3 +1293,42 @@ behaviour or `chat_with_tools()`'s gate-agnostic contract.
 ---
 
 ## Post-Implementation Cleanup Tasks
+
+### CT-1: Missing `get_facts()` assertion in `test_require_fact_dismiss_resolves_with_none`
+
+**Decided:** Fix before proceeding
+
+The spec says `test_require_fact_dismiss_resolves_with_none` must verify that after a dismiss (`value=None`), `get_facts()` has no `Name` entry under `Character.Identity`. The integration test in `tests/integration/test_require_fact_live.py` only checks that the stream completes (`message` + `done` events present) — the DB-state assertion is entirely absent. Without it, a bug that accidentally writes `None` to the facts blob after a dismiss would be undetected at the integration level.
+
+**What to do:**
+1. In `test_require_fact_dismiss_resolves_with_none`, accept `db: aiosqlite.Connection` as a parameter (mirroring `test_require_fact_accept_writes_fact_to_db`'s pattern, which creates its own character/session so it has the `char.id`). Since `test_require_fact_dismiss_resolves_with_none` uses the shared `session_id` fixture (which creates "LiveChar"), add `char = await create_character(db, name=..., ...)` or switch to the same inline-creation pattern used by `test_require_fact_accept_writes_fact_to_db`.
+2. After `await asyncio.wait_for(consumer, timeout=10.0)`, assert: `facts = await get_facts(db, char.id); assert "Name" not in facts.get("Character", {}).get("Identity", {})`.
+
+---
+
+### CT-2: `test_chat_service.py` module docstring not updated for `calls[1]`
+
+**Decided:** Fix in follow-up
+
+The spec (Test Plan, `test_chat_service.py` — updates section) says to update the `calls[1]` description to note it is now a tool-calling, non-streaming call — mirroring the existing `calls[2]` note — and that the default `_mock_ok()` helper produces a single no-tool-call round that preserves the "three calls total" assumption. The current docstring at the top of `tests/unit/test_chat_service.py` (lines 9–12) still reads `calls[1] — character LLM` without any mention of tool-calling or `_mock_ok()`'s changed format. A future reader consulting only the docstring will not know the Character LLM now goes through `chat_with_tools()` rather than `chat()`.
+
+**What to do:**
+1. Update the `calls[1]` line in the module docstring to read something like: `calls[1] — character LLM (tool-calling, non-streaming; default _mock_ok() is a single no-tool-call round so the "three calls total" assumption is preserved for tests that don't exercise require_fact)`.
+
+---
+
+### CT-3: `_handle_require_fact` stores `suggested_value: None` in `tool_args` when model omitted the field
+
+**Decided:** Fix in follow-up
+
+`args.get("suggested_value")` returns `None` when the model omits the optional `suggested_value` argument. The `store_decision` call unconditionally passes `tool_args={"path": path, "reason": reason, "suggested_value": suggested_value}`, so every decision row has a `"suggested_value": None` key even when the model never sent the field. The spec says `tool_args` should carry "the model's call arguments" — including a key the model didn't send with a `None` value doesn't accurately reflect the model's request. The discrepancy is invisible to tests because `test_run_turn_character_require_fact_logs_decision_with_user_input` doesn't assert on `tool_args`.
+
+**What to do:**
+1. In `_handle_require_fact` (`src/memories/services/chat_service.py`), build `tool_args` conditionally:
+   ```python
+   tool_args: dict[str, Any] = {"path": path, "reason": reason}
+   if suggested_value is not None:
+       tool_args["suggested_value"] = suggested_value
+   ```
+2. Add an assertion to `test_run_turn_character_require_fact_logs_decision_with_user_input` checking that `rf_decision.tool_args == {"path": "Character.Identity.Name", "reason": "Need name"}` (no `suggested_value` key, since that test's mock omits it).
+3. Add a complementary test (or extend the sidechannel test that does pass `suggested_value="Elena"`) asserting that `rf_decision.tool_args["suggested_value"] == "Elena"` when the model includes the field.
