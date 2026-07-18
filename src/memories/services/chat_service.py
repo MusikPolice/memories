@@ -177,6 +177,9 @@ async def run_contradiction_loop(
 
         value = await await_gate(session_id, turn_id)
 
+        tool_args: dict[str, Any] = {"path": path, "reason": reason}
+        if suggested_value is not None:
+            tool_args["suggested_value"] = suggested_value
         await store_decision(
             db,
             character_id=character.id,
@@ -184,7 +187,7 @@ async def run_contradiction_loop(
             turn_id=turn_id,
             pass_name="character_llm",  # nosec B106
             tool_name="require_fact",
-            tool_args={"path": path, "reason": reason, "suggested_value": suggested_value},
+            tool_args=tool_args,
             user_input={"value": value},
         )
 

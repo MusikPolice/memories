@@ -319,11 +319,14 @@ async def test_require_fact_accept_writes_fact_to_db(
 
 
 async def test_require_fact_dismiss_resolves_with_none(
+    db: aiosqlite.Connection,
     live_client: tuple[AsyncClient, _ResponseQueue],
-    session_id: int,
 ) -> None:
     """Dismissing (empty body, value defaults to None) — stream completes, path stays unset."""
     client, queue = live_client
+    char = await create_character(db, name="DismissChar", modelfile_base="qwen3:7b")
+    sess = await create_session(db, character_id=char.id)
+
     queue.load(
         [
             _mock_world_builder(),
@@ -334,10 +337,10 @@ async def test_require_fact_dismiss_resolves_with_none(
     )
 
     collector = _SseCollector()
-    consumer = asyncio.create_task(collector.consume(client, _messages_url(session_id)))
+    consumer = asyncio.create_task(collector.consume(client, _messages_url(sess.id)))
     await asyncio.wait_for(collector.sidechannel_seen.wait(), timeout=10.0)
 
-    response = await client.post(_respond_url(session_id), json={})
+    response = await client.post(_respond_url(sess.id), json={})
     assert response.status_code == 200
 
     await asyncio.wait_for(consumer, timeout=10.0)
@@ -346,6 +349,8 @@ async def test_require_fact_dismiss_resolves_with_none(
     assert len(message_events) == 1
     done_events = [e for e in collector.events if e.get("event") == "done"]
     assert len(done_events) == 1
+    facts = await get_facts(db, char.id)
+    assert "Name" not in facts.get("Character", {}).get("Identity", {})
 
 
 async def test_require_fact_keep_alive_during_suspension(

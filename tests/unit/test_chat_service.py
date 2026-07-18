@@ -7,7 +7,9 @@ what order — not the HTTP or SQL layers themselves.
 
 Every successful run_turn call makes THREE /api/chat requests (mocked via _CHAT_URL):
   calls[0] — World Builder LLM (Step 4)
-  calls[1] — character LLM
+  calls[1] — character LLM (tool-calling, non-streaming; default _mock_ok() is a
+              single no-tool-call round so the "three calls total" assumption is
+              preserved for tests that don't exercise require_fact)
   calls[2] — evaluator LLM (tool-calling, non-streaming; may be more than one HTTP
               request if nudge/retry behaviour is exercised)
 All tests that complete a turn successfully must therefore mock all three calls.
@@ -1196,6 +1198,57 @@ async def test_run_turn_character_require_fact_logs_decision_with_user_input(
     assert rf_decision is not None
     assert rf_decision.pass_name == "character_llm"
     assert rf_decision.user_input == {"value": "Sarah"}
+    assert rf_decision.tool_args == {"path": "Character.Identity.Name", "reason": "Need name"}
+
+
+async def test_run_turn_character_require_fact_logs_decision_with_suggested_value(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    seen = asyncio.Event()
+
+    async def _on_event(ev: SSEEvent) -> None:
+        if ev.data.get("type") == "require_fact":
+            seen.set()
+
+    async def _resolver() -> None:
+        try:
+            await asyncio.wait_for(seen.wait(), timeout=5.0)
+        except TimeoutError:
+            return
+        resolve_gate(session.id, 1, "Sarah")
+
+    with respx.mock:
+        respx.post(_CHAT_URL).mock(
+            side_effect=[
+                _mock_world_builder(),
+                httpx.Response(
+                    200,
+                    content=make_tool_call_response(
+                        "require_fact",
+                        {
+                            "path": "Character.Identity.Name",
+                            "reason": "Need name",
+                            "suggested_value": "Elena",
+                        },
+                    ),
+                ),
+                httpx.Response(200, content=make_plain_tool_response("Hi, I'm Sarah.")),
+                _mock_eval("pass"),
+            ]
+        )
+        await asyncio.gather(
+            run_turn(db, session.id, "Hello", ollama, on_event=_on_event),
+            _resolver(),
+        )
+
+    decisions = await get_decisions(db, session.id)
+    rf_decision = next((d for d in decisions if d.tool_name == "require_fact"), None)
+    assert rf_decision is not None
+    assert rf_decision.tool_args == {
+        "path": "Character.Identity.Name",
+        "reason": "Need name",
+        "suggested_value": "Elena",
+    }
 
 
 async def test_run_turn_character_require_fact_emits_sidechannel_before_suspension(
