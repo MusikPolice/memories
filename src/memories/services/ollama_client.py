@@ -38,6 +38,9 @@ class ToolCallResult:
     # for the first such call; None if terminal_tools was not passed or no
     # terminal tool was called before the loop ended.
     terminal_call: dict[str, Any] | None = None
+    # Accumulated thinking text across every round, joined with no separator —
+    # mirrors chat()'s "".join(thinking_parts) behaviour. "" if think=False.
+    thinking: str = ""
 
 
 class OllamaConnectionError(Exception):
@@ -160,6 +163,7 @@ class OllamaClient:
         tool_handlers: dict[str, ToolHandler],
         max_rounds: int = MAX_TOOL_CALL_ROUNDS,
         terminal_tools: frozenset[str] | None = None,
+        think: bool = False,
     ) -> ToolCallResult:
         """Drive a tool-calling loop against POST /api/chat with ``stream: false``.
 
@@ -173,11 +177,16 @@ class OllamaClient:
         behaviour of looping until the model returns plain content or
         ``max_rounds`` is exhausted.  ``OllamaConnectionError`` and
         ``OllamaResponseError`` propagate unchanged.
+        ``think`` is forwarded to Ollama on every round exactly as it is for
+        ``chat()``; ``ToolCallResult.thinking`` accumulates every round's thinking
+        text, stripped from history before the next round is sent, for the same
+        reason ``chat()`` strips it from the conversation it returns.
         """
         url = f"{self.base_url}/api/chat"
         history: list[dict[str, Any]] = list(messages)
         content = ""
         rounds = 0
+        thinking_parts: list[str] = []
 
         log.debug(
             "chat_with_tools start model=%s max_rounds=%d tools=%s",
@@ -192,6 +201,7 @@ class OllamaClient:
                 "messages": history,
                 "tools": tools,
                 "stream": False,
+                "think": think,
             }
             try:
                 response = await self._http.post(url, json=payload)
@@ -204,6 +214,9 @@ class OllamaClient:
             data: dict[str, Any] = response.json()
             rounds += 1
             msg: dict[str, Any] = data["message"]
+            thought: str = msg.get("thinking", "") or ""
+            if thought:
+                thinking_parts.append(thought)
             # Strip thinking before appending to history. The qwen3 family (and
             # others) loop indefinitely when their own thinking tokens are fed
             # back as conversation context — they were never meant to be.
@@ -214,7 +227,11 @@ class OllamaClient:
                 content = msg.get("content", "") or ""
                 log.debug("chat_with_tools done rounds=%d content=%r", rounds, content[:120])
                 return ToolCallResult(
-                    content=content, history=history, rounds=rounds, cap_reached=False
+                    content=content,
+                    history=history,
+                    rounds=rounds,
+                    cap_reached=False,
+                    thinking="".join(thinking_parts),
                 )
 
             log.debug(
@@ -268,10 +285,17 @@ class OllamaClient:
                     rounds=rounds,
                     cap_reached=False,
                     terminal_call=terminal_call,
+                    thinking="".join(thinking_parts),
                 )
 
         log.debug("chat_with_tools cap_reached rounds=%d", rounds)
-        return ToolCallResult(content=content, history=history, rounds=rounds, cap_reached=True)
+        return ToolCallResult(
+            content=content,
+            history=history,
+            rounds=rounds,
+            cap_reached=True,
+            thinking="".join(thinking_parts),
+        )
 
     async def warmup_embed(self, model: str) -> None:
         """Load an embedding model into Ollama's memory.

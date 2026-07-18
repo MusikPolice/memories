@@ -26,7 +26,6 @@ from memories.routers import (
     require_fact,
     schema,
     sessions,
-    test_poc,
 )
 from memories.services.ollama_client import OllamaClient, OllamaConnectionError, OllamaResponseError
 
@@ -85,7 +84,6 @@ app.include_router(implication.router, prefix="/api/sessions", tags=["implicatio
 app.include_router(decisions.router, prefix="/api/sessions", tags=["decisions"])
 app.include_router(inferences.router, prefix="/api/characters", tags=["inferences"])
 app.include_router(experiences.router, prefix="/api/characters", tags=["experiences"])
-app.include_router(test_poc.router, prefix="/api/sessions", tags=["test_poc"])
 app.include_router(require_fact.router, prefix="/api/sessions", tags=["require_fact"])
 
 

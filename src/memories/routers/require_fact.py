@@ -1,7 +1,8 @@
-"""Permanent accept/dismiss endpoint for require_fact blocking cards.
+"""Accept/dismiss endpoint for require_fact blocking cards.
 
-Used by both the Step 0b PoC and the production flow (Step 6).  The client
-POSTs here when the user fills in (or dismisses) a require_fact card.
+The client POSTs here when the user fills in (or dismisses) a require_fact card
+surfaced by the Character LLM's require_fact tool handler (see
+chat_service.run_contradiction_loop._handle_require_fact).
 """
 
 from __future__ import annotations
