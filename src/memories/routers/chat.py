@@ -101,22 +101,10 @@ async def send_message(
             "active_experience_ids": active_ids,
             "experience_scores": scores_list,
         }
-        if eval_result.verdict in ("implication", "new_inference_probabilistic"):
-            msg_data["ungrounded"] = True
         if eval_result.max_retries_exceeded:
             msg_data["contradiction_exhausted"] = True
 
         yield f"event: message\ndata: {json.dumps(msg_data)}\n\n"
-
-        # Emit sidechannel for non-contradiction violations / probabilistic inferences
-        if eval_result.verdict in ("implication", "new_inference_probabilistic"):
-            sc_payload: dict[str, object] = {
-                "type": eval_result.verdict,
-                "turn_id": turn_id,
-                "violations": [v.model_dump() for v in eval_result.violations],
-                "new_inferences": [i.model_dump() for i in eval_result.new_inferences],
-            }
-            yield f"event: sidechannel\ndata: {json.dumps(sc_payload)}\n\n"
 
         yield "event: done\ndata: {}\n\n"
 

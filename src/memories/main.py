@@ -20,6 +20,7 @@ from memories.routers import (
     chat,
     decisions,
     experiences,
+    fact_approval,
     facts,
     implication,
     inferences,
@@ -85,6 +86,7 @@ app.include_router(decisions.router, prefix="/api/sessions", tags=["decisions"])
 app.include_router(inferences.router, prefix="/api/characters", tags=["inferences"])
 app.include_router(experiences.router, prefix="/api/characters", tags=["experiences"])
 app.include_router(require_fact.router, prefix="/api/sessions", tags=["require_fact"])
+app.include_router(fact_approval.router, prefix="/api/sessions", tags=["fact_approval"])
 
 
 @app.get("/health")

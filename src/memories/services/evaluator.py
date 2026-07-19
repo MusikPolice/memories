@@ -8,6 +8,7 @@ decide whether to deliver, regenerate, or surface a notification.
 from __future__ import annotations
 
 import copy
+import json
 import logging
 from typing import Any
 
@@ -26,6 +27,7 @@ from memories.schema_loader import (
 )
 from memories.services.ollama_client import MAX_TOOL_CALL_ROUNDS, OllamaClient, ToolHandler
 from memories.services.sse_events import EventCallback, SSEEvent
+from memories.services.tool_gate import await_gate
 
 _log = logging.getLogger(__name__)
 
@@ -61,6 +63,7 @@ class EvaluatorResult(BaseModel):
     decision_log: str
     contradiction_notifications: list[ContradictionNotification] = []
     max_retries_exceeded: bool = False
+    needs_regeneration: bool = False
 
 
 _SET_FACT_TOOL: dict[str, Any] = {
@@ -267,6 +270,7 @@ async def run_evaluator(
     schema = load_schema()
     leaves_by_path = dict(_collect_leaves(schema))
     working_blob: dict[str, Any] = copy.deepcopy(facts_blob)
+    _regeneration_needed: list[bool] = [False]
 
     prompt = build_evaluator_prompt(
         character,
@@ -351,16 +355,180 @@ async def run_evaluator(
                     "You may not change it. If the character's response conflicts with "
                     "this, call report_contradiction instead."
                 )
-            return (
-                f"Error: {path} is Immutable and unset. The approval flow for unset "
-                "Immutable facts is not implemented yet — leave this path alone."
-            )
+            # Immutable, unset — validate the proposed value before suspending
+            if leaf["Type"] == "Enum":
+                proposed_match = next(
+                    (c for c in leaf["Constraint"] if c.lower() == str(value).lower()),
+                    None,
+                )
+                if proposed_match is None:
+                    return (
+                        f"Error: {path}: {value!r} is not a valid value. "
+                        f"Valid values: {', '.join(leaf['Constraint'])}"
+                    )
+                proposed: str | int | float | bool | None = proposed_match
+            elif leaf["Type"] == "Integer":
+                try:
+                    proposed = int(value)  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    return f"Error: {path}: {value!r} is not a valid integer"
+            else:
+                proposed = value
 
-        # Mutable
-        return (
-            f"Error: {path} is Mutable. The approval flow for Mutable facts is not "
-            "implemented yet — leave this path alone."
+            if on_event is not None:
+                await on_event(
+                    SSEEvent(
+                        event="sidechannel",
+                        data={
+                            "type": "fact_update_immutable_unset",
+                            "turn_id": turn_id,
+                            "path": path,
+                            "proposed": proposed,
+                        },
+                    )
+                )
+            raw = await await_gate(session_id, turn_id)
+            decision: dict[str, str | None] = (
+                json.loads(raw) if raw is not None else {"action": "dismiss"}
+            )
+            action = decision.get("action", "dismiss")
+            await store_decision(
+                db,
+                character_id=character.id,
+                session_id=session_id,
+                turn_id=turn_id,
+                pass_name="character_evaluator",  # nosec B106
+                tool_name="set_fact",
+                tool_args={"path": path, "value": str(value)},
+                user_input={"action": action, "value": decision.get("value")},
+            )
+            if action == "accept":
+                _set_leaf(working_blob, path, proposed)
+                await db_set_facts(db, character.id, working_blob)
+                return f"Wrote {path} = {proposed!r}. Value is now locked immutably."
+            if action == "edit":
+                user_val_raw = str(decision.get("value") or "")
+                if leaf["Type"] == "Enum":
+                    em = next(
+                        (c for c in leaf["Constraint"] if c.lower() == user_val_raw.lower()),
+                        None,
+                    )
+                    if em is None:
+                        _log.warning(
+                            "set_fact approval: user edit %r for %s has no Enum match "
+                            "— storing verbatim",
+                            user_val_raw,
+                            path,
+                        )
+                    user_val: str | int | float | bool | None = (
+                        em if em is not None else user_val_raw
+                    )
+                elif leaf["Type"] == "Integer":
+                    try:
+                        user_val = int(user_val_raw)
+                    except ValueError:
+                        _log.warning(
+                            "set_fact approval: user edit %r for %s is not a valid "
+                            "integer — storing verbatim",
+                            user_val_raw,
+                            path,
+                        )
+                        user_val = user_val_raw
+                else:
+                    user_val = user_val_raw
+                _set_leaf(working_blob, path, user_val)
+                await db_set_facts(db, character.id, working_blob)
+                _regeneration_needed[0] = True
+                return (
+                    f"Wrote {path} = {user_val!r}. Response will be regenerated " "with this value."
+                )
+            # dismiss
+            return f"No value recorded for {path}. Do not rely on the invented value."
+
+        # Mutable — validate the proposed value before suspending
+        if leaf["Type"] == "Enum":
+            proposed_match = next(
+                (c for c in leaf["Constraint"] if c.lower() == str(value).lower()),
+                None,
+            )
+            if proposed_match is None:
+                return (
+                    f"Error: {path}: {value!r} is not a valid value. "
+                    f"Valid values: {', '.join(leaf['Constraint'])}"
+                )
+            proposed = proposed_match
+        elif leaf["Type"] == "Integer":
+            try:
+                proposed = int(value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return f"Error: {path}: {value!r} is not a valid integer"
+        else:
+            proposed = value
+
+        if on_event is not None:
+            await on_event(
+                SSEEvent(
+                    event="sidechannel",
+                    data={
+                        "type": "fact_update_mutable",
+                        "turn_id": turn_id,
+                        "path": path,
+                        "proposed": proposed,
+                    },
+                )
+            )
+        raw = await await_gate(session_id, turn_id)
+        decision = json.loads(raw) if raw is not None else {"action": "reject"}
+        action = decision.get("action", "reject")
+        await store_decision(
+            db,
+            character_id=character.id,
+            session_id=session_id,
+            turn_id=turn_id,
+            pass_name="character_evaluator",  # nosec B106
+            tool_name="set_fact",
+            tool_args={"path": path, "value": str(value)},
+            user_input={"action": action, "value": decision.get("value")},
         )
+        if action == "accept":
+            _set_leaf(working_blob, path, proposed)
+            await db_set_facts(db, character.id, working_blob)
+            return f"Wrote {path} = {proposed!r}."
+        if action == "edit":
+            user_val_raw = str(decision.get("value") or "")
+            if leaf["Type"] == "Enum":
+                em = next(
+                    (c for c in leaf["Constraint"] if c.lower() == user_val_raw.lower()),
+                    None,
+                )
+                if em is None:
+                    _log.warning(
+                        "set_fact approval: user edit %r for %s has no Enum match "
+                        "— storing verbatim",
+                        user_val_raw,
+                        path,
+                    )
+                user_val = em if em is not None else user_val_raw
+            elif leaf["Type"] == "Integer":
+                try:
+                    user_val = int(user_val_raw)
+                except ValueError:
+                    _log.warning(
+                        "set_fact approval: user edit %r for %s is not a valid "
+                        "integer — storing verbatim",
+                        user_val_raw,
+                        path,
+                    )
+                    user_val = user_val_raw
+            else:
+                user_val = user_val_raw
+            _set_leaf(working_blob, path, user_val)
+            await db_set_facts(db, character.id, working_blob)
+            _regeneration_needed[0] = True
+            return f"Wrote {path} = {user_val!r}. Response will be regenerated with this value."
+        # reject
+        _regeneration_needed[0] = True
+        return "Change rejected. Response will be regenerated without this update."
 
     async def _handle_propose_inference(args: dict[str, Any]) -> str:
         statement = str(args.get("statement", ""))
@@ -477,6 +645,7 @@ async def run_evaluator(
             EvaluatorResult(
                 verdict="pass",
                 decision_log="(tool-call cap reached — response delivered unverified)",
+                needs_regeneration=_regeneration_needed[0],
             ),
             working_blob,
         )
@@ -489,13 +658,16 @@ async def run_evaluator(
                 verdict="contradiction",
                 violations=[Violation(type="contradiction", description=description)],
                 decision_log=description,
+                needs_regeneration=_regeneration_needed[0],
             ),
             working_blob,
         )
 
     return (
         EvaluatorResult(
-            verdict="pass", decision_log="Response is consistent with established facts."
+            verdict="pass",
+            decision_log="Response is consistent with established facts.",
+            needs_regeneration=_regeneration_needed[0],
         ),
         working_blob,
     )

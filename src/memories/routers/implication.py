@@ -153,11 +153,6 @@ async def accept_implication(
         raise HTTPException(status_code=404, detail="Turn not found") from exc
 
     response: dict[str, Any] = {"content": new_content, "turn_id": turn_id}
-    # If the regenerated response is itself ungrounded, surface that to the caller
-    if ev.verdict in ("implication", "new_inference_probabilistic"):
-        response["ungrounded"] = True
-        response["violations"] = [v.model_dump() for v in ev.violations]
-        response["new_inferences"] = [i.model_dump() for i in ev.new_inferences]
     return response
 
 
