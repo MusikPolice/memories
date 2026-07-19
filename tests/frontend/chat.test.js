@@ -4,19 +4,10 @@ import {
   parseSSEBlocks,
   sseStateToLabel,
   buildNotificationFromSidechannel,
-  removeViolation,
-  apiAcceptImplication,
-  apiIgnoreImplication,
-  apiAcceptInference,
-  apiIgnoreInference,
   apiGenerateInferences,
   apiRevalidateInferences,
   apiDeleteInference,
   apiPatchInferenceStatus,
-  apiCreateFact,
-  apiPatchFactMutability,
-  apiPatchFactCategory,
-  apiPromoteInference,
   apiEndSession,
   apiCreateExperience,
   apiListExperiences,
@@ -24,12 +15,37 @@ import {
   sortExperiences,
   buildScoreMap,
   buildProposalList,
-  removeContradictedExperiences,
-  apiUndoUserFact,
-  apiAcceptImplicitFact,
-  apiIgnoreImplicitFact,
-  apiDeleteFact,
+  flattenSchema,
+  lookupBlobValue,
+  buildVisibleFactRows,
+  schemaLeaf,
+  apiGetSchema,
+  apiGetFactBlob,
+  apiSetFactValue,
+  apiRespondRequireFact,
+  apiRespondSetFact,
 } from '../../src/memories/frontend/chat.js';
+
+// ---------------------------------------------------------------------------
+// Shared schema/blob fixtures for the schema-tree helpers
+// ---------------------------------------------------------------------------
+
+const SAMPLE_SCHEMA = {
+  Character: {
+    Identity: {
+      Name: { Type: 'String', Mutability: 'Immutable', Description: 'the name' },
+      Age: { Type: 'Integer', Mutability: 'Immutable', Description: 'the age' },
+    },
+    Mood: {
+      Type: 'Enum',
+      Constraint: ['Calm', 'Anxious'],
+      Mutability: 'Fluid',
+      Description: 'the mood',
+    },
+  },
+};
+
+const SAMPLE_BLOB = { Character: { Identity: { Name: { Value: 'Sarah' } } } };
 
 // ---------------------------------------------------------------------------
 // parseSSEBlock
@@ -124,99 +140,10 @@ describe('sseStateToLabel', () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildNotificationFromSidechannel
+// buildNotificationFromSidechannel — Facts v2 cards
 // ---------------------------------------------------------------------------
 
 describe('buildNotificationFromSidechannel', () => {
-  it('builds an implication notification with correct role and scType', () => {
-    const payload = {
-      type: 'implication',
-      turn_id: 3,
-      violations: [
-        { type: 'implication', description: 'implied a sibling',
-          suggested_fact: { key: 'siblings', value: 'one sister' } },
-      ],
-      new_inferences: [],
-    };
-    const notif = buildNotificationFromSidechannel(payload);
-    expect(notif.role).toBe('notification');
-    expect(notif.scType).toBe('implication');
-    expect(notif.turn_id).toBe(3);
-    expect(notif._loading).toBe(false);
-  });
-
-  it('initialises _editValue from suggested_fact.value', () => {
-    const payload = {
-      type: 'implication',
-      turn_id: 1,
-      violations: [
-        { type: 'implication', description: 'd',
-          suggested_fact: { key: 'k', value: 'expected-value' } },
-      ],
-      new_inferences: [],
-    };
-    const notif = buildNotificationFromSidechannel(payload);
-    expect(notif.violations[0]._editValue).toBe('expected-value');
-  });
-
-  it('initialises _loading: false on each violation', () => {
-    const payload = {
-      type: 'implication',
-      turn_id: 1,
-      violations: [
-        { type: 'implication', description: 'd1', suggested_fact: { key: 'k1', value: 'v1' } },
-        { type: 'implication', description: 'd2', suggested_fact: { key: 'k2', value: 'v2' } },
-      ],
-      new_inferences: [],
-    };
-    const notif = buildNotificationFromSidechannel(payload);
-    expect(notif.violations[0]._loading).toBe(false);
-    expect(notif.violations[1]._loading).toBe(false);
-  });
-
-  it('initialises _editValue to empty string when suggested_fact is null', () => {
-    const payload = {
-      type: 'implication',
-      turn_id: 1,
-      violations: [{ type: 'implication', description: 'd', suggested_fact: null }],
-      new_inferences: [],
-    };
-    const notif = buildNotificationFromSidechannel(payload);
-    expect(notif.violations[0]._editValue).toBe('');
-  });
-
-  it('builds a probabilistic inference notification with correct structure', () => {
-    const payload = {
-      type: 'new_inference_probabilistic',
-      turn_id: 2,
-      violations: [],
-      new_inferences: [
-        { inference_type: 'probabilistic', statement: 'works long hours',
-          derivation: 'occupation=surgeon', source_fact_ids: [1], source_inference_ids: [] },
-      ],
-    };
-    const notif = buildNotificationFromSidechannel(payload);
-    expect(notif.scType).toBe('new_inference_probabilistic');
-    expect(notif.turn_id).toBe(2);
-    expect(notif.new_inferences).toHaveLength(1);
-    expect(notif._loading).toBe(false);
-  });
-
-  it('adds _loading: false to each inference item', () => {
-    const payload = {
-      type: 'new_inference_probabilistic',
-      turn_id: 2,
-      violations: [],
-      new_inferences: [
-        { inference_type: 'probabilistic', statement: 'A', derivation: 'x' },
-        { inference_type: 'probabilistic', statement: 'B', derivation: 'y' },
-      ],
-    };
-    const notif = buildNotificationFromSidechannel(payload);
-    expect(notif.new_inferences[0]._loading).toBe(false);
-    expect(notif.new_inferences[1]._loading).toBe(false);
-  });
-
   it('builds a contradiction notification with iteration and description', () => {
     const payload = { type: 'contradiction', iteration: 2, description: 'character said London' };
     const notif = buildNotificationFromSidechannel(payload);
@@ -225,131 +152,73 @@ describe('buildNotificationFromSidechannel', () => {
     expect(notif.description).toBe('character said London');
   });
 
+  it('test_buildNotification_fact_update_fluid_shape', () => {
+    const payload = {
+      type: 'fact_update_fluid', turn_id: 4,
+      path: 'Character.State-Of-Mind.Mood', value: 'Anxious',
+    };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif.scType).toBe('fact_update_fluid');
+    expect(notif.path).toBe('Character.State-Of-Mind.Mood');
+    expect(notif.value).toBe('Anxious');
+  });
+
+  it('test_buildNotification_fact_update_mutable_seeds_editValue_from_proposed', () => {
+    const payload = {
+      type: 'fact_update_mutable', turn_id: 4,
+      path: 'Character.Identity.Occupation', proposed: 'Detective',
+    };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif.scType).toBe('fact_update_mutable');
+    expect(notif._editValue).toBe('Detective');
+    expect(notif._loading).toBe(false);
+  });
+
+  it('test_buildNotification_fact_update_immutable_unset_seeds_editValue_from_proposed', () => {
+    const payload = {
+      type: 'fact_update_immutable_unset', turn_id: 4,
+      path: 'Character.Identity.Name', proposed: 'Sarah',
+    };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif.scType).toBe('fact_update_immutable_unset');
+    expect(notif._editValue).toBe('Sarah');
+    expect(notif._loading).toBe(false);
+  });
+
+  it('test_buildNotification_require_fact_seeds_editValue_from_suggested_value', () => {
+    const payload = {
+      type: 'require_fact', turn_id: 4,
+      path: 'Character.Identity.Name', reason: 'needed', suggested_value: 'Sarah',
+    };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif.scType).toBe('require_fact');
+    expect(notif._editValue).toBe('Sarah');
+    expect(notif._loading).toBe(false);
+  });
+
+  it('test_buildNotification_require_fact_editValue_empty_when_suggested_value_absent', () => {
+    const payload = {
+      type: 'require_fact', turn_id: 4,
+      path: 'Character.Identity.Name', reason: 'needed',
+    };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif._editValue).toBe('');
+  });
+
+  it('test_buildNotification_inference_proposed_carries_inference_object', () => {
+    const inference = { statement: 'works long hours', derivation: 'occupation=surgeon' };
+    const payload = { type: 'inference_proposed', turn_id: 4, inference };
+    const notif = buildNotificationFromSidechannel(payload);
+    expect(notif.scType).toBe('inference_proposed');
+    expect(notif.inference).toEqual(inference);
+  });
+
+  it('test_buildNotification_returns_null_for_removed_implication_type', () => {
+    expect(buildNotificationFromSidechannel({ type: 'implication' })).toBeNull();
+  });
+
   it('returns null for an unrecognised sidechannel type', () => {
     expect(buildNotificationFromSidechannel({ type: 'unknown' })).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// removeViolation
-// ---------------------------------------------------------------------------
-
-describe('removeViolation', () => {
-  function makeNotif(...keys) {
-    return {
-      violations: keys.map(k => ({ suggested_fact: { key: k, value: 'v' }, _editValue: 'v' })),
-    };
-  }
-
-  it('removes the target violation from the array', () => {
-    const notif = makeNotif('age', 'hometown');
-    const v = notif.violations[0];
-    removeViolation(notif, v);
-    expect(notif.violations).toHaveLength(1);
-    expect(notif.violations[0].suggested_fact.key).toBe('hometown');
-  });
-
-  it('returns false when other violations still remain', () => {
-    const notif = makeNotif('age', 'hometown');
-    const result = removeViolation(notif, notif.violations[0]);
-    expect(result).toBe(false);
-  });
-
-  it('returns true when the last violation is removed', () => {
-    const notif = makeNotif('age');
-    const result = removeViolation(notif, notif.violations[0]);
-    expect(result).toBe(true);
-    expect(notif.violations).toHaveLength(0);
-  });
-
-  it('is a no-op and returns true when the violation is not in the array', () => {
-    const notif = makeNotif();
-    const result = removeViolation(notif, { suggested_fact: { key: 'x', value: 'y' } });
-    expect(result).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// API helpers
-// ---------------------------------------------------------------------------
-
-describe('API helpers', () => {
-  beforeEach(() => {
-    global.fetch = vi.fn().mockResolvedValue({ ok: true });
-  });
-
-  it('apiAcceptImplication POSTs to the correct URL with key, value, regenerate=true, and default category', async () => {
-    await apiAcceptImplication(5, 3, 'siblings', 'one sister');
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/5/turns/3/accept-implication',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ key: 'siblings', value: 'one sister', regenerate: true, category: 'character' }),
-      })
-    );
-  });
-
-  it('apiAcceptImplication sends regenerate=false when explicitly passed', async () => {
-    await apiAcceptImplication(5, 3, 'siblings', 'one sister', false);
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/5/turns/3/accept-implication',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ key: 'siblings', value: 'one sister', regenerate: false, category: 'character' }),
-      })
-    );
-  });
-
-  it('apiAcceptImplication forwards the supplied category to the backend', async () => {
-    await apiAcceptImplication(5, 3, 'jacket_colour', 'blue', true, 'user');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body.category).toBe('user');
-  });
-
-  it('apiIgnoreImplication POSTs to the correct URL', async () => {
-    await apiIgnoreImplication(5, 3);
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/5/turns/3/ignore-implication',
-      expect.objectContaining({ method: 'POST' })
-    );
-  });
-
-  it('apiAcceptInference POSTs statement, derivation, and type to the correct URL', async () => {
-    const inf = {
-      statement: 'works long hours',
-      derivation: 'occupation=surgeon',
-      source_fact_ids: [1],
-      inference_type: 'probabilistic',
-    };
-    await apiAcceptInference(5, 3, inf);
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/5/turns/3/accept-inference',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({
-          statement: 'works long hours',
-          derivation: 'occupation=surgeon',
-          source_fact_ids: [1],
-          inference_type: 'probabilistic',
-        }),
-      })
-    );
-  });
-
-  it('apiAcceptInference defaults source_fact_ids to [] and inference_type to probabilistic', async () => {
-    await apiAcceptInference(1, 1, { statement: 's', derivation: 'd' });
-    const body = JSON.parse(fetch.mock.calls[0][1].body);
-    expect(body.source_fact_ids).toEqual([]);
-    expect(body.inference_type).toBe('probabilistic');
-  });
-
-  it('apiIgnoreInference POSTs to the correct URL', async () => {
-    await apiIgnoreInference(5, 3);
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/5/turns/3/ignore-inference',
-      expect.objectContaining({ method: 'POST' })
-    );
   });
 });
 
@@ -410,246 +279,7 @@ describe('Phase 3 inference API helpers', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase 4 — fact category/mutability and inference promotion API helpers
-// ---------------------------------------------------------------------------
-
-describe('Phase 4 fact API helpers', () => {
-  beforeEach(() => {
-    global.fetch = vi.fn().mockResolvedValue({ ok: true });
-  });
-
-  it('apiCreateFact_posts_to_correct_url', async () => {
-    await apiCreateFact(7, 'mood', 'cheerful');
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/characters/7/facts',
-      expect.objectContaining({ method: 'POST' })
-    );
-  });
-
-  it('apiCreateFact_sends_key_value_category_mutability_in_body', async () => {
-    await apiCreateFact(7, 'mood', 'cheerful', 'character', 'high');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body).toHaveProperty('key', 'mood');
-    expect(body).toHaveProperty('value', 'cheerful');
-    expect(body).toHaveProperty('category');
-    expect(body).toHaveProperty('mutability');
-  });
-
-  it('apiCreateFact_uses_default_category_character', async () => {
-    await apiCreateFact(7, 'mood', 'cheerful');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body.category).toBe('character');
-  });
-
-  it('apiCreateFact_uses_default_mutability_immutable', async () => {
-    await apiCreateFact(7, 'mood', 'cheerful');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body.mutability).toBe('immutable');
-  });
-
-  it('apiCreateFact_accepts_custom_category', async () => {
-    await apiCreateFact(7, 'mood', 'cheerful', 'user', 'high');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body.category).toBe('user');
-  });
-
-  it('apiCreateFact_accepts_custom_mutability', async () => {
-    await apiCreateFact(7, 'mood', 'cheerful', 'user', 'high');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body.mutability).toBe('high');
-  });
-
-  it('apiPatchFactMutability_sends_patch_to_correct_url', async () => {
-    await apiPatchFactMutability(7, 42, 'high');
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/characters/7/facts/42',
-      expect.objectContaining({ method: 'PATCH' })
-    );
-  });
-
-  it('apiPatchFactMutability_sends_mutability_in_body', async () => {
-    await apiPatchFactMutability(7, 42, 'high');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body.mutability).toBe('high');
-  });
-
-  it('apiPatchFactMutability_does_not_send_category_field', async () => {
-    await apiPatchFactMutability(7, 42, 'high');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body).not.toHaveProperty('category');
-  });
-
-  it('apiPatchFactCategory_sends_patch_to_correct_url', async () => {
-    await apiPatchFactCategory(7, 42, 'setting');
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/characters/7/facts/42',
-      expect.objectContaining({ method: 'PATCH' })
-    );
-  });
-
-  it('apiPatchFactCategory_sends_category_in_body', async () => {
-    await apiPatchFactCategory(7, 42, 'setting');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body.category).toBe('setting');
-  });
-
-  it('apiPatchFactCategory_does_not_send_mutability_field', async () => {
-    await apiPatchFactCategory(7, 42, 'setting');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body).not.toHaveProperty('mutability');
-  });
-
-  it('apiPatchFactMutability_uses_integer_fact_id_in_url', async () => {
-    await apiPatchFactMutability(7, 99, 'low');
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/characters/7/facts/99',
-      expect.anything()
-    );
-  });
-});
-
-describe('Phase 4 inference promotion API helper', () => {
-  beforeEach(() => {
-    global.fetch = vi.fn().mockResolvedValue({ ok: true });
-  });
-
-  it('apiPromoteInference_posts_to_correct_url', async () => {
-    await apiPromoteInference(7, 42, 'birth_year', '1993');
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/characters/7/inferences/42/promote',
-      expect.objectContaining({ method: 'POST' })
-    );
-  });
-
-  it('apiPromoteInference_sends_key_value_category_mutability_in_body', async () => {
-    await apiPromoteInference(7, 42, 'birth_year', '1993', 'character', 'immutable');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body).toHaveProperty('key', 'birth_year');
-    expect(body).toHaveProperty('value', '1993');
-    expect(body).toHaveProperty('category');
-    expect(body).toHaveProperty('mutability');
-  });
-
-  it('apiPromoteInference_uses_default_category_character', async () => {
-    await apiPromoteInference(7, 42, 'birth_year', '1993');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body.category).toBe('character');
-  });
-
-  it('apiPromoteInference_uses_default_mutability_immutable', async () => {
-    await apiPromoteInference(7, 42, 'birth_year', '1993');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body.mutability).toBe('immutable');
-  });
-
-  it('apiPromoteInference_accepts_custom_category', async () => {
-    await apiPromoteInference(7, 42, 'location', 'Chicago', 'setting', 'low');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body.category).toBe('setting');
-  });
-
-  it('apiPromoteInference_accepts_custom_mutability', async () => {
-    await apiPromoteInference(7, 42, 'location', 'Chicago', 'setting', 'low');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body.mutability).toBe('low');
-  });
-});
-
-describe('Phase 4 buildNotificationFromSidechannel — mutability implication', () => {
-  it('buildNotificationFromSidechannel_still_handles_implication_for_mutability_change', () => {
-    const payload = {
-      type: 'implication',
-      turn_id: 5,
-      violations: [
-        {
-          type: 'implication',
-          description: "Mood appears to have shifted from 'cheerful' to 'anxious' (high-mutability fact)",
-          suggested_fact: { key: 'mood', value: 'anxious' },
-        },
-      ],
-      new_inferences: [],
-    };
-    const notif = buildNotificationFromSidechannel(payload);
-    expect(notif).not.toBeNull();
-    expect(notif.scType).toBe('implication');
-    expect(notif.turn_id).toBe(5);
-    expect(notif.violations[0]._editValue).toBe('anxious');
-    expect(notif._loading).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Phase 5 — experience_update sidechannel notification (tests 182–186)
-// ---------------------------------------------------------------------------
-
-describe('Phase 5 buildNotificationFromSidechannel — experience_update', () => {
-  it('buildNotificationFromSidechannel_experience_update_has_scType', () => {
-    const payload = { type: 'experience_update', turn_id: 4, experience_updates: [] };
-    const notif = buildNotificationFromSidechannel(payload);
-    expect(notif.scType).toBe('experience_update');
-  });
-
-  it('buildNotificationFromSidechannel_experience_update_has_turn_id', () => {
-    const payload = { type: 'experience_update', turn_id: 7, experience_updates: [] };
-    const notif = buildNotificationFromSidechannel(payload);
-    expect(notif.turn_id).toBe(7);
-  });
-
-  it('buildNotificationFromSidechannel_experience_update_has_experience_updates_array', () => {
-    const updates = [
-      { contradicted_experience_id: 5, description: 'now in New York' },
-      { contradicted_experience_id: 8, description: 'changed job' },
-    ];
-    const payload = { type: 'experience_update', turn_id: 4, experience_updates: updates };
-    const notif = buildNotificationFromSidechannel(payload);
-    expect(notif.experience_updates).toEqual(updates);
-  });
-
-  it('buildNotificationFromSidechannel_experience_update_empty_updates_array', () => {
-    const payload = { type: 'experience_update', turn_id: 4, experience_updates: [] };
-    const notif = buildNotificationFromSidechannel(payload);
-    expect(notif.experience_updates).toEqual([]);
-  });
-
-  it('buildNotificationFromSidechannel_experience_update_has_loading_false', () => {
-    const payload = { type: 'experience_update', turn_id: 4, experience_updates: [] };
-    const notif = buildNotificationFromSidechannel(payload);
-    expect(notif._loading).toBe(false);
-  });
-
-  it('buildNotificationFromSidechannel_experience_update_missing_field_defaults_to_empty_array', () => {
-    // payload has no experience_updates key — the || [] fallback must fire
-    const payload = { type: 'experience_update', turn_id: 4 };
-    const notif = buildNotificationFromSidechannel(payload);
-    expect(notif.experience_updates).toEqual([]);
-  });
-
-  it('buildNotificationFromSidechannel_experience_update_clones_items', () => {
-    const original = { contradicted_experience_id: 5, description: 'now in New York' };
-    const payload = { type: 'experience_update', turn_id: 4, experience_updates: [original] };
-    const notif = buildNotificationFromSidechannel(payload);
-    // Items must be copies so Vue mutations don't alias back to the SSE object.
-    expect(notif.experience_updates[0]).not.toBe(original);
-    expect(notif.experience_updates[0]).toEqual(original);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Phase 5 API helpers — apiEndSession (tests 187–189)
+// Phase 5 API helpers — apiEndSession
 // ---------------------------------------------------------------------------
 
 describe('Phase 5 apiEndSession', () => {
@@ -673,7 +303,7 @@ describe('Phase 5 apiEndSession', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase 5 API helpers — apiCreateExperience (tests 190–195)
+// Phase 5 API helpers — apiCreateExperience
 // ---------------------------------------------------------------------------
 
 describe('Phase 5 apiCreateExperience', () => {
@@ -732,7 +362,7 @@ describe('Phase 5 apiCreateExperience', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase 5 API helpers — apiListExperiences (tests 196–197)
+// Phase 5 API helpers — apiListExperiences
 // ---------------------------------------------------------------------------
 
 describe('Phase 5 apiListExperiences', () => {
@@ -748,14 +378,12 @@ describe('Phase 5 apiListExperiences', () => {
   it('apiListExperiences_uses_get_method', async () => {
     await apiListExperiences(7);
     // No options object passed → browser defaults to GET.
-    // Assert on the absence of the options arg, not on call arity, so that
-    // adding an AbortSignal later does not produce a misleading failure.
     expect(fetch.mock.calls[0][1]).toBeUndefined();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Phase 5 API helpers — apiDeleteExperience (tests 198–199)
+// Phase 5 API helpers — apiDeleteExperience
 // ---------------------------------------------------------------------------
 
 describe('Phase 5 apiDeleteExperience', () => {
@@ -774,7 +402,7 @@ describe('Phase 5 apiDeleteExperience', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase 5 — parseSSEBlock with new message event fields (tests 200–202)
+// Phase 5 — parseSSEBlock with new message event fields
 // ---------------------------------------------------------------------------
 
 describe('Phase 5 parseSSEBlock — message event with experience fields', () => {
@@ -805,7 +433,7 @@ describe('Phase 5 parseSSEBlock — message event with experience fields', () =>
 });
 
 // ---------------------------------------------------------------------------
-// Phase 5 — sortExperiences (tests 203–208)
+// Phase 5 — sortExperiences
 // ---------------------------------------------------------------------------
 
 describe('sortExperiences', () => {
@@ -986,99 +614,7 @@ describe('buildProposalList', () => {
 });
 
 // ---------------------------------------------------------------------------
-// removeContradictedExperiences
-// ---------------------------------------------------------------------------
-
-describe('removeContradictedExperiences', () => {
-  const experiences = [
-    { id: 1, statement: 'We are in Chicago', source: 'told_by_user' },
-    { id: 2, statement: 'User dislikes mornings', source: 'observed' },
-    { id: 3, statement: 'User has a cat', source: 'told_by_user' },
-  ];
-
-  it('removeContradictedExperiences_removes_the_contradicted_experience', () => {
-    const notif = {
-      scType: 'experience_update',
-      experience_updates: [{ contradicted_experience_id: 1, description: 'now in New York' }],
-    };
-    const result = removeContradictedExperiences(experiences, notif);
-    expect(result.map(e => e.id)).not.toContain(1);
-  });
-
-  it('removeContradictedExperiences_keeps_non_contradicted_experiences', () => {
-    const notif = {
-      scType: 'experience_update',
-      experience_updates: [{ contradicted_experience_id: 1, description: 'desc' }],
-    };
-    const result = removeContradictedExperiences(experiences, notif);
-    expect(result.map(e => e.id)).toContain(2);
-    expect(result.map(e => e.id)).toContain(3);
-  });
-
-  it('removeContradictedExperiences_removes_multiple_ids', () => {
-    const notif = {
-      scType: 'experience_update',
-      experience_updates: [
-        { contradicted_experience_id: 1, description: 'a' },
-        { contradicted_experience_id: 3, description: 'b' },
-      ],
-    };
-    const result = removeContradictedExperiences(experiences, notif);
-    expect(result).toHaveLength(1);
-    expect(result[0].id).toBe(2);
-  });
-
-  it('removeContradictedExperiences_returns_all_when_no_updates', () => {
-    const notif = { scType: 'experience_update', experience_updates: [] };
-    const result = removeContradictedExperiences(experiences, notif);
-    expect(result).toHaveLength(3);
-  });
-
-  it('removeContradictedExperiences_handles_missing_experience_updates_field', () => {
-    const notif = { scType: 'experience_update' };
-    const result = removeContradictedExperiences(experiences, notif);
-    expect(result).toHaveLength(3);
-  });
-
-  it('removeContradictedExperiences_returns_empty_when_all_removed', () => {
-    const notif = {
-      scType: 'experience_update',
-      experience_updates: [
-        { contradicted_experience_id: 1, description: 'a' },
-        { contradicted_experience_id: 2, description: 'b' },
-        { contradicted_experience_id: 3, description: 'c' },
-      ],
-    };
-    expect(removeContradictedExperiences(experiences, notif)).toHaveLength(0);
-  });
-
-  it('removeContradictedExperiences_ignores_unknown_id_gracefully', () => {
-    const notif = {
-      scType: 'experience_update',
-      experience_updates: [{ contradicted_experience_id: 99, description: 'ghost' }],
-    };
-    const result = removeContradictedExperiences(experiences, notif);
-    expect(result).toHaveLength(3);
-  });
-
-  it('removeContradictedExperiences_does_not_mutate_input_array', () => {
-    const notif = {
-      scType: 'experience_update',
-      experience_updates: [{ contradicted_experience_id: 1, description: 'd' }],
-    };
-    removeContradictedExperiences(experiences, notif);
-    expect(experiences).toHaveLength(3);
-  });
-
-  it('removeContradictedExperiences_returns_new_array_not_same_reference', () => {
-    const notif = { scType: 'experience_update', experience_updates: [] };
-    const result = removeContradictedExperiences(experiences, notif);
-    expect(result).not.toBe(experiences);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Phase 6 — sseStateToLabel for extracting state (tests 66-67)
+// Phase 6 — sseStateToLabel for extracting state
 // ---------------------------------------------------------------------------
 
 describe('Phase 6 sseStateToLabel — extracting state', () => {
@@ -1095,173 +631,165 @@ describe('Phase 6 sseStateToLabel — extracting state', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase 6 — buildNotificationFromSidechannel for extraction_applied (tests 68-73)
+// Step 8 — flattenSchema
 // ---------------------------------------------------------------------------
 
-describe('Phase 6 buildNotificationFromSidechannel — extraction_applied', () => {
-  const _payload = {
-    type: 'extraction_applied',
-    turn_id: 2,
-    added: [{ key: 'location', value: 'Chicago', category: 'setting', fact_id: 10 }],
-    updated: [{ fact_id: 5, key: 'home_city', old_value: 'Reykjavik', new_value: 'Chicago' }],
-  };
-
-  it('buildNotificationFromSidechannel_handles_extraction_applied', () => {
-    const notif = buildNotificationFromSidechannel(_payload);
-    expect(notif).not.toBeNull();
+describe('flattenSchema', () => {
+  it('test_flattenSchema_marks_leaves_and_groups', () => {
+    const rows = flattenSchema(SAMPLE_SCHEMA);
+    const group = rows.find(r => r.path === 'Character');
+    const leaf = rows.find(r => r.path === 'Character.Identity.Name');
+    expect(group.isLeaf).toBe(false);
+    expect(leaf.isLeaf).toBe(true);
+    expect(leaf.type).toBe('String');
+    expect(leaf.mutability).toBe('Immutable');
   });
 
-  it('buildNotificationFromSidechannel_extraction_applied_scType', () => {
-    const notif = buildNotificationFromSidechannel(_payload);
-    expect(notif.scType).toBe('extraction_applied');
+  it('test_flattenSchema_depth_increases_per_level', () => {
+    const rows = flattenSchema(SAMPLE_SCHEMA);
+    expect(rows.find(r => r.path === 'Character').depth).toBe(0);
+    expect(rows.find(r => r.path === 'Character.Identity').depth).toBe(1);
+    expect(rows.find(r => r.path === 'Character.Identity.Name').depth).toBe(2);
   });
 
-  it('buildNotificationFromSidechannel_extraction_applied_includes_added', () => {
-    const notif = buildNotificationFromSidechannel(_payload);
-    expect(Array.isArray(notif.added)).toBe(true);
+  it('test_flattenSchema_leaf_carries_constraint_for_enum', () => {
+    const rows = flattenSchema(SAMPLE_SCHEMA);
+    const mood = rows.find(r => r.path === 'Character.Mood');
+    expect(mood.constraint).toEqual(['Calm', 'Anxious']);
   });
 
-  it('buildNotificationFromSidechannel_extraction_applied_includes_updated', () => {
-    const notif = buildNotificationFromSidechannel(_payload);
-    expect(Array.isArray(notif.updated)).toBe(true);
-  });
-
-  it('buildNotificationFromSidechannel_extraction_applied_updated_entry_has_old_and_new_value', () => {
-    const notif = buildNotificationFromSidechannel(_payload);
-    expect(notif.updated[0].old_value).toBe('Reykjavik');
-    expect(notif.updated[0].new_value).toBe('Chicago');
-  });
-
-  it('buildNotificationFromSidechannel_extraction_applied_updated_entry_has_fact_id', () => {
-    const notif = buildNotificationFromSidechannel(_payload);
-    expect(notif.updated[0].fact_id).toBe(5);
+  it('test_flattenSchema_preserves_key_order', () => {
+    const rows = flattenSchema(SAMPLE_SCHEMA);
+    expect(rows.map(r => r.path)).toEqual([
+      'Character',
+      'Character.Identity',
+      'Character.Identity.Name',
+      'Character.Identity.Age',
+      'Character.Mood',
+    ]);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Phase 6 — buildNotificationFromSidechannel for implicit_fact_proposed (tests 74-79)
+// Step 8 — lookupBlobValue
 // ---------------------------------------------------------------------------
 
-describe('Phase 6 buildNotificationFromSidechannel — implicit_fact_proposed', () => {
-  const _payload = {
-    type: 'implicit_fact_proposed',
-    turn_id: 3,
-    new_proposals: [
-      { key: 'mood', value: 'anxious', category: 'user', mutability: 'high', source_quote: 'feeling off' },
-    ],
-    update_proposals: [
-      { existing_fact_id: 2, key: 'home_city', old_value: 'Reykjavik', value: 'Chicago', source_quote: 'just got home in Chicago' },
-    ],
-  };
-
-  it('buildNotificationFromSidechannel_handles_implicit_fact_proposed', () => {
-    const notif = buildNotificationFromSidechannel(_payload);
-    expect(notif).not.toBeNull();
+describe('lookupBlobValue', () => {
+  it('test_lookupBlobValue_returns_value_for_set_leaf', () => {
+    expect(lookupBlobValue(SAMPLE_BLOB, 'Character.Identity.Name')).toBe('Sarah');
   });
 
-  it('buildNotificationFromSidechannel_implicit_fact_proposed_scType', () => {
-    const notif = buildNotificationFromSidechannel(_payload);
-    expect(notif.scType).toBe('implicit_fact_proposed');
+  it('test_lookupBlobValue_returns_undefined_for_unset_path', () => {
+    expect(lookupBlobValue(SAMPLE_BLOB, 'Character.Identity.Age')).toBeUndefined();
   });
 
-  it('buildNotificationFromSidechannel_implicit_fact_proposed_includes_new_proposals', () => {
-    const notif = buildNotificationFromSidechannel(_payload);
-    expect(Array.isArray(notif.new_proposals)).toBe(true);
-  });
-
-  it('buildNotificationFromSidechannel_implicit_fact_proposed_includes_update_proposals', () => {
-    const notif = buildNotificationFromSidechannel(_payload);
-    expect(Array.isArray(notif.update_proposals)).toBe(true);
-  });
-
-  it('buildNotificationFromSidechannel_implicit_update_proposal_has_old_value', () => {
-    const notif = buildNotificationFromSidechannel(_payload);
-    expect(notif.update_proposals[0].old_value).toBe('Reykjavik');
-  });
-
-  it('buildNotificationFromSidechannel_implicit_update_proposal_has_existing_fact_id', () => {
-    const notif = buildNotificationFromSidechannel(_payload);
-    expect(notif.update_proposals[0].existing_fact_id).toBe(2);
+  it('test_lookupBlobValue_returns_undefined_for_partial_path', () => {
+    expect(lookupBlobValue(SAMPLE_BLOB, 'Character.Identity')).toBeUndefined();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Phase 6 API helpers — undo, accept, ignore, delete (tests 80-88)
+// Step 8 — buildVisibleFactRows
 // ---------------------------------------------------------------------------
 
-describe('Phase 6 API helpers', () => {
+describe('buildVisibleFactRows', () => {
+  it('test_buildVisibleFactRows_attaches_value_to_leaves', () => {
+    const rows = buildVisibleFactRows(SAMPLE_SCHEMA, SAMPLE_BLOB, new Set());
+    const name = rows.find(r => r.path === 'Character.Identity.Name');
+    expect(name.value).toBe('Sarah');
+  });
+
+  it('test_buildVisibleFactRows_hides_descendants_of_collapsed_group', () => {
+    const rows = buildVisibleFactRows(SAMPLE_SCHEMA, SAMPLE_BLOB, new Set(['Character.Identity']));
+    expect(rows.find(r => r.path === 'Character.Identity.Name')).toBeUndefined();
+    expect(rows.find(r => r.path === 'Character.Identity.Age')).toBeUndefined();
+  });
+
+  it('test_buildVisibleFactRows_shows_collapsed_group_row_itself', () => {
+    const rows = buildVisibleFactRows(SAMPLE_SCHEMA, SAMPLE_BLOB, new Set(['Character.Identity']));
+    expect(rows.find(r => r.path === 'Character.Identity')).toBeDefined();
+  });
+
+  it('test_buildVisibleFactRows_leaf_value_undefined_when_unset', () => {
+    const rows = buildVisibleFactRows(SAMPLE_SCHEMA, SAMPLE_BLOB, new Set());
+    const age = rows.find(r => r.path === 'Character.Identity.Age');
+    expect(age.value).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 8 — schemaLeaf
+// ---------------------------------------------------------------------------
+
+describe('schemaLeaf', () => {
+  it('test_schemaLeaf_returns_leaf_for_valid_path', () => {
+    const leaf = schemaLeaf(SAMPLE_SCHEMA, 'Character.Identity.Name');
+    expect(leaf.type).toBe('String');
+  });
+
+  it('test_schemaLeaf_returns_null_for_unknown_path', () => {
+    expect(schemaLeaf(SAMPLE_SCHEMA, 'Nope.Not.Here')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 8 — API helpers
+// ---------------------------------------------------------------------------
+
+describe('Step 8 API helpers', () => {
   beforeEach(() => {
     global.fetch = vi.fn().mockResolvedValue({ ok: true });
   });
 
-  it('apiUndoUserFact_posts_to_correct_url', async () => {
-    await apiUndoUserFact(5, 3, 42, 'Oslo');
+  it('test_apiGetSchema_gets_slash_api_schema', async () => {
+    await apiGetSchema();
+    expect(fetch).toHaveBeenCalledWith('/api/schema');
+  });
+
+  it('test_apiGetFactBlob_gets_character_facts_url', async () => {
+    await apiGetFactBlob(7);
+    expect(fetch).toHaveBeenCalledWith('/api/characters/7/facts');
+  });
+
+  it('test_apiSetFactValue_puts_path_and_value', async () => {
+    await apiSetFactValue(7, 'Character.Identity.Name', 'Sarah');
     expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/5/turns/3/undo-user-fact',
+      '/api/characters/7/facts',
+      expect.objectContaining({ method: 'PUT' })
+    );
+    const [, opts] = fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.path).toBe('Character.Identity.Name');
+    expect(body.value).toBe('Sarah');
+  });
+
+  it('test_apiRespondRequireFact_posts_value', async () => {
+    await apiRespondRequireFact(5, 3, 'Sarah');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/5/turns/3/require-fact/respond',
       expect.objectContaining({ method: 'POST' })
     );
-  });
-
-  it('apiUndoUserFact_sends_fact_id_and_restore_value', async () => {
-    await apiUndoUserFact(5, 3, 42, 'Oslo');
     const [, opts] = fetch.mock.calls[0];
     const body = JSON.parse(opts.body);
-    expect(body.fact_id).toBe(42);
-    expect(body.restore_value).toBe('Oslo');
+    expect(body.value).toBe('Sarah');
   });
 
-  it('apiAcceptImplicitFact_posts_to_correct_url', async () => {
-    await apiAcceptImplicitFact(5, 3, 'mood', 'anxious', 'user', 'high');
+  it('test_apiRespondSetFact_posts_action_and_value', async () => {
+    await apiRespondSetFact(5, 3, 'edit', 'Sarah');
     expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/5/turns/3/accept-implicit-fact',
+      '/api/sessions/5/turns/3/set-fact/respond',
       expect.objectContaining({ method: 'POST' })
     );
-  });
-
-  it('apiAcceptImplicitFact_sends_proposal_data_in_body', async () => {
-    await apiAcceptImplicitFact(5, 3, 'mood', 'anxious', 'user', 'high');
     const [, opts] = fetch.mock.calls[0];
     const body = JSON.parse(opts.body);
-    expect(body.key).toBe('mood');
-    expect(body.value).toBe('anxious');
-    expect(body.category).toBe('user');
-    expect(body.mutability).toBe('high');
+    expect(body.action).toBe('edit');
+    expect(body.value).toBe('Sarah');
   });
 
-  it('apiAcceptImplicitFact_sends_existing_fact_id_when_tier4', async () => {
-    await apiAcceptImplicitFact(5, 3, 'home_city', 'Chicago', 'user', 'low', 2);
+  it('test_apiRespondSetFact_defaults_value_null', async () => {
+    await apiRespondSetFact(5, 3, 'accept');
     const [, opts] = fetch.mock.calls[0];
     const body = JSON.parse(opts.body);
-    expect(body.existing_fact_id).toBe(2);
-  });
-
-  it('apiAcceptImplicitFact_omits_existing_fact_id_when_tier3', async () => {
-    await apiAcceptImplicitFact(5, 3, 'mood', 'anxious', 'user', 'high', null);
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body).not.toHaveProperty('existing_fact_id');
-  });
-
-  it('apiIgnoreImplicitFact_posts_to_correct_url', async () => {
-    await apiIgnoreImplicitFact(5, 3, 'mood');
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/5/turns/3/ignore-implicit-fact',
-      expect.objectContaining({ method: 'POST' })
-    );
-  });
-
-  it('apiIgnoreImplicitFact_sends_key_in_body', async () => {
-    await apiIgnoreImplicitFact(5, 3, 'mood');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body.key).toBe('mood');
-  });
-
-  it('apiDeleteFact_sends_delete_to_correct_url', async () => {
-    await apiDeleteFact(7, 42);
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/characters/7/facts/42',
-      expect.objectContaining({ method: 'DELETE' })
-    );
+    expect(body.value).toBeNull();
   });
 });

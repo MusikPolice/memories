@@ -1,11 +1,31 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { ChatComponent } from '../../src/memories/frontend/chat-component.js';
-import { sseStateToLabel } from '../../src/memories/frontend/chat.js';
 
 // Vue emits onMounted/onUnmounted warnings when setup() is called outside a component tree.
 // This is intentional — we test the setup() function directly without mounting.
 beforeAll(() => { vi.spyOn(console, 'warn').mockImplementation(() => {}); });
 afterAll(() => { vi.restoreAllMocks(); });
+
+// ---------------------------------------------------------------------------
+// Shared schema/blob fixtures
+// ---------------------------------------------------------------------------
+
+const SAMPLE_SCHEMA = {
+  Character: {
+    Identity: {
+      Name: { Type: 'String', Mutability: 'Immutable', Description: 'the name' },
+      Age: { Type: 'Integer', Mutability: 'Immutable', Description: 'the age' },
+    },
+    Mood: {
+      Type: 'Enum',
+      Constraint: ['Calm', 'Anxious'],
+      Mutability: 'Fluid',
+      Description: 'the mood',
+    },
+  },
+};
+
+const SAMPLE_BLOB = { Character: { Identity: { Name: { Value: 'Sarah' } } } };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -123,77 +143,6 @@ describe('endSession', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SSE sidechannel — experience_update
-// ---------------------------------------------------------------------------
-
-describe('sendMessage SSE sidechannel — experience_update', () => {
-  let vm;
-
-  beforeEach(() => { vm = setupComponent(); });
-  afterEach(() => { vi.unstubAllGlobals(); });
-
-  function mockMessages(sseBlocks) {
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url) => {
-      if (url && url.includes('/messages')) return makeStreamResponse(sseBlocks);
-      return { ok: true, json: async () => [] };
-    }));
-  }
-
-  it('sendMessage_experience_update_sidechannel_removes_experience_from_list', async () => {
-    vm.experiences.value = [{ id: 5, statement: 'We are in Chicago', source: 'told_by_user' }];
-    vm.inputText.value = 'hello';
-    mockMessages([
-      'event: sidechannel\ndata: ' + JSON.stringify({
-        type: 'experience_update', turn_id: 1,
-        experience_updates: [{ contradicted_experience_id: 5, description: 'Now in New York' }],
-      }),
-      'event: message\ndata: {"role":"assistant","content":"hi","turn_id":1}',
-      'event: done\ndata: {}',
-    ]);
-    await vm.sendMessage();
-    expect(vm.experiences.value).toHaveLength(0);
-  });
-
-  it('sendMessage_experience_update_sidechannel_pushes_notification_to_messages', async () => {
-    vm.inputText.value = 'hello';
-    mockMessages([
-      'event: sidechannel\ndata: ' + JSON.stringify({
-        type: 'experience_update', turn_id: 1,
-        experience_updates: [{ contradicted_experience_id: 5, description: 'Now in New York' }],
-      }),
-      'event: message\ndata: {"role":"assistant","content":"hi","turn_id":1}',
-      'event: done\ndata: {}',
-    ]);
-    await vm.sendMessage();
-    const notif = vm.messages.value.find(m => m.scType === 'experience_update');
-    expect(notif).toBeDefined();
-    expect(notif.experience_updates).toHaveLength(1);
-  });
-
-  it('sendMessage_experience_update_sidechannel_calls_removeContradictedExperiences', async () => {
-    // Three experiences; only id:5 is contradicted → ids 10 and 20 must survive.
-    vm.experiences.value = [
-      { id: 5, statement: 'We are in Chicago', source: 'told_by_user' },
-      { id: 10, statement: 'User likes coffee', source: 'observed' },
-      { id: 20, statement: 'User works mornings', source: 'observed' },
-    ];
-    vm.inputText.value = 'hello';
-    mockMessages([
-      'event: sidechannel\ndata: ' + JSON.stringify({
-        type: 'experience_update', turn_id: 1,
-        experience_updates: [{ contradicted_experience_id: 5, description: 'desc' }],
-      }),
-      'event: message\ndata: {"role":"assistant","content":"hi","turn_id":1}',
-      'event: done\ndata: {}',
-    ]);
-    await vm.sendMessage();
-    expect(vm.experiences.value.map(e => e.id)).not.toContain(5);
-    expect(vm.experiences.value.map(e => e.id)).toContain(10);
-    expect(vm.experiences.value.map(e => e.id)).toContain(20);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // SSE message event — active experience tracking
 // ---------------------------------------------------------------------------
 
@@ -283,6 +232,18 @@ describe('newSession', () => {
     vm.experienceScoreMap.value = new Map([[1, 0.5], [2, 0.8]]);
     await vm.newSession();
     expect(vm.experienceScoreMap.value.size).toBe(0);
+  });
+
+  it('newSession_resets_factsBlob_to_empty', async () => {
+    vm.factsBlob.value = SAMPLE_BLOB;
+    await vm.newSession();
+    expect(vm.factsBlob.value).toEqual({});
+  });
+
+  it('newSession_resets_collapsedGroups_to_empty', async () => {
+    vm.collapsedGroups.value = new Set(['Character']);
+    await vm.newSession();
+    expect(vm.collapsedGroups.value.size).toBe(0);
   });
 });
 
@@ -385,59 +346,6 @@ describe('proposal lifecycle', () => {
 });
 
 // ---------------------------------------------------------------------------
-// mutabilityIcon helper
-// ---------------------------------------------------------------------------
-
-describe('mutabilityIcon', () => {
-  let vm;
-  beforeEach(() => { vm = setupComponent(); });
-  afterEach(() => { vi.unstubAllGlobals(); });
-
-  it('mutabilityIcon_returns_lock_for_immutable', () => {
-    expect(vm.mutabilityIcon('immutable')).toBe('🔒');
-  });
-
-  it('mutabilityIcon_returns_pin_for_low', () => {
-    expect(vm.mutabilityIcon('low')).toBe('📌');
-  });
-
-  it('mutabilityIcon_returns_droplet_for_high', () => {
-    expect(vm.mutabilityIcon('high')).toBe('💧');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// factsByCategory computed
-// ---------------------------------------------------------------------------
-
-describe('factsByCategory', () => {
-  let vm;
-  beforeEach(() => { vm = setupComponent(); });
-  afterEach(() => { vi.unstubAllGlobals(); });
-
-  it('factsByCategory_groups_facts_by_category', () => {
-    vm.facts.value = [
-      { id: 1, category: 'user', key: 'name', value: 'Alice' },
-      { id: 2, category: 'character', key: 'mood', value: 'happy' },
-      { id: 3, category: 'setting', key: 'city', value: 'Chicago' },
-      { id: 4, category: 'character', key: 'age', value: '30' },
-    ];
-    const groups = vm.factsByCategory.value;
-    expect(groups.user).toHaveLength(1);
-    expect(groups.character).toHaveLength(2);
-    expect(groups.setting).toHaveLength(1);
-  });
-
-  it('factsByCategory_returns_empty_arrays_when_no_facts', () => {
-    vm.facts.value = [];
-    const groups = vm.factsByCategory.value;
-    expect(groups.user).toEqual([]);
-    expect(groups.character).toEqual([]);
-    expect(groups.setting).toEqual([]);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // dismissNotification
 // ---------------------------------------------------------------------------
 
@@ -462,171 +370,87 @@ describe('dismissNotification', () => {
 });
 
 // ---------------------------------------------------------------------------
-// saveFact — also exercises loadFacts and loadInferences
+// Step 8 — schema fetch, blob load, and tree state
 // ---------------------------------------------------------------------------
 
-describe('saveFact', () => {
+describe('schema / blob / tree state', () => {
   let vm;
-  beforeEach(() => {
-    vm = setupComponent();
-    vm.currentCharacter.value = { id: 7, name: 'Alice' };
-  });
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  it('saveFact_sends_put_request_with_updated_value', async () => {
-    const fact = { id: 42, key: 'city', value: 'Chicago', _editValue: 'New York' };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.saveFact(fact);
+  it('test_loadSchema_populates_schema_ref', async () => {
+    vm = setupComponent({ '/api/schema': SAMPLE_SCHEMA });
+    await vm.loadSchema();
+    expect(vm.schema.value).toHaveProperty('Character');
+  });
+
+  it('test_loadFacts_populates_factsBlob', async () => {
+    vm = setupComponent({ '/facts': SAMPLE_BLOB });
+    vm.currentCharacter.value = { id: 7, name: 'Alice' };
+    await vm.loadFacts();
+    expect(vm.factsBlob.value).toEqual(SAMPLE_BLOB);
+  });
+
+  it('test_visibleFactRows_reflects_schema_and_blob', () => {
+    vm = setupComponent();
+    vm.schema.value = SAMPLE_SCHEMA;
+    vm.factsBlob.value = SAMPLE_BLOB;
+    const name = vm.visibleFactRows.value.find(r => r.path === 'Character.Identity.Name');
+    expect(name.value).toBe('Sarah');
+  });
+
+  it('test_toggleGroup_collapses_and_expands', () => {
+    vm = setupComponent();
+    vm.toggleGroup('Character');
+    expect(vm.collapsedGroups.value.has('Character')).toBe(true);
+    vm.toggleGroup('Character');
+    expect(vm.collapsedGroups.value.has('Character')).toBe(false);
+  });
+
+  it('test_saveLeaf_puts_value_and_reloads', async () => {
+    vm = setupComponent();
+    vm.currentCharacter.value = { id: 7, name: 'Alice' };
+    vm.leafEdits.value = { 'Character.Identity.Name': 'Sarah' };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    await vm.saveLeaf({ path: 'Character.Identity.Name' });
     const calls = fetch.mock.calls.map(([url, opts]) => ({ url, method: opts?.method }));
-    expect(calls.some(c => c.url.includes('/facts/42') && c.method === 'PUT')).toBe(true);
+    expect(calls.some(c => c.url.includes('/facts') && c.method === 'PUT')).toBe(true);
+    expect(calls.some(c => c.url.includes('/facts') && c.method === undefined)).toBe(true);
   });
 
-  it('saveFact_reloads_facts_and_inferences_after_save', async () => {
-    const fact = { id: 42, key: 'city', value: 'Chicago', _editValue: 'New York' };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.saveFact(fact);
-    const urls = fetch.mock.calls.map(c => c[0]);
-    expect(urls.some(u => u && u.includes('/facts') && !u.includes('/42'))).toBe(true);
-    expect(urls.some(u => u && u.includes('/inferences'))).toBe(true);
+  it('test_leafType_and_leafConstraint_read_from_schema', () => {
+    vm = setupComponent();
+    vm.schema.value = SAMPLE_SCHEMA;
+    expect(vm.leafType('Character.Mood')).toBe('Enum');
+    expect(vm.leafConstraint('Character.Mood')).toEqual(['Calm', 'Anxious']);
   });
 });
 
 // ---------------------------------------------------------------------------
-// acceptInference / ignoreInference
+// Step 8 — deleteInference
 // ---------------------------------------------------------------------------
 
-describe('acceptInference', () => {
+describe('deleteInference', () => {
   let vm;
   beforeEach(() => {
     vm = setupComponent();
-    vm.sessionId.value = 5;
     vm.currentCharacter.value = { id: 7, name: 'Alice' };
   });
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  it('acceptInference_removes_inference_from_notification_on_success', async () => {
-    const inf = { statement: 'works long hours', derivation: 'surgeon', _loading: false };
-    const notif = { role: 'notification', scType: 'new_inference_probabilistic', turn_id: 1, new_inferences: [inf] };
-    vm.messages.value = [notif];
+  it('test_deleteInference_deletes_and_reloads', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.acceptInference(notif, inf);
-    expect(notif.new_inferences).toHaveLength(0);
-  });
-
-  it('acceptInference_dismisses_notification_when_last_inference_accepted', async () => {
-    const inf = { statement: 'works long hours', derivation: 'surgeon', _loading: false };
-    const notif = { role: 'notification', scType: 'new_inference_probabilistic', turn_id: 1, new_inferences: [inf] };
-    vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.acceptInference(notif, inf);
-    expect(vm.messages.value.find(m => m.scType === 'new_inference_probabilistic')).toBeUndefined();
-  });
-});
-
-describe('ignoreInference', () => {
-  let vm;
-  beforeEach(() => {
-    vm = setupComponent();
-    vm.sessionId.value = 5;
-  });
-  afterEach(() => { vi.unstubAllGlobals(); });
-
-  it('ignoreInference_removes_inference_from_notification', async () => {
-    const inf = { statement: 'works long hours', _loading: false };
-    const inf2 = { statement: 'second inference', _loading: false };
-    const notif = { role: 'notification', turn_id: 1, new_inferences: [inf, inf2] };
-    vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
-    await vm.ignoreInference(notif, inf);
-    // One inference removed; one remains → notification stays, no API call yet
-    expect(notif.new_inferences).toHaveLength(1);
-    expect(notif.new_inferences[0].statement).toBe('second inference');
-  });
-
-  it('ignoreInference_calls_api_and_dismisses_when_last_inference_ignored', async () => {
-    const inf = { statement: 'works long hours', _loading: false };
-    const notif = { role: 'notification', turn_id: 1, new_inferences: [inf] };
-    vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
-    await vm.ignoreInference(notif, inf);
-    const urls = fetch.mock.calls.map(c => c[0]);
-    expect(urls.some(u => u && u.includes('ignore-inference'))).toBe(true);
-    expect(vm.messages.value.find(m => m === notif)).toBeUndefined();
+    await vm.deleteInference({ id: 99 });
+    const calls = fetch.mock.calls.map(([url, opts]) => ({ url, method: opts?.method }));
+    expect(calls.some(c => c.url.includes('/inferences/99') && c.method === 'DELETE')).toBe(true);
+    expect(calls.some(c => c.url.includes('/inferences') && c.method === undefined)).toBe(true);
   });
 });
 
 // ---------------------------------------------------------------------------
-// acceptImplication / ignoreImplication
+// Step 8 — sendMessage sidechannel cards (Facts v2)
 // ---------------------------------------------------------------------------
 
-describe('acceptImplication', () => {
-  let vm;
-  beforeEach(() => {
-    vm = setupComponent();
-    vm.sessionId.value = 5;
-    vm.currentCharacter.value = { id: 7, name: 'Alice' };
-  });
-  afterEach(() => { vi.unstubAllGlobals(); });
-
-  it('acceptImplication_does_nothing_when_violation_has_no_suggested_fact', async () => {
-    const violation = { _loading: false, suggested_fact: null, _editValue: '' };
-    const notif = { violations: [violation], turn_id: 1 };
-    const callsBefore = fetch.mock.calls.length;
-    await vm.acceptImplication(notif, violation);
-    expect(fetch.mock.calls.length).toBe(callsBefore);
-  });
-
-  it('acceptImplication_updates_assistant_message_content_on_success', async () => {
-    const violation = {
-      suggested_fact: { key: 'city', value: 'Chicago', category: 'setting' },
-      _editValue: 'Chicago',
-      _loading: false,
-    };
-    const notif = { violations: [violation], turn_id: 2 };
-    const assistantMsg = { role: 'assistant', turn_id: 2, content: 'Original' };
-    vm.messages.value = [notif, assistantMsg];
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url) => {
-      if (url && url.includes('accept-implication')) return { ok: true, json: async () => ({ content: 'Updated' }) };
-      return { ok: true, json: async () => [] };
-    }));
-    await vm.acceptImplication(notif, violation);
-    expect(assistantMsg.content).toBe('Updated');
-  });
-});
-
-describe('ignoreImplication', () => {
-  let vm;
-  beforeEach(() => {
-    vm = setupComponent();
-    vm.sessionId.value = 5;
-  });
-  afterEach(() => { vi.unstubAllGlobals(); });
-
-  it('ignoreImplication_calls_ignore_endpoint_when_last_violation_removed', async () => {
-    const violation = { suggested_fact: { key: 'city', value: 'Chicago' }, _editValue: '', _loading: false };
-    const notif = { violations: [violation], turn_id: 1 };
-    vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
-    await vm.ignoreImplication(notif, violation);
-    const urls = fetch.mock.calls.map(c => c[0]);
-    expect(urls.some(u => u && u.includes('ignore-implication'))).toBe(true);
-  });
-
-  it('ignoreImplication_dismisses_notification_when_last_violation_removed', async () => {
-    const violation = { suggested_fact: { key: 'city', value: 'Chicago' }, _editValue: '', _loading: false };
-    const notif = { violations: [violation], turn_id: 1 };
-    vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
-    await vm.ignoreImplication(notif, violation);
-    expect(vm.messages.value.find(m => m === notif)).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Phase 6 — SSE extraction events and done event refresh (tests 89-97)
-// ---------------------------------------------------------------------------
-
-describe('Phase 6 SSE extraction events', () => {
+describe('sendMessage Facts v2 sidechannel cards', () => {
   let vm;
 
   beforeEach(() => { vm = setupComponent(); });
@@ -639,121 +463,68 @@ describe('Phase 6 SSE extraction events', () => {
     }));
   }
 
-  it('sse_status_extracting_sets_loading_state', async () => {
-    vm.inputText.value = 'hello';
-    mockMessages([
-      'event: status\ndata: {"state":"extracting"}',
-      'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
-      'event: done\ndata: {}',
-    ]);
-    await vm.sendMessage();
-    expect(sseStateToLabel('extracting')).not.toBe('');
-  });
-
-  it('sse_status_extracting_does_not_show_thinking_indicator', async () => {
-    vm.inputText.value = 'hello';
-    mockMessages([
-      'event: status\ndata: {"state":"extracting"}',
-      'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
-      'event: done\ndata: {}',
-    ]);
-    await vm.sendMessage();
-    const thinkingEntries = vm.messages.value.filter(m => m.role === 'thinking');
-    expect(thinkingEntries).toHaveLength(0);
-    expect(sseStateToLabel('extracting')).not.toBe('');
-  });
-
-  it('sse_extraction_applied_sidechannel_adds_notification', async () => {
+  it('test_sendMessage_fact_update_fluid_pushes_quiet_notification', async () => {
     vm.inputText.value = 'hello';
     mockMessages([
       'event: sidechannel\ndata: ' + JSON.stringify({
-        type: 'extraction_applied', turn_id: 1,
-        added: [{ key: 'location', value: 'Chicago', category: 'setting', fact_id: 10 }],
-        updated: [],
+        type: 'fact_update_fluid', turn_id: 1,
+        path: 'Character.State-Of-Mind.Mood', value: 'Anxious',
       }),
-      'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
+      'event: message\ndata: {"role":"assistant","content":"hi","turn_id":1}',
       'event: done\ndata: {}',
     ]);
     await vm.sendMessage();
-    const notif = vm.messages.value.find(m => m.scType === 'extraction_applied');
+    const notif = vm.messages.value.find(m => m.scType === 'fact_update_fluid');
     expect(notif).toBeDefined();
   });
 
-  it('sse_extraction_applied_notification_has_correct_scType', async () => {
+  it('test_sendMessage_fact_update_mutable_pushes_blocking_card_and_stops_spinner', async () => {
     vm.inputText.value = 'hello';
     mockMessages([
       'event: sidechannel\ndata: ' + JSON.stringify({
-        type: 'extraction_applied', turn_id: 1,
-        added: [{ key: 'location', value: 'Chicago', category: 'setting', fact_id: 10 }],
-        updated: [],
+        type: 'fact_update_mutable', turn_id: 1,
+        path: 'Character.Identity.Occupation', proposed: 'Detective',
       }),
-      'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
-      'event: done\ndata: {}',
     ]);
     await vm.sendMessage();
-    const notif = vm.messages.value.find(m => m.scType === 'extraction_applied');
-    expect(notif?.scType).toBe('extraction_applied');
+    const notif = vm.messages.value.find(m => m.scType === 'fact_update_mutable');
+    expect(notif).toBeDefined();
+    expect(vm.generating.value).toBe(false);
   });
 
-  it('sse_implicit_fact_proposed_sidechannel_adds_notification', async () => {
+  it('test_sendMessage_require_fact_pushes_blocking_card', async () => {
     vm.inputText.value = 'hello';
     mockMessages([
       'event: sidechannel\ndata: ' + JSON.stringify({
-        type: 'implicit_fact_proposed', turn_id: 1,
-        new_proposals: [{ key: 'mood', value: 'anxious', category: 'user', mutability: 'high', source_quote: 'feeling off' }],
-        update_proposals: [],
+        type: 'require_fact', turn_id: 1,
+        path: 'Character.Identity.Name', reason: 'needed', suggested_value: 'Sarah',
       }),
-      'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
-      'event: done\ndata: {}',
     ]);
     await vm.sendMessage();
-    const notif = vm.messages.value.find(m => m.scType === 'implicit_fact_proposed');
+    const notif = vm.messages.value.find(m => m.scType === 'require_fact');
     expect(notif).toBeDefined();
   });
 
-  it('sse_implicit_fact_proposed_notification_has_correct_scType', async () => {
+  it('test_sendMessage_inference_proposed_pushes_notification', async () => {
     vm.inputText.value = 'hello';
     mockMessages([
       'event: sidechannel\ndata: ' + JSON.stringify({
-        type: 'implicit_fact_proposed', turn_id: 1,
-        new_proposals: [{ key: 'mood', value: 'anxious', category: 'user', mutability: 'high', source_quote: 'feeling off' }],
-        update_proposals: [],
+        type: 'inference_proposed', turn_id: 1,
+        inference: { statement: 'works long hours', derivation: 'occupation=surgeon' },
       }),
-      'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
+      'event: message\ndata: {"role":"assistant","content":"hi","turn_id":1}',
       'event: done\ndata: {}',
     ]);
     await vm.sendMessage();
-    const notif = vm.messages.value.find(m => m.scType === 'implicit_fact_proposed');
-    expect(notif?.scType).toBe('implicit_fact_proposed');
+    const notif = vm.messages.value.find(m => m.scType === 'inference_proposed');
+    expect(notif).toBeDefined();
   });
 
-  it('sse_both_sidechannel_types_in_same_turn_produce_two_notifications', async () => {
-    vm.inputText.value = 'hello';
-    mockMessages([
-      'event: sidechannel\ndata: ' + JSON.stringify({
-        type: 'extraction_applied', turn_id: 1,
-        added: [],
-        updated: [{ fact_id: 5, key: 'home_city', old_value: 'Reykjavik', new_value: 'Chicago' }],
-      }),
-      'event: sidechannel\ndata: ' + JSON.stringify({
-        type: 'implicit_fact_proposed', turn_id: 1,
-        new_proposals: [{ key: 'mood', value: 'anxious', category: 'user', mutability: 'high', source_quote: 'feeling off' }],
-        update_proposals: [],
-      }),
-      'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
-      'event: done\ndata: {}',
-    ]);
-    await vm.sendMessage();
-    const extractionNotifs = vm.messages.value.filter(
-      m => m.scType === 'extraction_applied' || m.scType === 'implicit_fact_proposed'
-    );
-    expect(extractionNotifs).toHaveLength(2);
-  });
-
-  it('sse_done_event_triggers_fact_list_refresh', async () => {
+  it('test_sendMessage_done_reloads_facts_and_inferences', async () => {
     vm.currentCharacter.value = { id: 7, name: 'Alice' };
     vm.sessionId.value = 3;
-    let factsRefreshed = false;
+    let factsFetched = false;
+    let inferencesFetched = false;
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url) => {
       if (url && url.includes('/messages')) {
         return makeStreamResponse([
@@ -761,217 +532,104 @@ describe('Phase 6 SSE extraction events', () => {
           'event: done\ndata: {}',
         ]);
       }
-      if (url && url.includes('/facts')) { factsRefreshed = true; }
+      if (url && url.includes('/facts')) factsFetched = true;
+      if (url && url.includes('/inferences')) inferencesFetched = true;
       return { ok: true, json: async () => [] };
     }));
     vm.inputText.value = 'hello';
     await vm.sendMessage();
-    expect(factsRefreshed).toBe(true);
-  });
-
-  it('sse_no_extraction_notifications_when_extraction_empty', async () => {
-    vm.currentCharacter.value = { id: 7, name: 'Alice' };
-    vm.sessionId.value = 3;
-    let factsRefreshed = false;
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url) => {
-      if (url && url.includes('/messages')) {
-        return makeStreamResponse([
-          'event: message\ndata: {"role":"assistant","content":"Hi","turn_id":1}',
-          'event: done\ndata: {}',
-        ]);
-      }
-      if (url && url.includes('/facts')) { factsRefreshed = true; }
-      return { ok: true, json: async () => [] };
-    }));
-    vm.inputText.value = 'hello';
-    await vm.sendMessage();
-    const extractionNotifs = vm.messages.value.filter(
-      m => m.scType === 'extraction_applied' || m.scType === 'implicit_fact_proposed'
-    );
-    expect(extractionNotifs).toHaveLength(0);
-    expect(factsRefreshed).toBe(true);
+    expect(factsFetched).toBe(true);
+    expect(inferencesFetched).toBe(true);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Phase 6 — undoUserFact handler
+// Step 8 — blocking-card resolve handlers
 // ---------------------------------------------------------------------------
 
-describe('undoUserFact', () => {
+describe('blocking-card resolve handlers', () => {
   let vm;
 
   beforeEach(() => {
     vm = setupComponent();
     vm.sessionId.value = 5;
-    vm.currentCharacter.value = { id: 7, name: 'Alice' };
   });
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  it('undoUserFact_calls_undo_endpoint', async () => {
-    const fact = { fact_id: 10, key: 'city', old_value: 'Oslo', new_value: 'Chicago', _loading: false };
-    const notif = { turn_id: 1, added: [], updated: [fact] };
-    vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.undoUserFact(notif, fact);
-    const urls = fetch.mock.calls.map(c => c[0]);
-    expect(urls.some(u => u && u.includes('undo-user-fact'))).toBe(true);
-  });
+  function makeMutableCard() {
+    return {
+      role: 'notification', scType: 'fact_update_mutable', turn_id: 3,
+      path: 'Character.Identity.Occupation', proposed: 'Detective',
+      _editValue: 'Detective', _loading: false,
+    };
+  }
 
-  it('undoUserFact_removes_fact_from_updated_list_on_success', async () => {
-    const fact = { fact_id: 10, key: 'city', old_value: 'Oslo', new_value: 'Chicago', _loading: false };
-    const notif = { turn_id: 1, added: [], updated: [fact] };
-    vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.undoUserFact(notif, fact);
-    expect(notif.updated).toHaveLength(0);
-  });
+  function makeImmutableCard() {
+    return {
+      role: 'notification', scType: 'fact_update_immutable_unset', turn_id: 3,
+      path: 'Character.Identity.Name', proposed: 'Sarah',
+      _editValue: 'Sarah', _loading: false,
+    };
+  }
 
-  it('undoUserFact_dismisses_notification_when_last_item_removed', async () => {
-    const fact = { fact_id: 10, key: 'city', old_value: 'Oslo', new_value: 'Chicago', _loading: false };
-    const notif = { turn_id: 1, added: [], updated: [fact] };
+  function makeRequireCard() {
+    return {
+      role: 'notification', scType: 'require_fact', turn_id: 3,
+      path: 'Character.Identity.Name', reason: 'needed',
+      _editValue: 'Sarah', _loading: false,
+    };
+  }
+
+  it('test_resolveMutable_accept_posts_action_and_dismisses', async () => {
+    const notif = makeMutableCard();
     vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.undoUserFact(notif, fact);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    await vm.resolveMutable(notif, 'accept');
+    const call = fetch.mock.calls.find(([url]) => url.includes('/set-fact/respond'));
+    expect(call).toBeDefined();
+    expect(JSON.parse(call[1].body).action).toBe('accept');
     expect(vm.messages.value.find(m => m === notif)).toBeUndefined();
   });
-});
 
-// ---------------------------------------------------------------------------
-// Phase 6 — deleteExtractedFact handler
-// ---------------------------------------------------------------------------
-
-describe('deleteExtractedFact', () => {
-  let vm;
-
-  beforeEach(() => {
-    vm = setupComponent();
-    vm.sessionId.value = 5;
-    vm.currentCharacter.value = { id: 7, name: 'Alice' };
-  });
-  afterEach(() => { vi.unstubAllGlobals(); });
-
-  it('deleteExtractedFact_calls_delete_endpoint', async () => {
-    const fact = { fact_id: 20, key: 'location', value: 'Chicago', _loading: false };
-    const notif = { turn_id: 1, added: [fact], updated: [] };
+  it('test_resolveMutable_edit_posts_editValue', async () => {
+    const notif = makeMutableCard();
+    notif._editValue = 'Nurse';
     vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.deleteExtractedFact(notif, fact);
-    const urls = fetch.mock.calls.map(c => c[0]);
-    expect(urls.some(u => u && u.includes('/facts/20'))).toBe(true);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    await vm.resolveMutable(notif, 'edit');
+    const call = fetch.mock.calls.find(([url]) => url.includes('/set-fact/respond'));
+    const body = JSON.parse(call[1].body);
+    expect(body.action).toBe('edit');
+    expect(body.value).toBe('Nurse');
   });
 
-  it('deleteExtractedFact_removes_fact_from_added_list_on_success', async () => {
-    const fact = { fact_id: 20, key: 'location', value: 'Chicago', _loading: false };
-    const notif = { turn_id: 1, added: [fact], updated: [] };
+  it('test_resolveImmutable_dismiss_posts_dismiss', async () => {
+    const notif = makeImmutableCard();
     vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.deleteExtractedFact(notif, fact);
-    expect(notif.added).toHaveLength(0);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    await vm.resolveImmutable(notif, 'dismiss');
+    const call = fetch.mock.calls.find(([url]) => url.includes('/set-fact/respond'));
+    const body = JSON.parse(call[1].body);
+    expect(body.action).toBe('dismiss');
+    expect(body.value).toBeNull();
   });
 
-  it('deleteExtractedFact_dismisses_notification_when_last_item_removed', async () => {
-    const fact = { fact_id: 20, key: 'location', value: 'Chicago', _loading: false };
-    const notif = { turn_id: 1, added: [fact], updated: [] };
+  it('test_resolveRequireFact_confirm_posts_editValue', async () => {
+    const notif = makeRequireCard();
     vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.deleteExtractedFact(notif, fact);
-    expect(vm.messages.value.find(m => m === notif)).toBeUndefined();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    await vm.resolveRequireFact(notif, true);
+    const call = fetch.mock.calls.find(([url]) => url.includes('/require-fact/respond'));
+    expect(call).toBeDefined();
+    expect(JSON.parse(call[1].body).value).toBe('Sarah');
   });
-});
 
-// ---------------------------------------------------------------------------
-// Phase 6 — acceptImplicitFact handler
-// ---------------------------------------------------------------------------
-
-describe('acceptImplicitFact', () => {
-  let vm;
-
-  beforeEach(() => {
-    vm = setupComponent();
-    vm.sessionId.value = 5;
-    vm.currentCharacter.value = { id: 7, name: 'Alice' };
-  });
-  afterEach(() => { vi.unstubAllGlobals(); });
-
-  it('acceptImplicitFact_calls_accept_endpoint', async () => {
-    const p = { key: 'mood', value: 'anxious', category: 'user', mutability: 'high', source_quote: '', _loading: false };
-    const notif = { turn_id: 1, new_proposals: [p], update_proposals: [] };
+  it('test_resolveRequireFact_notnow_posts_null', async () => {
+    const notif = makeRequireCard();
     vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.acceptImplicitFact(notif, p);
-    const urls = fetch.mock.calls.map(c => c[0]);
-    expect(urls.some(u => u && u.includes('accept-implicit-fact'))).toBe(true);
-  });
-
-  it('acceptImplicitFact_removes_proposal_from_new_proposals_on_success', async () => {
-    const p = { key: 'mood', value: 'anxious', category: 'user', mutability: 'high', _loading: false };
-    const notif = { turn_id: 1, new_proposals: [p], update_proposals: [] };
-    vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.acceptImplicitFact(notif, p);
-    expect(notif.new_proposals).toHaveLength(0);
-  });
-
-  it('acceptImplicitFact_removes_proposal_from_update_proposals_when_existing_fact_id_set', async () => {
-    const p = { key: 'city', value: 'Chicago', category: 'setting', mutability: 'low', existing_fact_id: 3, _loading: false };
-    const notif = { turn_id: 1, new_proposals: [], update_proposals: [p] };
-    vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.acceptImplicitFact(notif, p);
-    expect(notif.update_proposals).toHaveLength(0);
-  });
-
-  it('acceptImplicitFact_dismisses_notification_when_all_proposals_gone', async () => {
-    const p = { key: 'mood', value: 'anxious', category: 'user', mutability: 'high', _loading: false };
-    const notif = { turn_id: 1, new_proposals: [p], update_proposals: [] };
-    vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.acceptImplicitFact(notif, p);
-    expect(vm.messages.value.find(m => m === notif)).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Phase 6 — ignoreImplicitFact handler
-// ---------------------------------------------------------------------------
-
-describe('ignoreImplicitFact', () => {
-  let vm;
-
-  beforeEach(() => {
-    vm = setupComponent();
-    vm.sessionId.value = 5;
-    vm.currentCharacter.value = { id: 7, name: 'Alice' };
-  });
-  afterEach(() => { vi.unstubAllGlobals(); });
-
-  it('ignoreImplicitFact_calls_ignore_endpoint', async () => {
-    const p = { key: 'mood', value: 'anxious', category: 'user', mutability: 'high', _loading: false };
-    const notif = { turn_id: 1, new_proposals: [p], update_proposals: [] };
-    vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.ignoreImplicitFact(notif, p);
-    const urls = fetch.mock.calls.map(c => c[0]);
-    expect(urls.some(u => u && u.includes('ignore-implicit-fact'))).toBe(true);
-  });
-
-  it('ignoreImplicitFact_removes_proposal_from_new_proposals', async () => {
-    const p1 = { key: 'mood', value: 'anxious', category: 'user', mutability: 'high', _loading: false };
-    const p2 = { key: 'energy', value: 'low', category: 'user', mutability: 'high', _loading: false };
-    const notif = { turn_id: 1, new_proposals: [p1, p2], update_proposals: [] };
-    vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.ignoreImplicitFact(notif, p1);
-    expect(notif.new_proposals).toHaveLength(1);
-    expect(notif.new_proposals[0]).toBe(p2);
-  });
-
-  it('ignoreImplicitFact_dismisses_notification_when_all_proposals_gone', async () => {
-    const p = { key: 'mood', value: 'anxious', category: 'user', mutability: 'high', _loading: false };
-    const notif = { turn_id: 1, new_proposals: [p], update_proposals: [] };
-    vm.messages.value = [notif];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
-    await vm.ignoreImplicitFact(notif, p);
-    expect(vm.messages.value.find(m => m === notif)).toBeUndefined();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    await vm.resolveRequireFact(notif, false);
+    const call = fetch.mock.calls.find(([url]) => url.includes('/require-fact/respond'));
+    expect(JSON.parse(call[1].body).value).toBeNull();
   });
 });
