@@ -200,9 +200,11 @@ async def test_set_fact_mutable_sidechannel_emitted_before_done(
     char = await create_character(db, name="MutChar1", modelfile_base="qwen3:7b")
     sess = await create_session(db, character_id=char.id)
 
+    # The character LLM produces a plain reply; the evaluator is what emits set_fact.
     queue.load(
         [
             _mock_world_builder(),
+            _mock_char_reply(),
             _mock_set_fact_pass(_MUT_PATH, "surgeon"),
         ]
     )
@@ -235,9 +237,8 @@ async def test_set_fact_mutable_accept_delivers_response(
     queue.load(
         [
             _mock_world_builder(),
-            _mock_set_fact_pass(_MUT_PATH, "surgeon"),
             _mock_char_reply("Certainly."),
-            _mock_eval_pass(),
+            _mock_set_fact_pass(_MUT_PATH, "surgeon"),
         ]
     )
 
@@ -267,9 +268,8 @@ async def test_set_fact_mutable_accept_writes_fact_to_db(
     queue.load(
         [
             _mock_world_builder(),
-            _mock_set_fact_pass(_MUT_PATH, "surgeon"),
             _mock_char_reply("I am a surgeon."),
-            _mock_eval_pass(),
+            _mock_set_fact_pass(_MUT_PATH, "surgeon"),
         ]
     )
 
@@ -291,9 +291,11 @@ async def test_set_fact_mutable_reject_triggers_regeneration(
     char = await create_character(db, name="MutChar4", modelfile_base="qwen3:7b")
     sess = await create_session(db, character_id=char.id)
 
+    # reject sets needs_regeneration, so the loop runs a second character + evaluator pass.
     queue.load(
         [
             _mock_world_builder(),
+            _mock_char_reply("Original reply."),
             _mock_set_fact_pass(_MUT_PATH, "surgeon"),
             _mock_char_reply("Regenerated reply."),
             _mock_eval_pass(),
@@ -322,9 +324,11 @@ async def test_set_fact_mutable_edit_writes_user_value(
     char = await create_character(db, name="MutChar5", modelfile_base="qwen3:7b")
     sess = await create_session(db, character_id=char.id)
 
+    # edit sets needs_regeneration, so the loop runs a second character + evaluator pass.
     queue.load(
         [
             _mock_world_builder(),
+            _mock_char_reply("Original reply."),
             _mock_set_fact_pass(_MUT_PATH, "surgeon"),
             _mock_char_reply("I am a nurse."),
             _mock_eval_pass(),
@@ -357,6 +361,7 @@ async def test_set_fact_immutable_unset_sidechannel_emitted(
     queue.load(
         [
             _mock_world_builder(),
+            _mock_char_reply(),
             _mock_set_fact_pass(_IMMU_PATH, "Elena"),
         ]
     )
@@ -391,9 +396,8 @@ async def test_set_fact_immutable_unset_dismiss_delivers_without_writing(
     queue.load(
         [
             _mock_world_builder(),
-            _mock_set_fact_pass(_IMMU_PATH, "Elena"),
             _mock_char_reply("I'll continue."),
-            _mock_eval_pass(),
+            _mock_set_fact_pass(_IMMU_PATH, "Elena"),
         ]
     )
 
@@ -443,6 +447,7 @@ async def test_set_fact_respond_double_resolve_returns_409(
     queue.load(
         [
             _mock_world_builder(),
+            _mock_char_reply(),
             _mock_set_fact_pass(_MUT_PATH, "surgeon"),
         ]
     )

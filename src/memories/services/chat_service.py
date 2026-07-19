@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import json
 import logging
 import os
 from typing import Any, cast
@@ -227,170 +226,9 @@ async def run_contradiction_loop(
 
         return f"{path} = {coerced!r}. Use this value now."
 
-    async def _handle_set_fact(args: dict[str, Any]) -> str:
-        nonlocal facts_blob
-        path = str(args.get("path", ""))
-        value = args.get("value")
-        try:
-            mutability = check_write_permitted(path, schema)
-        except ValueError as exc:
-            return f"Error: {exc}"
-        leaf = leaves_by_path[path]
-
-        if mutability == "Fluid":
-            coerced: str | int | float | bool | None = value
-            if leaf["Type"] == "Enum":
-                match = next(
-                    (c for c in leaf["Constraint"] if c.lower() == str(value).lower()), None
-                )
-                if match is None:
-                    return (
-                        f"Error: {path}: {value!r} is not a valid value. "
-                        f"Valid values: {', '.join(leaf['Constraint'])}"
-                    )
-                coerced = match
-            elif leaf["Type"] == "Integer":
-                try:
-                    coerced = int(value)  # type: ignore[arg-type]
-                except (TypeError, ValueError):
-                    return f"Error: {path}: {value!r} is not a valid integer"
-            working = copy.deepcopy(facts_blob)
-            _set_leaf(working, path, coerced)
-            await db_set_facts(db, character.id, working)
-            facts_blob = working
-            return f"Wrote {path} = {coerced!r}."
-
-        if mutability == "Immutable":
-            current = _lookup_leaf_value(facts_blob, path)
-            if current is not None:
-                return (
-                    f"Error: {path} is Immutable and already set to {current!r}. "
-                    "You may not change it."
-                )
-            if leaf["Type"] == "Enum":
-                proposed_match = next(
-                    (c for c in leaf["Constraint"] if c.lower() == str(value).lower()), None
-                )
-                if proposed_match is None:
-                    return (
-                        f"Error: {path}: {value!r} is not a valid value. "
-                        f"Valid values: {', '.join(leaf['Constraint'])}"
-                    )
-                proposed: str | int | float | bool | None = proposed_match
-            elif leaf["Type"] == "Integer":
-                try:
-                    proposed = int(value)  # type: ignore[arg-type]
-                except (TypeError, ValueError):
-                    return f"Error: {path}: {value!r} is not a valid integer"
-            else:
-                proposed = value
-            if on_event is not None:
-                await on_event(
-                    SSEEvent(
-                        event="sidechannel",
-                        data={
-                            "type": "fact_update_immutable_unset",
-                            "turn_id": turn_id,
-                            "path": path,
-                            "proposed": proposed,
-                        },
-                    )
-                )
-            raw = await await_gate(session_id, turn_id)
-            decision: dict[str, str | None] = (
-                json.loads(raw) if raw is not None else {"action": "dismiss"}
-            )
-            action = decision.get("action", "dismiss")
-            if action == "accept":
-                working = copy.deepcopy(facts_blob)
-                _set_leaf(working, path, proposed)
-                await db_set_facts(db, character.id, working)
-                facts_blob = working
-                return f"Wrote {path} = {proposed!r}. Value is now locked immutably."
-            if action == "edit":
-                user_val_raw = str(decision.get("value") or "")
-                if leaf["Type"] == "Enum":
-                    em = next(
-                        (c for c in leaf["Constraint"] if c.lower() == user_val_raw.lower()),
-                        None,
-                    )
-                    user_val: str | int | float | bool | None = (
-                        em if em is not None else user_val_raw
-                    )
-                elif leaf["Type"] == "Integer":
-                    try:
-                        user_val = int(user_val_raw)
-                    except ValueError:
-                        user_val = user_val_raw
-                else:
-                    user_val = user_val_raw
-                working = copy.deepcopy(facts_blob)
-                _set_leaf(working, path, user_val)
-                await db_set_facts(db, character.id, working)
-                facts_blob = working
-                return f"Wrote {path} = {user_val!r}."
-            return f"No value recorded for {path}."
-
-        # Mutable
-        if leaf["Type"] == "Enum":
-            proposed_match = next(
-                (c for c in leaf["Constraint"] if c.lower() == str(value).lower()), None
-            )
-            if proposed_match is None:
-                return (
-                    f"Error: {path}: {value!r} is not a valid value. "
-                    f"Valid values: {', '.join(leaf['Constraint'])}"
-                )
-            proposed = proposed_match
-        elif leaf["Type"] == "Integer":
-            try:
-                proposed = int(value)  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                return f"Error: {path}: {value!r} is not a valid integer"
-        else:
-            proposed = value
-        if on_event is not None:
-            await on_event(
-                SSEEvent(
-                    event="sidechannel",
-                    data={
-                        "type": "fact_update_mutable",
-                        "turn_id": turn_id,
-                        "path": path,
-                        "proposed": proposed,
-                    },
-                )
-            )
-        raw = await await_gate(session_id, turn_id)
-        decision = json.loads(raw) if raw is not None else {"action": "reject"}
-        action = decision.get("action", "reject")
-        if action == "accept":
-            working = copy.deepcopy(facts_blob)
-            _set_leaf(working, path, proposed)
-            await db_set_facts(db, character.id, working)
-            facts_blob = working
-            return f"Wrote {path} = {proposed!r}."
-        if action == "edit":
-            user_val_raw = str(decision.get("value") or "")
-            if leaf["Type"] == "Enum":
-                em = next(
-                    (c for c in leaf["Constraint"] if c.lower() == user_val_raw.lower()), None
-                )
-                user_val = em if em is not None else user_val_raw
-            elif leaf["Type"] == "Integer":
-                try:
-                    user_val = int(user_val_raw)
-                except ValueError:
-                    user_val = user_val_raw
-            else:
-                user_val = user_val_raw
-            working = copy.deepcopy(facts_blob)
-            _set_leaf(working, path, user_val)
-            await db_set_facts(db, character.id, working)
-            facts_blob = working
-            return f"Wrote {path} = {user_val!r}."
-        # reject
-        return "Change rejected."
+    # Work on a private copy so the per-iteration system-prompt rebuild (below) never
+    # mutates the caller's list.
+    base_messages = list(base_messages)
 
     for attempt in range(max_retries + 1):
         messages = list(base_messages)
@@ -408,7 +246,7 @@ async def run_contradiction_loop(
             model,
             messages,
             [_REQUIRE_FACT_TOOL],
-            {"require_fact": _handle_require_fact, "set_fact": _handle_set_fact},
+            {"require_fact": _handle_require_fact},
             think=think,
         )
         if char_result.cap_reached:
@@ -462,6 +300,16 @@ async def run_contradiction_loop(
             ev.max_retries_exceeded = True
             eval_result = ev
             break
+
+        # We are regenerating (contradiction or needs_regeneration).  The evaluator may
+        # have written fact updates into facts_blob during an edit/accept, so rebuild the
+        # system prompt from the current blob before the next Character-LLM attempt —
+        # otherwise the regenerated response renders a stale world state.
+        if base_messages and base_messages[0].get("role") == "system":
+            base_messages[0] = {
+                "role": "system",
+                "content": build_system_prompt(character, facts_blob, inferences, experiences),
+            }
 
     assert eval_result is not None
     eval_result.contradiction_notifications = contradiction_notifications

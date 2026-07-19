@@ -1713,3 +1713,51 @@ async def test_run_contradiction_loop_needs_regeneration_uses_updated_blob(
         )
 
     assert captured_blob.get("_injected") is True
+
+
+async def test_run_contradiction_loop_needs_regeneration_rebuilds_system_prompt(
+    db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
+) -> None:
+    """The regenerated Character LLM call must see a system prompt built from the
+    evaluator's updated facts_blob, not the stale pre-edit prompt (CT-1)."""
+    import unittest.mock
+
+    from memories.services.prompt_builder import build_system_prompt
+
+    call_count = 0
+
+    async def _fake_evaluator(  # type: ignore[no-untyped-def]
+        db, character, session_id, turn_id, facts_blob, *args, **kwargs
+    ):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # Simulate an approved edit writing a Name value into the blob.
+            updated = {"Character": {"Identity": {"Name": {"Value": "Zaphod"}}}}
+            return (
+                EvaluatorResult(verdict="pass", decision_log="regen", needs_regeneration=True),
+                updated,
+            )
+        return EvaluatorResult(verdict="pass", decision_log="ok"), facts_blob
+
+    model = character.current_model_name or character.modelfile_base
+    base_messages = [
+        {"role": "system", "content": build_system_prompt(character, {})},
+        {"role": "user", "content": "hi"},
+    ]
+    with (
+        unittest.mock.patch("memories.services.chat_service.run_evaluator", _fake_evaluator),
+        respx.mock,
+    ):
+        route = respx.post(_CHAT_URL).mock(
+            side_effect=[_mock_ok("Response 1"), _mock_ok("Response 2")]
+        )
+        await run_contradiction_loop(
+            db, session.id, 1, model, base_messages, character, {}, "hi", ollama
+        )
+
+    first_call = json.loads(route.calls[0].request.content)
+    second_call = json.loads(route.calls[1].request.content)
+    # First attempt renders the empty blob; the regenerated attempt renders the edit.
+    assert "Zaphod" not in first_call["messages"][0]["content"]
+    assert "Zaphod" in second_call["messages"][0]["content"]

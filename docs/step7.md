@@ -74,7 +74,9 @@ test.
 
 - **`tool_gate.py`** — queue type stays `asyncio.Queue[str | None]`; no new functions.
   The new `fact_approval.py` router JSON-encodes its decision dict into a string before
-  calling `resolve_gate()`.
+  calling `resolve_gate()`. (Deviation, resolved in CT-4: a module-level `_resolved`
+  ordered set was added so a double-resolve returns 409 even after `cleanup_gate` runs;
+  it is bounded by `_MAX_RESOLVED_KEYS` to prevent unbounded growth.)
 - **`require_fact.py`** — completely untouched.
 - **`chat_service.py`** — only `run_contradiction_loop()` changes (Part E below). The
   imports, `run_turn()` body, `_handle_require_fact`, and `_REQUIRE_FACT_TOOL` are

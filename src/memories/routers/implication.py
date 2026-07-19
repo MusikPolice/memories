@@ -130,7 +130,7 @@ async def accept_implication(
     user_msg = next((m for m in messages if m.role == "user" and m.turn_id == turn_id), None)
     user_text = user_msg.content if user_msg else ""
 
-    new_content, _, ev = await run_contradiction_loop(
+    new_content, _, _ = await run_contradiction_loop(
         db,
         session_id,
         turn_id,
@@ -144,7 +144,7 @@ async def accept_implication(
         inferences=inferences,
     )
 
-    # Replace the stored message and clear the ungrounded flag
+    # Replace the stored message with the regenerated content
     try:
         await replace_message_content(
             db, session_id=session_id, turn_id=turn_id, new_content=new_content
