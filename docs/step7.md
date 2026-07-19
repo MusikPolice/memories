@@ -894,3 +894,111 @@ Each test creates its own character/session inline (same pattern as
 
 ## Post-Implementation Cleanup Tasks
 
+### CT-1: Regeneration re-runs the Character LLM with a stale system prompt
+
+**Decided:** Fix before proceeding
+
+The headline feature of Step 7 — "the character's response must be regenerated with the
+updated world state" (Overview) — does not actually deliver an updated response. Part E's
+rationale claims that on a `needs_regeneration` continuation, "`build_system_prompt()` is
+called with the new `facts_blob`, so the regenerated Character LLM sees the updated world
+state." But `run_contradiction_loop()` in [chat_service.py](src/memories/services/chat_service.py#L395-L413)
+never calls `build_system_prompt()`. It rebuilds `messages = list(base_messages)` each
+iteration, and `base_messages` (with its system prompt at index 0) is built once in
+`run_turn()` at [chat_service.py:539](src/memories/services/chat_service.py#L539) before
+the loop and is never rebuilt. Unlike the contradiction path — which appends an explicit
+hint message so the LLM knows what to fix — the `needs_regeneration` path appends nothing
+(`contradiction_hints` stays empty). So the regenerated Character LLM gets the pre-edit
+facts in its system prompt and no signal about the change. For a Mutable edit
+(Occupation → "doctor"), the character re-generates from the identical stale prompt, likely
+implies the original value again ("engineer"), and the evaluator re-suspends on the same
+path — burning `MAX_CONTRADICTION_RETRIES` while never reflecting the user's edit. The
+unit test `test_run_contradiction_loop_needs_regeneration_uses_updated_blob` only asserts
+the second `run_evaluator` call received the updated blob; it never checks the Character
+LLM's prompt, so the gap is invisible to the suite.
+
+**What to do:**
+1. In `run_contradiction_loop()`, after `ev, facts_blob = await run_evaluator(...)` returns
+   the updated blob, rebuild the system prompt from it before the next Character-LLM
+   iteration. `build_system_prompt` is already imported; the loop already receives
+   `character`, `inferences`, and `experiences`. Rebuild with
+   `build_system_prompt(character, facts_blob, inferences, experiences)` and replace the
+   system entry of `base_messages` (index 0) so the regenerated prompt renders the current
+   fact values.
+2. Guard the rebuild so it only fires when `facts_blob` actually changed (e.g. on
+   `needs_regeneration` or contradiction continuations), to avoid needless work on the
+   clean-break path.
+3. Strengthen `test_run_contradiction_loop_needs_regeneration_uses_updated_blob` (or add a
+   sibling test) to assert the *second* `chat_with_tools` character call received a system
+   message reflecting the updated blob — not just that `run_evaluator` did.
+
+### CT-2: Unreachable duplicate `_handle_set_fact` added to `run_contradiction_loop()`
+
+**Decided:** Fix before proceeding
+
+The spec ("What This Step Does NOT Change") states chat_service.py's only change is Part E's
+loop-exit condition and that `_handle_require_fact` / `_REQUIRE_FACT_TOOL` are untouched.
+The implementation instead added a ~166-line `_handle_set_fact` closure to
+`run_contradiction_loop()` ([chat_service.py:230-393](src/memories/services/chat_service.py#L230-L393))
+and registered it in the character LLM's handler dict at
+[chat_service.py:411](src/memories/services/chat_service.py#L411)
+(`{"require_fact": _handle_require_fact, "set_fact": _handle_set_fact}`). But the tool
+*list* advertised to the model is still `[_REQUIRE_FACT_TOOL]` — `set_fact` is never sent
+to Ollama, so the model cannot call it. `chat_with_tools()` only dispatches handlers for
+tool calls the model actually emits, so this closure is unreachable. Coverage confirms it:
+chat_service.py fell to 72% with lines 236-393 unexercised. Worse, this duplicate has
+*different* semantics from the evaluator's version — it writes edits but never sets any
+regeneration flag — so if a future change adds `set_fact` to the character tool list, it
+would silently get the wrong (non-regenerating) behavior. This is dead, duplicated, and
+subtly-divergent code that contradicts the spec.
+
+**What to do:**
+1. Delete the entire `_handle_set_fact` closure from `run_contradiction_loop()`
+   (chat_service.py:230-393).
+2. Revert the handler registration at line 411 back to `{"require_fact": _handle_require_fact}`.
+3. Remove the now-unused `import json` at [chat_service.py:7](src/memories/services/chat_service.py#L7)
+   (its only uses were lines 301 and 365 inside the deleted closure).
+4. Re-run `uv run pytest` to confirm nothing depended on the dead handler (coverage shows
+   nothing does) and chat_service.py coverage recovers.
+
+### CT-3: Ruff RUF059 failure — unused `ev` in `accept_implication()`
+
+**Decided:** Fix before proceeding
+
+Part I removed the `if ev.verdict in (...)` block from `accept_implication()`, which held
+the only uses of `ev`. The unpacking at
+[implication.py:133](src/memories/routers/implication.py#L133)
+(`new_content, _, ev = await run_contradiction_loop(...)`) now leaves `ev` unused, and
+`uv run ruff check src/` fails with `RUF059 Unpacked variable 'ev' is never used`. Per the
+project's ruff-in-pre-commit convention this blocks a clean commit. The comment at
+[implication.py:147](src/memories/routers/implication.py#L147)
+("Replace the stored message and clear the ungrounded flag") is also now stale — there is
+no ungrounded flag to clear.
+
+**What to do:**
+1. Change the unpacking at implication.py:133 to `new_content, _, _ = await run_contradiction_loop(...)`.
+2. Update the stale comment at line 147 to drop the "clear the ungrounded flag" clause.
+3. Confirm `uv run ruff check src/` passes.
+
+### CT-4: `tool_gate._resolved` grows unbounded and deviates from the "unchanged" spec claim
+
+**Decided:** Fix in follow-up
+
+The spec lists `tool_gate.py` under "What This Step Does NOT Change" ("no new functions"),
+but the implementation added a module-level `_resolved: set[tuple[int, int]]` and rewired
+`await_gate`/`resolve_gate`/`cleanup_gate` in [tool_gate.py](src/memories/services/tool_gate.py)
+to make a double-resolve return 409 even after `cleanup_gate` has run (needed for
+`test_set_fact_respond_double_resolve_returns_409`). The change is justified, but
+`_resolved` is intentionally never cleared — `cleanup_gate` leaves entries in place — so
+the set grows by one `(session_id, turn_id)` entry for every resolved gate over the
+server's lifetime. On a long-running local server this is a slow unbounded leak. It is
+tiny per entry, hence follow-up rather than blocking, but it should be bounded or the
+deviation documented.
+
+**What to do:**
+1. Bound `_resolved` growth — e.g. cap it to the most-recent N keys, or evict entries once
+   a turn is provably complete (a later `turn_id` for the same `session_id` supersedes
+   earlier ones), while preserving the after-cleanup double-resolve → 409 behavior the
+   tests rely on.
+2. Update the Step 7 spec's "What This Step Does NOT Change" note to acknowledge the
+   tool_gate change, so future reviewers do not treat the deviation as accidental.
