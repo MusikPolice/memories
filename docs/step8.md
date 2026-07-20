@@ -987,4 +987,82 @@ file):
 
 ## Post-Implementation Cleanup Tasks
 
-_(Populated by `/review-step` after implementation.)_
+### CT-1: Dead legacy CSS left in `index.html`
+
+**Decided:** Fix in follow-up
+
+Parts C2/C3/C4 removed the legacy notification cards, the create-fact form, the three-category
+facts panel, and the promote affordance from the template, but the CSS rules that styled those
+elements were left behind in the `<style>` block. None of these selectors match any DOM the app
+now renders: `.notification-card.implication` (lines ~120–121), `.notification-card.experience-update`
+/`.extraction-applied`/`.implicit-proposed` and `.extraction-fact*` (~132–141), the old flat-fact
+`.fact-row*` block (~256–272), `.mutability-*` (~274–292), `.category-*` + `.category-header`
+(~247–254, ~294–309), `.promote-btn`/`.promote-form*`/`.form-row` (~358–393), and `.add-fact-form*`
+(~395–407). This is pure dead code — harmless but obscures which styles are live. Note the
+still-used selectors that must be **kept**: `.notification-card.inference/.contradiction/.fact-fluid/
+.fact-mutable/.fact-immutable`, `.violation-desc`/`.violation-fact*`, `.inference-statement`/
+`.inference-derivation`, `.fact-group`/`.fact-leaf*`, and `.inference-row*`/`.inference-type-badge`.
+
+**What to do:**
+1. Delete the dead selectors listed above from the `<style>` block in `index.html`.
+2. Grep the template for each class name before deleting to confirm zero remaining references
+   (e.g. `.violation-*` and `.inference-statement` are shared by the new cards — do not remove them).
+
+### CT-2: Enum "(not set)" option is a guaranteed-fail, silent no-op
+
+**Decided:** Fix in follow-up
+
+The facts-panel Enum editor renders `<option value="">(not set)</option>` (index.html ~638) with
+`@change="saveLeaf(row)"`. Selecting it calls `apiSetFactValue(..., '')`, and the PUT handler's Enum
+branch (`facts.py:65–75`) never matches an empty string against `Constraint`, so it always returns
+422. `saveLeaf` (chat-component.js:84–88) ignores `r.ok` and calls `loadFacts()`, which reseeds the
+input via `syncLeafEdits()` — so the dropdown silently snaps back with no user feedback. The result
+is a live control that can never succeed. The same silent-swallow affects invalid Integer input and
+out-of-constraint enums; the spec's Edge Cases accept coercion 422s, but the always-failing "(not set)"
+affordance is not called out and stems from an internal inconsistency in the spec template itself
+(C3 offers "(not set)" while Part A says clearing is deferred).
+
+**What to do:**
+1. Either remove the `(not set)` option from the Enum `<select>`, or (preferred) implement value
+   clearing so it works — but clearing (`patch_fact` with an unset/removed leaf) is deferred per Part
+   A, so removing the option is the in-scope fix.
+2. Optionally have `saveLeaf` check `r.ok` and surface a brief inline error instead of silently
+   reverting, so rejected Integer/Enum edits are visible.
+
+### CT-3: Fact inputs render blank if the schema resolves after the first `loadFacts()`
+
+**Decided:** Fix in follow-up
+
+The leaf inputs bind to `leafEdits[row.path]`, not to the computed `row.value`. `leafEdits` is seeded
+only inside `syncLeafEdits()` (chat-component.js:63–69), which iterates
+`buildVisibleFactRows(schema.value, ...)` using whatever `schema.value` holds at that moment.
+`setup()` fires `loadSchema()` and `loadCharacters()` as un-awaited siblings (367–368); on a
+single-character setup, `loadCharacters` → `pickCharacter` → `loadFacts` can complete before the
+schema fetch resolves. When that happens `syncLeafEdits` sees an empty schema, seeds no entries, and
+every fact input renders blank despite the blob holding values — until the next turn's
+`done`→`loadFacts()` reseeds. `visibleFactRows` self-heals (it re-reads the blob) but the inputs do
+not, because they read `leafEdits`. In practice `loadSchema` usually wins the race (it is one fetch
+vs. characters-GET + session-POST + facts-GET), so this is low-probability, but it is a real,
+confusing "my facts disappeared on load" hazard.
+
+**What to do:**
+1. Re-seed `leafEdits` when the schema arrives — e.g. call `syncLeafEdits()` at the end of
+   `loadSchema()`, or add a `watch(schema, syncLeafEdits)`.
+2. Alternatively, `await loadSchema()` before the first `loadFacts()` in the setup/pickCharacter path.
+
+### CT-4: `delete_fact` and `patch_fact_row` are now orphaned in production code
+
+**Decided:** Fix in follow-up
+
+Removing the row-CRUD endpoints from `facts.py` left `database.delete_fact` (line 259) and
+`database.patch_fact_row` (line 270) with no production callers — only `tests/integration/
+test_facts_repo.py` and `test_api_extraction_resolution.py` still reference them. Their siblings
+(`create_fact`, `get_fact_rows`, `update_fact`) remain in use by `implication.py`, `inferences.py`,
+and `sessions.py`, so the DB layer is legitimately mid-transition; Step 8's backend scope was limited
+to `facts.py`, so this is not an in-step defect. Flagging it so it is not forgotten when Step 9
+removes the legacy fact machinery.
+
+**What to do:**
+1. When Step 9 removes the legacy row-fact machinery, delete `delete_fact` and `patch_fact_row` from
+   `database.py` along with their repo tests, and re-check whether `get_fact_rows`/`update_fact`/
+   `create_fact` can also go once `implication.py` is removed.
