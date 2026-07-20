@@ -51,6 +51,10 @@ export const ChatComponent = {
     async function loadSchema() {
       const r = await apiGetSchema();
       if (r.ok) schema.value = await r.json();
+      // Re-seed the leaf inputs now that the schema is known: if loadFacts() already
+      // ran (its blob is loaded) but the schema arrived later, syncLeafEdits() would
+      // have seen an empty schema and seeded nothing, leaving every input blank.
+      syncLeafEdits();
     }
 
     async function loadFacts() {

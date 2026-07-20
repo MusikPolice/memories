@@ -375,9 +375,8 @@ async def test_accept_implicit_fact_tier4_deleted_fact_falls_back_to_create(
     fact,
 ) -> None:
     """Tier 4 accept when the referenced fact was deleted → 201 (Tier 3 fallback, not 404)."""
-    from memories.database import delete_fact
-
-    await delete_fact(db, fact_id=fact.id)
+    await db.execute("DELETE FROM facts WHERE id = ?", (fact.id,))
+    await db.commit()
 
     response = await client.post(
         f"/api/sessions/{session.id}/turns/1/accept-implicit-fact",

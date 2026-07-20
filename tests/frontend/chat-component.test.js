@@ -383,6 +383,19 @@ describe('schema / blob / tree state', () => {
     expect(vm.schema.value).toHaveProperty('Character');
   });
 
+  it('test_loadSchema_reseeds_leafEdits_from_current_blob', async () => {
+    // CT-3: if the blob loads before the schema arrives, syncLeafEdits() sees an empty
+    // schema and seeds nothing. loadSchema() must re-seed the leaf inputs once the schema
+    // is known, or every fact input renders blank despite the blob holding values.
+    vm = setupComponent({ '/api/schema': SAMPLE_SCHEMA });
+    vm.factsBlob.value = SAMPLE_BLOB;
+    vm.schema.value = {};
+    vm.leafEdits.value = {};
+    await vm.loadSchema();
+    expect(vm.schema.value).toHaveProperty('Character');
+    expect(vm.leafEdits.value['Character.Identity.Name']).toBe('Sarah');
+  });
+
   it('test_loadFacts_populates_factsBlob', async () => {
     vm = setupComponent({ '/facts': SAMPLE_BLOB });
     vm.currentCharacter.value = { id: 7, name: 'Alice' };

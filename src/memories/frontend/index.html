@@ -117,8 +117,6 @@
       padding: 8px 12px; font-weight: 600; font-size: 12px;
     }
     .notification-body { padding: 0 12px 10px; }
-    .notification-card.implication { border-color: #f0a040; }
-    .notification-card.implication .notification-title { background: #fff8ee; color: #a05000; }
     .notification-card.inference { border-color: #40a080; }
     .notification-card.inference .notification-title { background: #eefff8; color: #006040; }
     .notification-card.contradiction { border-color: #f04040; }
@@ -129,16 +127,6 @@
     .notification-card.fact-mutable .notification-title { background: #fff8ee; color: #a05000; }
     .notification-card.fact-immutable { border-color: #8060c0; }
     .notification-card.fact-immutable .notification-title { background: #f3eeff; color: #503090; }
-    .notification-card.experience-update { border-color: #4080c0; }
-    .notification-card.experience-update .notification-title { background: #eef4ff; color: #1a50a0; }
-    .notification-card.extraction-applied { border-color: #6060b0; }
-    .notification-card.extraction-applied .notification-title { background: #f0eeff; color: #302080; }
-    .notification-card.implicit-proposed { border-color: #b06020; }
-    .notification-card.implicit-proposed .notification-title { background: #fff5ee; color: #804010; }
-    .extraction-fact { margin: 6px 0; padding: 6px 0; border-bottom: 1px solid #eee; }
-    .extraction-fact:last-child { border-bottom: none; }
-    .extraction-fact .fact-kv { font-size: 13px; margin-bottom: 2px; }
-    .extraction-fact .fact-quote { font-size: 11px; color: #888; font-style: italic; margin-bottom: 4px; }
 
     .violation-desc { color: #555; margin: 8px 0 4px; line-height: 1.4; }
     .violation-fact { margin: 4px 0 8px; }
@@ -244,70 +232,6 @@
     }
     .fact-leaf input:focus, .fact-leaf select:focus { outline: none; border-color: #3b5bdb; }
 
-    /* Category group header */
-    .category-header {
-      font-size: 10px; font-weight: 700; color: #aaa;
-      letter-spacing: 0.1em; text-transform: uppercase;
-      padding: 8px 0 3px; margin-top: 4px;
-      border-bottom: 1px solid #f0f0f0;
-    }
-    .category-header:first-child { margin-top: 0; }
-
-    .fact-row {
-      display: flex; align-items: center; gap: 6px; margin-bottom: 6px; margin-top: 4px;
-    }
-    .fact-row .fact-key { font-weight: 500; min-width: 72px; font-size: 13px; word-break: break-all; }
-    .fact-row input {
-      flex: 1; padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;
-    }
-    .fact-row input:focus { outline: none; border-color: #3b5bdb; }
-    .fact-row .btn-del {
-      padding: 3px 8px; background: #fff; border: 1px solid #faa; color: #c00;
-      border-radius: 4px; cursor: pointer; font-size: 12px; flex-shrink: 0;
-    }
-    .fact-row .btn-del:hover { background: #fdd; }
-    .fact-row .btn-save {
-      padding: 3px 8px; background: #fff; border: 1px solid #adf; color: #06c;
-      border-radius: 4px; cursor: pointer; font-size: 12px; flex-shrink: 0;
-    }
-
-    /* Mutability icon + dropdown */
-    .mutability-wrap { position: relative; flex-shrink: 0; }
-    .mutability-icon {
-      background: none; border: none; cursor: pointer;
-      font-size: 13px; padding: 2px; line-height: 1; border-radius: 3px;
-    }
-    .mutability-icon:hover { background: #f0f4ff; }
-    .mutability-dropdown {
-      position: absolute; left: 0; top: 100%; margin-top: 2px;
-      background: #fff; border: 1px solid #ddd; border-radius: 6px;
-      box-shadow: 0 4px 12px rgba(0,0,0,.15);
-      z-index: 50; min-width: 130px;
-      font-size: 12px;
-    }
-    .mutability-dropdown > div {
-      padding: 6px 10px; cursor: pointer;
-    }
-    .mutability-dropdown > div:hover { background: #f0f4ff; }
-    .mutability-dropdown > div.active { font-weight: 600; color: #3b5bdb; background: #f0f4ff; }
-
-    .category-wrap { position: relative; }
-    .category-badge {
-      background: none; border: none; cursor: pointer;
-      font-size: 11px; padding: 2px 4px; line-height: 1; border-radius: 3px;
-      color: #777; font-weight: 700;
-    }
-    .category-badge:hover { background: #f0f4ff; }
-    .category-dropdown {
-      position: absolute; left: 0; top: 100%; margin-top: 2px;
-      background: #fff; border: 1px solid #ddd; border-radius: 6px;
-      box-shadow: 0 4px 12px rgba(0,0,0,.15);
-      z-index: 50; min-width: 110px; font-size: 12px;
-    }
-    .category-dropdown > div { padding: 6px 10px; cursor: pointer; }
-    .category-dropdown > div:hover { background: #f0f4ff; }
-    .category-dropdown > div.active { font-weight: 600; color: #3b5bdb; background: #f0f4ff; }
-
     /* ── Inferences section (top of side panel) ── */
     .inferences-section {
       flex: 1 1 auto; min-height: 50%;
@@ -355,12 +279,6 @@
     .exp-review-loading { color: #888; font-size: 13px; font-style: italic; padding: 4px 0; }
     .inference-row { margin-bottom: 8px; }
     .inference-row-top { display: flex; align-items: flex-start; gap: 4px; }
-    .promote-btn {
-      background: none; border: none; cursor: pointer;
-      font-size: 13px; padding: 1px 3px; flex-shrink: 0;
-      color: #3b5bdb; line-height: 1.4;
-    }
-    .promote-btn:hover { color: #2f4cc0; }
     .inference-row-statement {
       flex: 1; font-size: 13px; cursor: pointer; line-height: 1.4;
     }
@@ -372,39 +290,6 @@
     }
     .inference-type-badge.logical { background: #e8f4fd; color: #0066cc; }
     .inference-type-badge.probabilistic { background: #eefff8; color: #006040; }
-
-    /* Promote to Fact inline form */
-    .promote-form {
-      margin: 6px 0 4px 20px; padding: 8px 10px;
-      background: #f8f9ff; border: 1px solid #dde; border-radius: 6px;
-    }
-    .promote-form input {
-      width: 100%; padding: 4px 8px; margin-bottom: 5px;
-      border: 1px solid #ddd; border-radius: 4px; font-size: 12px;
-    }
-    .promote-form input:focus { outline: none; border-color: #3b5bdb; }
-
-    /* Shared form row for selects */
-    .form-row { display: flex; gap: 6px; margin-bottom: 5px; }
-    .form-row select {
-      flex: 1; padding: 4px 6px; border: 1px solid #ddd;
-      border-radius: 4px; font-size: 12px; background: #fff;
-    }
-    .promote-form-actions { display: flex; gap: 6px; margin-top: 2px; }
-
-    .add-fact-form { padding: 10px 16px; border-top: 1px solid #ddd; }
-    .add-fact-form input {
-      width: 100%; padding: 6px 10px; margin-bottom: 5px;
-      border: 1px solid #ddd; border-radius: 4px; font-size: 13px;
-    }
-    .add-fact-form input:focus { outline: none; border-color: #3b5bdb; }
-    .add-fact-form .form-row select { font-size: 12px; }
-    .add-fact-form button {
-      width: 100%; padding: 7px; background: #3b5bdb; color: #fff;
-      border: none; border-radius: 4px; cursor: pointer; font-size: 13px;
-      margin-top: 2px;
-    }
-    .add-fact-form button:hover { background: #2f4cc0; }
 
     .facts-footer { padding: 12px 16px; border-top: 1px solid #ddd; }
     .btn-end {
@@ -635,7 +520,6 @@
             <select v-if="row.type === 'Enum'"
                     v-model="leafEdits[row.path]"
                     @change="saveLeaf(row)">
-              <option value="">(not set)</option>
               <option v-for="c in row.constraint" :key="c" :value="c">{{ c }}</option>
             </select>
             <input v-else

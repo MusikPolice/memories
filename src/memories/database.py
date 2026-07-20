@@ -256,47 +256,6 @@ async def update_fact(
     return Fact.model_validate(_row(row))
 
 
-async def delete_fact(
-    db: aiosqlite.Connection,
-    *,
-    fact_id: int,
-) -> None:
-    cursor = await db.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
-    await db.commit()
-    if cursor.rowcount == 0:
-        raise NotFoundError(f"Fact {fact_id} not found")
-
-
-async def patch_fact_row(
-    db: aiosqlite.Connection,
-    *,
-    fact_id: int,
-    category: str | None = None,
-    mutability: str | None = None,
-) -> Fact:
-    if category is None and mutability is None:
-        raise ValueError("At least one of category or mutability must be provided")
-    updates: list[str] = []
-    params: list[Any] = []
-    if category is not None:
-        updates.append("category = ?")
-        params.append(category)
-    if mutability is not None:
-        updates.append("mutability = ?")
-        params.append(mutability)
-    params.append(fact_id)
-    cursor = await db.execute(
-        f"UPDATE facts SET {', '.join(updates)} WHERE id = ?",  # nosec B608
-        tuple(params),
-    )
-    await db.commit()
-    if cursor.rowcount == 0:
-        raise NotFoundError(f"Fact {fact_id} not found")
-    row = await (await db.execute("SELECT * FROM facts WHERE id = ?", (fact_id,))).fetchone()
-    assert row is not None
-    return Fact.model_validate(_row(row))
-
-
 async def get_fact_by_category_key(
     db: aiosqlite.Connection,
     *,
