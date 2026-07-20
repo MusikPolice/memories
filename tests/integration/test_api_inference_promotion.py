@@ -6,7 +6,7 @@ import aiosqlite
 import pytest
 from httpx import AsyncClient
 
-from memories.database import create_inference, get_fact_rows, get_inferences
+from memories.database import create_fact, create_inference, get_fact_rows, get_inferences
 from memories.models import Character, Inference
 
 # ---------------------------------------------------------------------------
@@ -290,12 +290,15 @@ async def test_promote_inference_from_different_character_returns_404(
 
 
 async def test_promote_inference_key_already_exists_in_same_category_returns_409(
-    client: AsyncClient, character: Character, inference: Inference
+    client: AsyncClient, character: Character, inference: Inference, db: aiosqlite.Connection
 ) -> None:
     # Create a fact with the same key and category first
-    await client.post(
-        f"/api/characters/{character.id}/facts",
-        json={"key": "birth_year", "value": "1990", "category": "character"},
+    await create_fact(
+        db,
+        character_id=character.id,
+        key="birth_year",
+        value="1990",
+        category="character",
     )
     response = await client.post(
         _promote_url(character.id, inference.id),
@@ -305,12 +308,15 @@ async def test_promote_inference_key_already_exists_in_same_category_returns_409
 
 
 async def test_promote_inference_key_exists_in_different_category_succeeds(
-    client: AsyncClient, character: Character, inference: Inference
+    client: AsyncClient, character: Character, inference: Inference, db: aiosqlite.Connection
 ) -> None:
     # Create a "user" fact with the same key
-    await client.post(
-        f"/api/characters/{character.id}/facts",
-        json={"key": "birth_year", "value": "1990", "category": "user"},
+    await create_fact(
+        db,
+        character_id=character.id,
+        key="birth_year",
+        value="1990",
+        category="user",
     )
     # Promote inference as "character" category — different category, no conflict
     response = await client.post(

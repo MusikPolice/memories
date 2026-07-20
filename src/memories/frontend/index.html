@@ -123,6 +123,12 @@
     .notification-card.inference .notification-title { background: #eefff8; color: #006040; }
     .notification-card.contradiction { border-color: #f04040; }
     .notification-card.contradiction .notification-title { background: #fff0ee; color: #a00000; }
+    .notification-card.fact-fluid { border-color: #40a0c0; }
+    .notification-card.fact-fluid .notification-title { background: #eef8ff; color: #106080; }
+    .notification-card.fact-mutable { border-color: #f0a040; }
+    .notification-card.fact-mutable .notification-title { background: #fff8ee; color: #a05000; }
+    .notification-card.fact-immutable { border-color: #8060c0; }
+    .notification-card.fact-immutable .notification-title { background: #f3eeff; color: #503090; }
     .notification-card.experience-update { border-color: #4080c0; }
     .notification-card.experience-update .notification-title { background: #eef4ff; color: #1a50a0; }
     .notification-card.extraction-applied { border-color: #6060b0; }
@@ -220,6 +226,23 @@
       padding: 12px 16px; font-weight: 600; border-bottom: 1px solid #ddd;
     }
     .facts-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 16px; }
+
+    /* Schema-driven fact tree */
+    .fact-group {
+      font-weight: 600; font-size: 13px; cursor: pointer;
+      padding: 4px 0; user-select: none; color: #444;
+    }
+    .fact-group:hover { color: #3b5bdb; }
+    .fact-group > span { display: inline-block; width: 12px; color: #888; }
+    .fact-leaf {
+      display: flex; align-items: center; gap: 6px; margin: 3px 0;
+    }
+    .fact-leaf-name { font-size: 13px; min-width: 84px; word-break: break-word; color: #555; }
+    .fact-leaf input, .fact-leaf select {
+      flex: 1; min-width: 0; padding: 3px 7px;
+      border: 1px solid #ddd; border-radius: 4px; font-size: 13px; background: #fff;
+    }
+    .fact-leaf input:focus, .fact-leaf select:focus { outline: none; border-color: #3b5bdb; }
 
     /* Category group header */
     .category-header {
@@ -455,59 +478,6 @@
             </div>
           </div>
 
-          <!-- Implication notification -->
-          <div v-else-if="msg.role === 'notification' && msg.scType === 'implication'"
-               class="notification-card implication">
-            <div class="notification-title">🔍 New detail implied by character</div>
-            <div class="notification-body">
-              <div v-for="(v, vi) in msg.violations" :key="vi">
-                <p class="violation-desc">{{ v.description }}</p>
-                <div v-if="v.suggested_fact" class="violation-fact">
-                  <label>Suggested fact</label>
-                  <span class="fact-key-display">{{ v.suggested_fact.key }}</span>
-                  <input v-model="v._editValue" :placeholder="v.suggested_fact.value" />
-                </div>
-                <div class="notification-actions">
-                  <button v-if="v.suggested_fact"
-                          class="btn-accept"
-                          :disabled="v._loading"
-                          @click="acceptImplication(msg, v)">
-                    {{ v._loading ? 'Working…' : 'Accept & add fact' }}
-                  </button>
-                  <button class="btn-ignore"
-                          :disabled="v._loading"
-                          @click="ignoreImplication(msg, v)">
-                    Ignore
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Probabilistic inference notification -->
-          <div v-else-if="msg.role === 'notification' && msg.scType === 'new_inference_probabilistic'"
-               class="notification-card inference">
-            <div class="notification-title">💡 New inference (probabilistic)</div>
-            <div class="notification-body">
-              <div v-for="(inf, ii) in msg.new_inferences" :key="ii">
-                <p class="inference-statement">{{ inf.statement }}</p>
-                <p class="inference-derivation">{{ inf.derivation }}</p>
-                <div class="notification-actions">
-                  <button class="btn-accept"
-                          :disabled="inf._loading"
-                          @click="acceptInference(msg, inf)">
-                    {{ inf._loading ? 'Saving…' : 'Accept inference' }}
-                  </button>
-                  <button class="btn-ignore"
-                          :disabled="inf._loading"
-                          @click="ignoreInference(msg, inf)">
-                    Ignore
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
           <!-- Contradiction notification (informational) -->
           <div v-else-if="msg.role === 'notification' && msg.scType === 'contradiction'"
                class="notification-card contradiction">
@@ -520,86 +490,108 @@
             </div>
           </div>
 
-          <!-- Experience update notification (informational) -->
-          <div v-else-if="msg.role === 'notification' && msg.scType === 'experience_update'"
-               class="notification-card experience-update">
-            <div class="notification-title">🔄 Experience updated</div>
+          <!-- Fluid fact update (quiet, applied already) -->
+          <div v-else-if="msg.role === 'notification' && msg.scType === 'fact_update_fluid'"
+               class="notification-card fact-fluid">
+            <div class="notification-title">💧 {{ msg.path }} updated: {{ msg.value }}</div>
             <div class="notification-body">
-              <div v-for="(u, i) in msg.experience_updates" :key="i">
-                <p class="violation-desc">{{ u.description }}</p>
-              </div>
               <div class="notification-actions">
                 <button class="btn-ignore" @click="dismissNotification(msg)">Dismiss</button>
               </div>
             </div>
           </div>
 
-          <!-- Extraction applied notification (Tier 1 new facts + Tier 2 updates) -->
-          <div v-else-if="msg.role === 'notification' && msg.scType === 'extraction_applied'"
-               class="notification-card extraction-applied">
-            <div class="notification-title">📝 Facts auto-applied from your message</div>
+          <!-- Mutable fact update (blocking; accept / edit / reject) -->
+          <div v-else-if="msg.role === 'notification' && msg.scType === 'fact_update_mutable'"
+               class="notification-card fact-mutable">
+            <div class="notification-title">📌 Character implied a change — {{ msg.path }}</div>
             <div class="notification-body">
-              <div v-for="(f, i) in msg.added" :key="'a'+i" class="extraction-fact">
-                <div class="fact-kv"><strong>{{ f.key }}</strong>: {{ f.value }}</div>
-                <div v-if="f.source_quote" class="fact-quote">"{{ f.source_quote }}"</div>
-                <div class="notification-actions">
-                  <button class="btn-ignore"
-                          :disabled="f._loading"
-                          @click="deleteExtractedFact(msg, f)">
-                    {{ f._loading ? 'Deleting…' : 'Delete' }}
-                  </button>
-                </div>
+              <p class="violation-desc">Proposed value: <strong>{{ msg.proposed }}</strong></p>
+              <div class="violation-fact">
+                <label>Value</label>
+                <select v-if="leafType(msg.path) === 'Enum'" v-model="msg._editValue">
+                  <option v-for="c in leafConstraint(msg.path)" :key="c" :value="c">{{ c }}</option>
+                </select>
+                <input v-else :type="leafType(msg.path) === 'Integer' ? 'number' : 'text'"
+                       v-model="msg._editValue" />
               </div>
-              <div v-for="(u, i) in msg.updated" :key="'u'+i" class="extraction-fact">
-                <div class="fact-kv"><strong>{{ u.key }}</strong>: {{ u.old_value }} → {{ u.new_value }}</div>
-                <div v-if="u.source_quote" class="fact-quote">"{{ u.source_quote }}"</div>
-                <div class="notification-actions">
-                  <button class="btn-ignore"
-                          :disabled="u._loading"
-                          @click="undoUserFact(msg, u)">
-                    {{ u._loading ? 'Undoing…' : 'Undo' }}
-                  </button>
-                </div>
+              <div class="notification-actions">
+                <button class="btn-accept" :disabled="msg._loading" @click="resolveMutable(msg, 'accept')">
+                  {{ msg._loading ? 'Working…' : 'Accept' }}
+                </button>
+                <button class="btn-accept" :disabled="msg._loading" @click="resolveMutable(msg, 'edit')">
+                  Save edit
+                </button>
+                <button class="btn-ignore" :disabled="msg._loading" @click="resolveMutable(msg, 'reject')">
+                  Reject
+                </button>
               </div>
             </div>
           </div>
 
-          <!-- Implicit fact proposal notification (Tier 3 new + Tier 4 updates) -->
-          <div v-else-if="msg.role === 'notification' && msg.scType === 'implicit_fact_proposed'"
-               class="notification-card implicit-proposed">
-            <div class="notification-title">🔍 Implied facts — confirm or ignore</div>
+          <!-- Immutable-unset fact update (blocking; accept / edit / dismiss) -->
+          <div v-else-if="msg.role === 'notification' && msg.scType === 'fact_update_immutable_unset'"
+               class="notification-card fact-immutable">
+            <div class="notification-title">🔒 Set a permanent value — {{ msg.path }}</div>
             <div class="notification-body">
-              <div v-for="(p, i) in msg.new_proposals" :key="'np'+i" class="extraction-fact">
-                <div class="fact-kv"><strong>{{ p.key }}</strong>: {{ p.value }}</div>
-                <div v-if="p.source_quote" class="fact-quote">"{{ p.source_quote }}"</div>
-                <div class="notification-actions">
-                  <button class="btn-accept"
-                          :disabled="p._loading"
-                          @click="acceptImplicitFact(msg, p)">
-                    {{ p._loading ? 'Saving…' : 'Accept' }}
-                  </button>
-                  <button class="btn-ignore"
-                          :disabled="p._loading"
-                          @click="ignoreImplicitFact(msg, p)">
-                    Ignore
-                  </button>
-                </div>
+              <p class="violation-desc">Character used: <strong>{{ msg.proposed }}</strong>
+                (locks permanently once set)</p>
+              <div class="violation-fact">
+                <label>Value</label>
+                <select v-if="leafType(msg.path) === 'Enum'" v-model="msg._editValue">
+                  <option v-for="c in leafConstraint(msg.path)" :key="c" :value="c">{{ c }}</option>
+                </select>
+                <input v-else :type="leafType(msg.path) === 'Integer' ? 'number' : 'text'"
+                       v-model="msg._editValue" />
               </div>
-              <div v-for="(p, i) in msg.update_proposals" :key="'up'+i" class="extraction-fact">
-                <div class="fact-kv"><strong>{{ p.key }}</strong>: {{ p.old_value }} → {{ p.value }}</div>
-                <div v-if="p.source_quote" class="fact-quote">"{{ p.source_quote }}"</div>
-                <div class="notification-actions">
-                  <button class="btn-accept"
-                          :disabled="p._loading"
-                          @click="acceptImplicitFact(msg, p)">
-                    {{ p._loading ? 'Saving…' : 'Accept' }}
-                  </button>
-                  <button class="btn-ignore"
-                          :disabled="p._loading"
-                          @click="ignoreImplicitFact(msg, p)">
-                    Ignore
-                  </button>
-                </div>
+              <div class="notification-actions">
+                <button class="btn-accept" :disabled="msg._loading" @click="resolveImmutable(msg, 'accept')">
+                  {{ msg._loading ? 'Working…' : 'Accept' }}
+                </button>
+                <button class="btn-accept" :disabled="msg._loading" @click="resolveImmutable(msg, 'edit')">
+                  Save edit
+                </button>
+                <button class="btn-ignore" :disabled="msg._loading" @click="resolveImmutable(msg, 'dismiss')">
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Require-fact gate (blocking; confirm / dismiss) -->
+          <div v-else-if="msg.role === 'notification' && msg.scType === 'require_fact'"
+               class="notification-card fact-immutable">
+            <div class="notification-title">❓ The character needs a value — {{ msg.path }}</div>
+            <div class="notification-body">
+              <p class="violation-desc">{{ msg.reason }}</p>
+              <div class="violation-fact">
+                <label>Value</label>
+                <select v-if="leafType(msg.path) === 'Enum'" v-model="msg._editValue">
+                  <option v-for="c in leafConstraint(msg.path)" :key="c" :value="c">{{ c }}</option>
+                </select>
+                <input v-else :type="leafType(msg.path) === 'Integer' ? 'number' : 'text'"
+                       v-model="msg._editValue" />
+              </div>
+              <div class="notification-actions">
+                <button class="btn-accept" :disabled="msg._loading" @click="resolveRequireFact(msg, true)">
+                  {{ msg._loading ? 'Working…' : 'Confirm' }}
+                </button>
+                <button class="btn-ignore" :disabled="msg._loading" @click="resolveRequireFact(msg, false)">
+                  Not now
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Inference proposed (quiet, dismissible) -->
+          <div v-else-if="msg.role === 'notification' && msg.scType === 'inference_proposed'"
+               class="notification-card inference">
+            <div class="notification-title">💡 New inference</div>
+            <div class="notification-body">
+              <p class="inference-statement">{{ msg.inference.statement }}</p>
+              <p class="inference-derivation">{{ msg.inference.derivation }}</p>
+              <div class="notification-actions">
+                <button class="btn-ignore" @click="dismissNotification(msg)">Dismiss</button>
               </div>
             </div>
           </div>
@@ -632,147 +624,31 @@
     <div class="facts-panel">
       <div class="facts-header">Facts</div>
       <div class="facts-list">
-
-        <!-- USER facts -->
-        <template v-if="factsByCategory.user.length > 0">
-          <div class="category-header">User</div>
-          <div v-for="fact in factsByCategory.user" :key="fact.id" class="fact-row">
-            <div class="mutability-wrap">
-              <button class="mutability-icon" @click.stop="toggleMutability(fact)"
-                      :title="'Mutability: ' + fact.mutability">
-                {{ mutabilityIcon(fact.mutability) }}
-              </button>
-              <div v-if="fact._mutOpen" class="mutability-dropdown" @click.stop>
-                <div @click="patchMutability(fact, 'immutable')"
-                     :class="{ active: fact.mutability === 'immutable' }">🔒 Immutable</div>
-                <div @click="patchMutability(fact, 'low')"
-                     :class="{ active: fact.mutability === 'low' }">📌 Settable</div>
-                <div @click="patchMutability(fact, 'high')"
-                     :class="{ active: fact.mutability === 'high' }">💧 Fluid</div>
-              </div>
-            </div>
-            <div class="category-wrap">
-              <button class="category-badge" @click.stop="toggleCategory(fact)"
-                      :title="'Category: ' + fact.category + ' — click to change'">
-                {{ fact.category[0].toUpperCase() }}
-              </button>
-              <div v-if="fact._catOpen" class="category-dropdown" @click.stop>
-                <div @click="patchCategory(fact, 'user')"
-                     :class="{ active: fact.category === 'user' }">User</div>
-                <div @click="patchCategory(fact, 'character')"
-                     :class="{ active: fact.category === 'character' }">Character</div>
-                <div @click="patchCategory(fact, 'setting')"
-                     :class="{ active: fact.category === 'setting' }">Setting</div>
-              </div>
-            </div>
-            <span class="fact-key">{{ fact.key }}</span>
-            <input v-model="fact._editValue" @keyup.enter="saveFact(fact)" :title="fact.key" />
-            <button class="btn-save" @click="saveFact(fact)" title="Save">✓</button>
-            <button class="btn-del" @click="deleteFact(fact)" title="Delete">✕</button>
-            <span v-if="fact._catError" class="error-msg" style="font-size:11px">{{ fact._catError }}</span>
+        <template v-for="row in visibleFactRows" :key="row.path">
+          <div v-if="!row.isLeaf" class="fact-group"
+               :style="{ paddingLeft: (row.depth * 12) + 'px' }"
+               @click="toggleGroup(row.path)">
+            <span>{{ collapsedGroups.has(row.path) ? '▸' : '▾' }}</span> {{ row.name }}
+          </div>
+          <div v-else class="fact-leaf" :style="{ paddingLeft: (row.depth * 12) + 'px' }">
+            <span class="fact-leaf-name" :title="row.description">{{ row.name }}</span>
+            <select v-if="row.type === 'Enum'"
+                    v-model="leafEdits[row.path]"
+                    @change="saveLeaf(row)">
+              <option value="">(not set)</option>
+              <option v-for="c in row.constraint" :key="c" :value="c">{{ c }}</option>
+            </select>
+            <input v-else
+                   :type="row.type === 'Integer' ? 'number' : 'text'"
+                   v-model="leafEdits[row.path]"
+                   @keyup.enter="saveLeaf(row)"
+                   @blur="saveLeaf(row)"
+                   placeholder="(not set)" />
           </div>
         </template>
-
-        <!-- CHARACTER facts -->
-        <template v-if="factsByCategory.character.length > 0">
-          <div class="category-header">Character</div>
-          <div v-for="fact in factsByCategory.character" :key="fact.id" class="fact-row">
-            <div class="mutability-wrap">
-              <button class="mutability-icon" @click.stop="toggleMutability(fact)"
-                      :title="'Mutability: ' + fact.mutability">
-                {{ mutabilityIcon(fact.mutability) }}
-              </button>
-              <div v-if="fact._mutOpen" class="mutability-dropdown" @click.stop>
-                <div @click="patchMutability(fact, 'immutable')"
-                     :class="{ active: fact.mutability === 'immutable' }">🔒 Immutable</div>
-                <div @click="patchMutability(fact, 'low')"
-                     :class="{ active: fact.mutability === 'low' }">📌 Settable</div>
-                <div @click="patchMutability(fact, 'high')"
-                     :class="{ active: fact.mutability === 'high' }">💧 Fluid</div>
-              </div>
-            </div>
-            <div class="category-wrap">
-              <button class="category-badge" @click.stop="toggleCategory(fact)"
-                      :title="'Category: ' + fact.category + ' — click to change'">
-                {{ fact.category[0].toUpperCase() }}
-              </button>
-              <div v-if="fact._catOpen" class="category-dropdown" @click.stop>
-                <div @click="patchCategory(fact, 'user')"
-                     :class="{ active: fact.category === 'user' }">User</div>
-                <div @click="patchCategory(fact, 'character')"
-                     :class="{ active: fact.category === 'character' }">Character</div>
-                <div @click="patchCategory(fact, 'setting')"
-                     :class="{ active: fact.category === 'setting' }">Setting</div>
-              </div>
-            </div>
-            <span class="fact-key">{{ fact.key }}</span>
-            <input v-model="fact._editValue" @keyup.enter="saveFact(fact)" :title="fact.key" />
-            <button class="btn-save" @click="saveFact(fact)" title="Save">✓</button>
-            <button class="btn-del" @click="deleteFact(fact)" title="Delete">✕</button>
-            <span v-if="fact._catError" class="error-msg" style="font-size:11px">{{ fact._catError }}</span>
-          </div>
-        </template>
-
-        <!-- SETTING facts -->
-        <template v-if="factsByCategory.setting.length > 0">
-          <div class="category-header">Setting</div>
-          <div v-for="fact in factsByCategory.setting" :key="fact.id" class="fact-row">
-            <div class="mutability-wrap">
-              <button class="mutability-icon" @click.stop="toggleMutability(fact)"
-                      :title="'Mutability: ' + fact.mutability">
-                {{ mutabilityIcon(fact.mutability) }}
-              </button>
-              <div v-if="fact._mutOpen" class="mutability-dropdown" @click.stop>
-                <div @click="patchMutability(fact, 'immutable')"
-                     :class="{ active: fact.mutability === 'immutable' }">🔒 Immutable</div>
-                <div @click="patchMutability(fact, 'low')"
-                     :class="{ active: fact.mutability === 'low' }">📌 Settable</div>
-                <div @click="patchMutability(fact, 'high')"
-                     :class="{ active: fact.mutability === 'high' }">💧 Fluid</div>
-              </div>
-            </div>
-            <div class="category-wrap">
-              <button class="category-badge" @click.stop="toggleCategory(fact)"
-                      :title="'Category: ' + fact.category + ' — click to change'">
-                {{ fact.category[0].toUpperCase() }}
-              </button>
-              <div v-if="fact._catOpen" class="category-dropdown" @click.stop>
-                <div @click="patchCategory(fact, 'user')"
-                     :class="{ active: fact.category === 'user' }">User</div>
-                <div @click="patchCategory(fact, 'character')"
-                     :class="{ active: fact.category === 'character' }">Character</div>
-                <div @click="patchCategory(fact, 'setting')"
-                     :class="{ active: fact.category === 'setting' }">Setting</div>
-              </div>
-            </div>
-            <span class="fact-key">{{ fact.key }}</span>
-            <input v-model="fact._editValue" @keyup.enter="saveFact(fact)" :title="fact.key" />
-            <button class="btn-save" @click="saveFact(fact)" title="Save">✓</button>
-            <button class="btn-del" @click="deleteFact(fact)" title="Delete">✕</button>
-            <span v-if="fact._catError" class="error-msg" style="font-size:11px">{{ fact._catError }}</span>
-          </div>
-        </template>
-
-        <p v-if="facts.length === 0" style="color:#aaa;font-size:13px">No facts yet.</p>
-      </div>
-
-      <div class="add-fact-form">
-        <input v-model="newKey" placeholder="key" :disabled="generating || sessionEnded" />
-        <input v-model="newValue" placeholder="value" @keyup.enter="addFact" :disabled="generating || sessionEnded" />
-        <div class="form-row">
-          <select v-model="newCategory" title="Category" :disabled="generating || sessionEnded">
-            <option value="user">User</option>
-            <option value="character">Character</option>
-            <option value="setting">Setting</option>
-          </select>
-          <select v-model="newMutability" title="Mutability" :disabled="generating || sessionEnded">
-            <option value="immutable">🔒 Immutable</option>
-            <option value="low">📌 Settable</option>
-            <option value="high">💧 Fluid</option>
-          </select>
-        </div>
-        <button @click="addFact" :disabled="generating || sessionEnded">+ Add Fact</button>
-        <p v-if="factError" class="error-msg">{{ factError }}</p>
+        <p v-if="visibleFactRows.length === 0" style="color:#aaa;font-size:13px">
+          Loading schema…
+        </p>
       </div>
 
       <div class="facts-footer">
@@ -800,36 +676,12 @@
           <div class="inferences-header">Inferences</div>
           <div v-for="inf in inferences" :key="inf.id" class="inference-row">
             <div class="inference-row-top">
-              <button class="promote-btn" @click.stop="togglePromote(inf)" title="Promote to Fact">⬆</button>
               <span class="inference-row-statement" @click="inf._expanded = !inf._expanded">
                 <span class="inference-type-badge" :class="inf.inference_type">{{ inf.inference_type }}</span>{{ inf.statement }}
               </span>
+              <button class="exp-delete" @click.stop="deleteInference(inf)" title="Delete">✕</button>
             </div>
             <div v-if="inf._expanded" class="inference-row-derivation">{{ inf.derivation }}</div>
-            <div v-if="inf._promoteOpen" class="promote-form" @click.stop>
-              <input v-model="inf._promoteKey" placeholder="fact key" />
-              <input v-model="inf._promoteValue" placeholder="fact value" />
-              <div class="form-row">
-                <select v-model="inf._promoteCategory">
-                  <option value="user">User</option>
-                  <option value="character">Character</option>
-                  <option value="setting">Setting</option>
-                </select>
-                <select v-model="inf._promoteMutability">
-                  <option value="immutable">🔒 Immutable</option>
-                  <option value="low">📌 Settable</option>
-                  <option value="high">💧 Fluid</option>
-                </select>
-              </div>
-              <p v-if="inf._promoteError" class="error-msg">{{ inf._promoteError }}</p>
-              <div class="promote-form-actions">
-                <button class="btn-accept" :disabled="inf._promoteLoading || !inf._promoteKey?.trim()"
-                        @click="promoteInference(inf)">
-                  {{ inf._promoteLoading ? 'Promoting…' : 'Promote' }}
-                </button>
-                <button class="btn-ignore" @click="inf._promoteOpen = false">Cancel</button>
-              </div>
-            </div>
           </div>
         </div>
         <p v-else style="color:#aaa;font-size:13px;padding-top:4px">No inferences yet.</p>

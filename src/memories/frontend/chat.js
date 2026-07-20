@@ -75,50 +75,6 @@ export function sseStateToLabel(state) {
  * @returns {object | null}
  */
 export function buildNotificationFromSidechannel(payload) {
-  if (payload.type === 'implication') {
-    return {
-      role: 'notification',
-      scType: 'implication',
-      turn_id: payload.turn_id,
-      violations: (payload.violations || []).map(v => ({
-        ...v,
-        _editValue: v.suggested_fact?.value ?? '',
-        _loading: false,
-      })),
-      _loading: false,
-    };
-  }
-
-  if (payload.type === 'new_inference_probabilistic') {
-    return {
-      role: 'notification',
-      scType: 'new_inference_probabilistic',
-      turn_id: payload.turn_id,
-      new_inferences: (payload.new_inferences || []).map(inf => ({ ...inf, _loading: false })),
-      _loading: false,
-    };
-  }
-
-  if (payload.type === 'extraction_applied') {
-    return {
-      role: 'notification',
-      scType: 'extraction_applied',
-      turn_id: payload.turn_id,
-      added: (payload.added || []).map(f => ({ ...f, _loading: false })),
-      updated: (payload.updated || []).map(u => ({ ...u, _loading: false })),
-    };
-  }
-
-  if (payload.type === 'implicit_fact_proposed') {
-    return {
-      role: 'notification',
-      scType: 'implicit_fact_proposed',
-      turn_id: payload.turn_id,
-      new_proposals: (payload.new_proposals || []).map(p => ({ ...p, _loading: false })),
-      update_proposals: (payload.update_proposals || []).map(p => ({ ...p, _loading: false })),
-    };
-  }
-
   if (payload.type === 'contradiction') {
     return {
       role: 'notification',
@@ -128,13 +84,41 @@ export function buildNotificationFromSidechannel(payload) {
     };
   }
 
-  if (payload.type === 'experience_update') {
+  if (payload.type === 'fact_update_fluid') {
     return {
-      role: 'notification',
-      scType: 'experience_update',
-      turn_id: payload.turn_id,
-      experience_updates: (payload.experience_updates || []).map(u => ({ ...u })),
-      _loading: false,
+      role: 'notification', scType: 'fact_update_fluid',
+      turn_id: payload.turn_id, path: payload.path, value: payload.value,
+    };
+  }
+
+  if (payload.type === 'fact_update_mutable') {
+    return {
+      role: 'notification', scType: 'fact_update_mutable',
+      turn_id: payload.turn_id, path: payload.path, proposed: payload.proposed,
+      _editValue: payload.proposed ?? '', _loading: false,
+    };
+  }
+
+  if (payload.type === 'fact_update_immutable_unset') {
+    return {
+      role: 'notification', scType: 'fact_update_immutable_unset',
+      turn_id: payload.turn_id, path: payload.path, proposed: payload.proposed,
+      _editValue: payload.proposed ?? '', _loading: false,
+    };
+  }
+
+  if (payload.type === 'require_fact') {
+    return {
+      role: 'notification', scType: 'require_fact',
+      turn_id: payload.turn_id, path: payload.path, reason: payload.reason,
+      _editValue: payload.suggested_value ?? '', _loading: false,
+    };
+  }
+
+  if (payload.type === 'inference_proposed') {
+    return {
+      role: 'notification', scType: 'inference_proposed',
+      turn_id: payload.turn_id, inference: payload.inference,
     };
   }
 
@@ -142,86 +126,75 @@ export function buildNotificationFromSidechannel(payload) {
 }
 
 // ---------------------------------------------------------------------------
-// Violation helpers
+// Schema-tree pure helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Remove one violation from a notification's violations array in-place.
- * Returns true when the list is now empty (caller should dismiss the card).
- *
- * @param {{ violations: object[] }} notif
- * @param {object} violation
- * @returns {boolean}
+ * Flatten a fact schema tree into an ordered, depth-first row list.
+ * A node with a `Type` key is a leaf; any other node is a grouping.
+ * @param {object} schema
+ * @param {string} [prefix='']
+ * @param {number} [depth=0]
+ * @returns {Array<{path,name,depth,isLeaf,type?,mutability?,constraint?,description?}>}
  */
-export function removeViolation(notif, violation) {
-  const idx = notif.violations.indexOf(violation);
-  if (idx !== -1) notif.violations.splice(idx, 1);
-  return notif.violations.length === 0;
+export function flattenSchema(schema, prefix = '', depth = 0) {
+  const rows = [];
+  for (const [name, node] of Object.entries(schema || {})) {
+    const path = prefix ? `${prefix}.${name}` : name;
+    if (node && typeof node === 'object' && 'Type' in node) {
+      rows.push({
+        path, name, depth, isLeaf: true,
+        type: node.Type, mutability: node.Mutability,
+        constraint: node.Constraint ?? null, description: node.Description ?? '',
+      });
+    } else {
+      rows.push({ path, name, depth, isLeaf: false });
+      rows.push(...flattenSchema(node, path, depth + 1));
+    }
+  }
+  return rows;
+}
+
+/**
+ * Read a leaf value out of a fact blob by dot-notation path.
+ * @returns the stored Value, or undefined if the path is unset.
+ */
+export function lookupBlobValue(blob, path) {
+  let node = blob;
+  for (const part of path.split('.')) {
+    if (!node || typeof node !== 'object' || !(part in node)) return undefined;
+    node = node[part];
+  }
+  return (node && typeof node === 'object') ? node.Value : undefined;
+}
+
+/**
+ * Produce the visible fact-tree rows: flatten the schema, drop rows whose ancestor
+ * grouping is collapsed, and attach the current value to each leaf.
+ * @param {object} schema
+ * @param {object} blob
+ * @param {Set<string>} collapsedPaths  grouping paths whose children are hidden
+ * @returns {Array<object>}  rows with `value` set on leaves (undefined if unset)
+ */
+export function buildVisibleFactRows(schema, blob, collapsedPaths) {
+  return flattenSchema(schema)
+    .filter(row => {
+      for (const c of collapsedPaths) {
+        if (row.path !== c && row.path.startsWith(c + '.')) return false;
+      }
+      return true;
+    })
+    .map(row => (row.isLeaf ? { ...row, value: lookupBlobValue(blob, row.path) } : row));
+}
+
+/** Look up a single leaf's schema definition by path (for type-aware card inputs). */
+export function schemaLeaf(schema, path) {
+  return flattenSchema(schema).find(r => r.isLeaf && r.path === path) ?? null;
 }
 
 // ---------------------------------------------------------------------------
 // API helpers
 // ---------------------------------------------------------------------------
-
-/**
- * @param {number} sessionId
- * @param {number} turnId
- * @param {string} key
- * @param {string} value
- * @param {boolean} [regenerate=true]  Pass false when the value is unchanged from the suggestion;
- *                                     the backend will save the fact without re-running the LLM.
- * @param {string} [category='character']  Fact category ('user', 'character', or 'setting').
- *                                         Should come from the evaluator's suggested_fact.category.
- * @returns {Promise<Response>}
- */
-export function apiAcceptImplication(sessionId, turnId, key, value, regenerate = true, category = 'character') {
-  return fetch(`/api/sessions/${sessionId}/turns/${turnId}/accept-implication`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key, value, regenerate, category }),
-  });
-}
-
-/**
- * @param {number} sessionId
- * @param {number} turnId
- * @returns {Promise<Response>}
- */
-export function apiIgnoreImplication(sessionId, turnId) {
-  return fetch(`/api/sessions/${sessionId}/turns/${turnId}/ignore-implication`, {
-    method: 'POST',
-  });
-}
-
-/**
- * @param {number} sessionId
- * @param {number} turnId
- * @param {{ statement: string, derivation: string, source_fact_ids?: number[], inference_type?: string }} inference
- * @returns {Promise<Response>}
- */
-export function apiAcceptInference(sessionId, turnId, inference) {
-  return fetch(`/api/sessions/${sessionId}/turns/${turnId}/accept-inference`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      statement: inference.statement,
-      derivation: inference.derivation,
-      source_fact_ids: inference.source_fact_ids || [],
-      inference_type: inference.inference_type || 'probabilistic',
-    }),
-  });
-}
-
-/**
- * @param {number} sessionId
- * @param {number} turnId
- * @returns {Promise<Response>}
- */
-export function apiIgnoreInference(sessionId, turnId) {
-  return fetch(`/api/sessions/${sessionId}/turns/${turnId}/ignore-inference`, {
-    method: 'POST',
-  });
-}
 
 /**
  * @param {number} characterId
@@ -273,67 +246,38 @@ export function apiPatchInferenceStatus(characterId, inferenceId, status) {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 4 API helpers — fact categories, mutability, and inference promotion
+// Facts v2 API helpers — schema, blob read/write, blocking-card responses
 // ---------------------------------------------------------------------------
 
-/**
- * @param {number} characterId
- * @param {string} key
- * @param {string} value
- * @param {string} [category='character']
- * @param {string} [mutability='immutable']
- * @returns {Promise<Response>}
- */
-export function apiCreateFact(characterId, key, value, category = 'character', mutability = 'immutable') {
+export function apiGetSchema() {
+  return fetch('/api/schema');
+}
+
+export function apiGetFactBlob(characterId) {
+  return fetch(`/api/characters/${characterId}/facts`);
+}
+
+export function apiSetFactValue(characterId, path, value) {
   return fetch(`/api/characters/${characterId}/facts`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, value }),
+  });
+}
+
+export function apiRespondRequireFact(sessionId, turnId, value) {
+  return fetch(`/api/sessions/${sessionId}/turns/${turnId}/require-fact/respond`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key, value, category, mutability }),
+    body: JSON.stringify({ value }),
   });
 }
 
-/**
- * @param {number} characterId
- * @param {number} factId
- * @param {string} mutability
- * @returns {Promise<Response>}
- */
-export function apiPatchFactMutability(characterId, factId, mutability) {
-  return fetch(`/api/characters/${characterId}/facts/${factId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mutability }),
-  });
-}
-
-/**
- * @param {number} characterId
- * @param {number} factId
- * @param {string} category
- * @returns {Promise<Response>}
- */
-export function apiPatchFactCategory(characterId, factId, category) {
-  return fetch(`/api/characters/${characterId}/facts/${factId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ category }),
-  });
-}
-
-/**
- * @param {number} characterId
- * @param {number} inferenceId
- * @param {string} key
- * @param {string} value
- * @param {string} [category='character']
- * @param {string} [mutability='immutable']
- * @returns {Promise<Response>}
- */
-export function apiPromoteInference(characterId, inferenceId, key, value, category = 'character', mutability = 'immutable') {
-  return fetch(`/api/characters/${characterId}/inferences/${inferenceId}/promote`, {
+export function apiRespondSetFact(sessionId, turnId, action, value = null) {
+  return fetch(`/api/sessions/${sessionId}/turns/${turnId}/set-fact/respond`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key, value, category, mutability }),
+    body: JSON.stringify({ action, value }),
   });
 }
 
@@ -444,79 +388,3 @@ export function buildProposalList(proposedExperiences) {
   }));
 }
 
-/**
- * Remove experiences that were contradicted by an `experience_update` verdict.
- * Returns a new array; does not mutate the input.
- *
- * @param {object[]} experiences  current approved experiences list
- * @param {object}   notification experience_update notification from buildNotificationFromSidechannel
- * @returns {object[]}
- */
-export function removeContradictedExperiences(experiences, notification) {
-  const deletedIds = new Set(
-    (notification.experience_updates || []).map(u => u.contradicted_experience_id),
-  );
-  return experiences.filter(e => !deletedIds.has(e.id));
-}
-
-// ---------------------------------------------------------------------------
-// Phase 6 API helpers — extraction resolution
-// ---------------------------------------------------------------------------
-
-/**
- * @param {number} sessionId
- * @param {number} turnId
- * @param {number} factId
- * @param {string} restoreValue
- * @returns {Promise<Response>}
- */
-export function apiUndoUserFact(sessionId, turnId, factId, restoreValue) {
-  return fetch(`/api/sessions/${sessionId}/turns/${turnId}/undo-user-fact`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fact_id: factId, restore_value: restoreValue }),
-  });
-}
-
-/**
- * @param {number} sessionId
- * @param {number} turnId
- * @param {string} key
- * @param {string} value
- * @param {string} category
- * @param {string} mutability
- * @param {number|null} [existingFactId]
- * @returns {Promise<Response>}
- */
-export function apiAcceptImplicitFact(sessionId, turnId, key, value, category, mutability, existingFactId = null) {
-  const body = { key, value, category, mutability };
-  if (existingFactId !== null) body.existing_fact_id = existingFactId;
-  return fetch(`/api/sessions/${sessionId}/turns/${turnId}/accept-implicit-fact`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-}
-
-/**
- * @param {number} sessionId
- * @param {number} turnId
- * @param {string} key
- * @returns {Promise<Response>}
- */
-export function apiIgnoreImplicitFact(sessionId, turnId, key) {
-  return fetch(`/api/sessions/${sessionId}/turns/${turnId}/ignore-implicit-fact`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key }),
-  });
-}
-
-/**
- * @param {number} characterId
- * @param {number} factId
- * @returns {Promise<Response>}
- */
-export function apiDeleteFact(characterId, factId) {
-  return fetch(`/api/characters/${characterId}/facts/${factId}`, { method: 'DELETE' });
-}

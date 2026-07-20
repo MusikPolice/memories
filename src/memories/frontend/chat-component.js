@@ -1,28 +1,22 @@
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
+import { ref, computed, nextTick } from 'vue';
 import {
   parseSSEBlock,
   sseStateToLabel,
   buildNotificationFromSidechannel,
-  removeViolation,
-  apiAcceptImplication,
-  apiIgnoreImplication,
-  apiAcceptInference,
-  apiIgnoreInference,
-  apiCreateFact,
-  apiPatchFactMutability,
-  apiPatchFactCategory,
-  apiPromoteInference,
   apiEndSession,
   apiCreateExperience,
   apiDeleteExperience,
   buildScoreMap,
   buildProposalList,
-  removeContradictedExperiences,
   sortExperiences,
-  apiUndoUserFact,
-  apiAcceptImplicitFact,
-  apiIgnoreImplicitFact,
-  apiDeleteFact,
+  apiDeleteInference,
+  buildVisibleFactRows,
+  schemaLeaf,
+  apiGetSchema,
+  apiGetFactBlob,
+  apiSetFactValue,
+  apiRespondRequireFact,
+  apiRespondSetFact,
 } from './chat.js';
 
 export const ChatComponent = {
@@ -32,7 +26,6 @@ export const ChatComponent = {
     const currentCharacter = ref(null);
     const sessionId = ref(null);
     const messages = ref([]);
-    const facts = ref([]);
     const inferences = ref([]);
     const inputText = ref('');
     const sending = ref(false);
@@ -45,74 +38,53 @@ export const ChatComponent = {
     const experienceScoreMap = ref(new Map());
     const sessionProposals = ref([]);
     const thinkEnabled = ref(false);
-    const newKey = ref('');
-    const newValue = ref('');
-    const newCategory = ref('character');
-    const newMutability = ref('immutable');
-    const factError = ref('');
     const messagesEl = ref(null);
     const inputEl = ref(null);
 
-    // ── Fact helpers ──
+    // ── Fact schema / blob / tree ──
 
-    function mutabilityIcon(m) {
-      return m === 'low' ? '📌' : m === 'high' ? '💧' : '🔒';
+    const schema = ref({});
+    const factsBlob = ref({});
+    const collapsedGroups = ref(new Set());
+    const leafEdits = ref({});
+
+    async function loadSchema() {
+      const r = await apiGetSchema();
+      if (r.ok) schema.value = await r.json();
     }
 
-    const factsByCategory = computed(() => ({
-      user: facts.value.filter(f => f.category === 'user'),
-      character: facts.value.filter(f => f.category === 'character'),
-      setting: facts.value.filter(f => f.category === 'setting'),
-    }));
-
-    function closeAllMutDropdowns() {
-      facts.value.forEach(f => { if (f._mutOpen) f._mutOpen = false; });
+    async function loadFacts() {
+      if (!currentCharacter.value) return;
+      const r = await apiGetFactBlob(currentCharacter.value.id);
+      factsBlob.value = r.ok ? await r.json() : {};
+      syncLeafEdits();
     }
 
-    function closeAllCatDropdowns() {
-      facts.value.forEach(f => { if (f._catOpen) f._catOpen = false; });
-    }
-
-    onMounted(() => {
-      document.addEventListener('click', closeAllMutDropdowns);
-      document.addEventListener('click', closeAllCatDropdowns);
-    });
-    onUnmounted(() => {
-      document.removeEventListener('click', closeAllMutDropdowns);
-      document.removeEventListener('click', closeAllCatDropdowns);
-    });
-
-    function toggleMutability(fact) {
-      const wasOpen = fact._mutOpen;
-      closeAllMutDropdowns();
-      fact._mutOpen = !wasOpen;
-    }
-
-    function toggleCategory(fact) {
-      const wasOpen = fact._catOpen;
-      closeAllCatDropdowns();
-      fact._catOpen = !wasOpen;
-    }
-
-    async function patchCategory(fact, newCat) {
-      fact._catOpen = false;
-      fact._catError = '';
-      if (newCat === fact.category) return;
-      const r = await apiPatchFactCategory(currentCharacter.value.id, fact.id, newCat);
-      if (r.ok) {
-        fact.category = newCat;
-      } else if (r.status === 409) {
-        fact._catError = `A ${newCat} fact '${fact.key}' already exists.`;
+    function syncLeafEdits() {
+      const edits = {};
+      for (const row of buildVisibleFactRows(schema.value, factsBlob.value, new Set())) {
+        if (row.isLeaf) edits[row.path] = row.value ?? '';
       }
+      leafEdits.value = edits;
     }
 
-    async function patchMutability(fact, newMut) {
-      fact._mutOpen = false;
-      if (newMut === fact.mutability) return;
-      const r = await apiPatchFactMutability(currentCharacter.value.id, fact.id, newMut);
-      if (r.ok) {
-        fact.mutability = newMut;
-      }
+    const visibleFactRows = computed(() =>
+      buildVisibleFactRows(schema.value, factsBlob.value, collapsedGroups.value)
+    );
+
+    function toggleGroup(path) {
+      const next = new Set(collapsedGroups.value);
+      next.has(path) ? next.delete(path) : next.add(path);
+      collapsedGroups.value = next;
+    }
+
+    function leafType(path) { return schemaLeaf(schema.value, path)?.type ?? 'String'; }
+    function leafConstraint(path) { return schemaLeaf(schema.value, path)?.constraint ?? []; }
+
+    async function saveLeaf(row) {
+      const value = leafEdits.value[row.path] ?? '';
+      await apiSetFactValue(currentCharacter.value.id, row.path, value);
+      await loadFacts();
     }
 
     // ── Characters / sessions ──
@@ -148,108 +120,16 @@ export const ChatComponent = {
       nextTick(() => inputEl.value?.focus());
     }
 
-    async function loadFacts() {
-      if (!currentCharacter.value) return;
-      const r = await fetch(`/api/characters/${currentCharacter.value.id}/facts`);
-      const raw = await r.json();
-      facts.value = raw.map(f => ({ ...f, _editValue: f.value, _mutOpen: false, _catOpen: false, _catError: '' }));
-    }
-
     async function loadInferences() {
       if (!currentCharacter.value) return;
       const r = await fetch(`/api/characters/${currentCharacter.value.id}/inferences`);
       const raw = await r.json();
-      inferences.value = raw.map(inf => ({
-        ...inf,
-        _expanded: false,
-        _promoteOpen: false,
-        _promoteKey: '',
-        _promoteValue: inf.statement,
-        _promoteCategory: 'character',
-        _promoteMutability: 'immutable',
-        _promoteError: '',
-        _promoteLoading: false,
-      }));
+      inferences.value = raw.map(inf => ({ ...inf, _expanded: false }));
     }
 
-    async function addFact() {
-      factError.value = '';
-      if (!newKey.value.trim() || !newValue.value.trim()) return;
-      const r = await apiCreateFact(
-        currentCharacter.value.id,
-        newKey.value.trim(),
-        newValue.value.trim(),
-        newCategory.value,
-        newMutability.value,
-      );
-      if (r.status === 409) {
-        factError.value = `A ${newCategory.value} fact '${newKey.value}' already exists.`;
-        return;
-      }
-      newKey.value = '';
-      newValue.value = '';
-      newCategory.value = 'character';
-      newMutability.value = 'immutable';
-      await loadFacts();
-    }
-
-    async function saveFact(fact) {
-      await fetch(`/api/characters/${currentCharacter.value.id}/facts/${fact.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value: fact._editValue }),
-      });
-      await loadFacts();
+    async function deleteInference(inf) {
+      await apiDeleteInference(currentCharacter.value.id, inf.id);
       await loadInferences();
-    }
-
-    async function deleteFact(fact) {
-      await fetch(`/api/characters/${currentCharacter.value.id}/facts/${fact.id}`, {
-        method: 'DELETE',
-      });
-      await loadFacts();
-      await loadInferences();
-    }
-
-    // ── Inference promote ──
-
-    function togglePromote(inf) {
-      if (!inf._promoteOpen) {
-        inf._promoteKey = '';
-        inf._promoteValue = inf.statement;
-        inf._promoteCategory = 'character';
-        inf._promoteMutability = 'immutable';
-        inf._promoteError = '';
-        inf._promoteLoading = false;
-      }
-      inf._promoteOpen = !inf._promoteOpen;
-    }
-
-    async function promoteInference(inf) {
-      if (!inf._promoteKey?.trim()) return;
-      inf._promoteLoading = true;
-      inf._promoteError = '';
-      try {
-        const r = await apiPromoteInference(
-          currentCharacter.value.id,
-          inf.id,
-          inf._promoteKey.trim(),
-          inf._promoteValue,
-          inf._promoteCategory,
-          inf._promoteMutability,
-        );
-        if (r.status === 201) {
-          const data = await r.json();
-          const idx = inferences.value.indexOf(inf);
-          if (idx !== -1) inferences.value.splice(idx, 1);
-          const newFact = { ...data.fact, _editValue: data.fact.value, _mutOpen: false };
-          facts.value.push(newFact);
-        } else if (r.status === 409) {
-          inf._promoteError = 'A fact with this key already exists in that category.';
-        }
-      } finally {
-        inf._promoteLoading = false;
-      }
     }
 
     async function endSession() {
@@ -316,7 +196,9 @@ export const ChatComponent = {
 
     async function newSession() {
       messages.value = [];
-      facts.value = [];
+      factsBlob.value = {};
+      collapsedGroups.value = new Set();
+      leafEdits.value = {};
       inferences.value = [];
       experiences.value = [];
       sessionProposals.value = [];
@@ -339,138 +221,36 @@ export const ChatComponent = {
 
     // ── Notification actions ──
 
-    async function acceptImplication(notif, violation) {
-      if (!violation.suggested_fact) return;
-      violation._loading = true;
-      const value = violation._editValue ?? violation.suggested_fact.value;
-      const regenerate = value !== violation.suggested_fact.value;
-      try {
-        const r = await apiAcceptImplication(
-          sessionId.value, notif.turn_id, violation.suggested_fact.key, value, regenerate,
-          violation.suggested_fact?.category ?? 'character'
-        );
-        if (r.ok) {
-          const data = await r.json();
-          const assistantMsg = messages.value.find(
-            m => m.role === 'assistant' && m.turn_id === notif.turn_id
-          );
-          if (assistantMsg) assistantMsg.content = data.content;
-          if (removeViolation(notif, violation)) dismissNotification(notif);
-          await loadFacts();
-        }
-      } finally {
-        violation._loading = false;
-      }
-    }
-
-    async function ignoreImplication(notif, violation) {
-      if (removeViolation(notif, violation)) {
-        await apiIgnoreImplication(sessionId.value, notif.turn_id);
-        dismissNotification(notif);
-      }
-    }
-
-    async function acceptInference(notif, inference) {
-      inference._loading = true;
-      try {
-        const r = await apiAcceptInference(sessionId.value, notif.turn_id, inference);
-        if (r.ok) {
-          const idx = notif.new_inferences.indexOf(inference);
-          if (idx !== -1) notif.new_inferences.splice(idx, 1);
-          if (notif.new_inferences.length === 0) dismissNotification(notif);
-          await loadInferences();
-        }
-      } finally {
-        inference._loading = false;
-      }
-    }
-
-    async function ignoreInference(notif, inference) {
-      inference._loading = true;
-      try {
-        const idx = notif.new_inferences.indexOf(inference);
-        if (idx !== -1) notif.new_inferences.splice(idx, 1);
-        if (notif.new_inferences.length === 0) {
-          await apiIgnoreInference(sessionId.value, notif.turn_id);
-          dismissNotification(notif);
-        }
-      } finally {
-        inference._loading = false;
-      }
-    }
-
     function dismissNotification(notif) {
       const idx = messages.value.indexOf(notif);
       if (idx !== -1) messages.value.splice(idx, 1);
     }
 
-    // ── Phase 6 extraction resolution ──
-
-    async function undoUserFact(notif, fact) {
-      fact._loading = true;
+    async function resolveRequireFact(notif, confirmed) {
+      notif._loading = true;
       try {
-        const r = await apiUndoUserFact(sessionId.value, notif.turn_id, fact.fact_id, fact.old_value);
-        if (r.ok) {
-          const idx = notif.updated.indexOf(fact);
-          if (idx !== -1) notif.updated.splice(idx, 1);
-          if (notif.added.length === 0 && notif.updated.length === 0) dismissNotification(notif);
-          await loadFacts();
-        }
-      } finally {
-        fact._loading = false;
-      }
+        const value = confirmed ? (notif._editValue ?? '') : null;
+        await apiRespondRequireFact(sessionId.value, notif.turn_id, value);
+        dismissNotification(notif);
+      } finally { notif._loading = false; }
     }
 
-    async function deleteExtractedFact(notif, fact) {
-      fact._loading = true;
+    async function resolveMutable(notif, action) {
+      notif._loading = true;
       try {
-        const r = await apiDeleteFact(currentCharacter.value.id, fact.fact_id);
-        if (r.ok || r.status === 204) {
-          const idx = notif.added.indexOf(fact);
-          if (idx !== -1) notif.added.splice(idx, 1);
-          if (notif.added.length === 0 && notif.updated.length === 0) dismissNotification(notif);
-          await loadFacts();
-        }
-      } finally {
-        fact._loading = false;
-      }
+        const value = action === 'edit' ? (notif._editValue ?? '') : null;
+        await apiRespondSetFact(sessionId.value, notif.turn_id, action, value);
+        dismissNotification(notif);
+      } finally { notif._loading = false; }
     }
 
-    async function acceptImplicitFact(notif, proposal) {
-      proposal._loading = true;
+    async function resolveImmutable(notif, action) {
+      notif._loading = true;
       try {
-        const r = await apiAcceptImplicitFact(
-          sessionId.value, notif.turn_id,
-          proposal.key, proposal.value, proposal.category, proposal.mutability,
-          proposal.existing_fact_id ?? null,
-        );
-        if (r.ok) {
-          const list = proposal.existing_fact_id != null ? notif.update_proposals : notif.new_proposals;
-          const idx = list.indexOf(proposal);
-          if (idx !== -1) list.splice(idx, 1);
-          if (notif.new_proposals.length === 0 && notif.update_proposals.length === 0) {
-            dismissNotification(notif);
-          }
-          await loadFacts();
-        }
-      } finally {
-        proposal._loading = false;
-      }
-    }
-
-    async function ignoreImplicitFact(notif, proposal) {
-      proposal._loading = true;
-      try {
-        await apiIgnoreImplicitFact(sessionId.value, notif.turn_id, proposal.key);
-        const list = proposal.existing_fact_id != null ? notif.update_proposals : notif.new_proposals;
-        const idx = list.indexOf(proposal);
-        if (idx !== -1) list.splice(idx, 1);
-        if (notif.new_proposals.length === 0 && notif.update_proposals.length === 0) {
-          dismissNotification(notif);
-        }
-      } finally {
-        proposal._loading = false;
-      }
+        const value = action === 'edit' ? (notif._editValue ?? '') : null;
+        await apiRespondSetFact(sessionId.value, notif.turn_id, action, value);
+        dismissNotification(notif);
+      } finally { notif._loading = false; }
     }
 
     // ── Chat ──
@@ -545,15 +325,22 @@ export const ChatComponent = {
             } else if (eventName === 'sidechannel' && dataStr) {
               const notif = buildNotificationFromSidechannel(JSON.parse(dataStr));
               if (notif) {
-                if (notif.scType === 'experience_update') {
-                  experiences.value = removeContradictedExperiences(experiences.value, notif);
+                const blocking = [
+                  'fact_update_mutable', 'fact_update_immutable_unset', 'require_fact',
+                ];
+                if (blocking.includes(notif.scType)) {
+                  generating.value = false;
+                  statusText.value = '';
                 }
                 messages.value.push(notif);
                 await scrollToBottom();
               }
 
             } else if (eventName === 'done') {
-              if (currentCharacter.value) await loadFacts();
+              if (currentCharacter.value) {
+                await loadFacts();
+                await loadInferences();
+              }
             }
           }
         }
@@ -577,25 +364,24 @@ export const ChatComponent = {
       sortExperiences(experiences.value, activeExperienceIds.value, experienceScoreMap.value)
     );
 
+    loadSchema();
     loadCharacters();
 
     return {
       showPicker, characters, currentCharacter, sessionId,
-      messages, facts, inferences, factsByCategory,
+      messages, inferences,
+      schema, factsBlob, visibleFactRows, collapsedGroups, leafEdits,
       experiences, sortedExperiences, activeExperienceIds, experienceScoreMap, sessionProposals,
       reviewingSession,
       inputText, sending, generating, statusText, sessionEnded,
-      thinkEnabled, newKey, newValue, newCategory, newMutability,
-      factError, messagesEl, inputEl,
-      mutabilityIcon,
-      pickCharacter, addFact, saveFact, deleteFact,
-      toggleMutability, patchMutability,
-      toggleCategory, patchCategory,
-      togglePromote, promoteInference,
+      thinkEnabled, messagesEl, inputEl,
+      loadSchema, loadFacts, loadInferences,
+      toggleGroup, leafType, leafConstraint, saveLeaf,
+      deleteInference,
+      pickCharacter,
       endSession, newSession, sendMessage,
-      acceptImplication, ignoreImplication, acceptInference, ignoreInference,
       dismissNotification,
-      undoUserFact, deleteExtractedFact, acceptImplicitFact, ignoreImplicitFact,
+      resolveRequireFact, resolveMutable, resolveImmutable,
       acceptProposal, confirmEditProposal, discardProposal, deleteExperience,
     };
   },
