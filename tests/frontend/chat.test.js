@@ -4,10 +4,7 @@ import {
   parseSSEBlocks,
   sseStateToLabel,
   buildNotificationFromSidechannel,
-  apiGenerateInferences,
-  apiRevalidateInferences,
   apiDeleteInference,
-  apiPatchInferenceStatus,
   apiEndSession,
   apiCreateExperience,
   apiListExperiences,
@@ -231,50 +228,12 @@ describe('Phase 3 inference API helpers', () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: true });
   });
 
-  it('apiGenerateInferences_posts_to_correct_url', async () => {
-    await apiGenerateInferences(7);
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/characters/7/inferences/generate',
-      expect.objectContaining({ method: 'POST' })
-    );
-  });
-
-  it('apiRevalidateInferences_posts_to_correct_url', async () => {
-    await apiRevalidateInferences(7, 42);
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/characters/7/inferences/revalidate',
-      expect.objectContaining({ method: 'POST' })
-    );
-  });
-
-  it('apiRevalidateInferences_sends_changed_fact_id_in_body', async () => {
-    await apiRevalidateInferences(7, 42);
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body.changed_fact_id).toBe(42);
-  });
-
   it('apiDeleteInference_sends_delete_to_correct_url', async () => {
     await apiDeleteInference(7, 99);
     expect(fetch).toHaveBeenCalledWith(
       '/api/characters/7/inferences/99',
       expect.objectContaining({ method: 'DELETE' })
     );
-  });
-
-  it('apiPatchInferenceStatus_sends_patch_to_correct_url', async () => {
-    await apiPatchInferenceStatus(7, 99, 'active');
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/characters/7/inferences/99',
-      expect.objectContaining({ method: 'PATCH' })
-    );
-  });
-
-  it('apiPatchInferenceStatus_sends_status_in_body', async () => {
-    await apiPatchInferenceStatus(7, 99, 'stale');
-    const [, opts] = fetch.mock.calls[0];
-    const body = JSON.parse(opts.body);
-    expect(body.status).toBe('stale');
   });
 });
 

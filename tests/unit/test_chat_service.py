@@ -42,7 +42,6 @@ import memories.services.tool_gate as tool_gate_module
 from memories.database import (
     _embedding_to_blob,
     create_experience,
-    create_fact,
     create_inference,
     end_session,
     get_decisions,
@@ -479,7 +478,6 @@ async def test_run_turn_loads_inferences_for_character(
     db: aiosqlite.Connection, character: Character, session: Session, ollama: OllamaClient
 ) -> None:
     """When active inferences exist, run_turn includes them in the system message."""
-    await create_fact(db, character_id=character.id, key="age", value="33")
     await create_inference(
         db,
         character_id=character.id,

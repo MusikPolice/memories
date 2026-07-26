@@ -23,7 +23,7 @@ async def test_create_inference_stores_statement_and_derivation(db: aiosqlite.Co
         character_id=char.id,
         statement="Alice was born in 1991",
         derivation="age=33, current_year=2024",
-        source_fact_ids=[1],
+        source_fact_paths=["Character.Identity.Age"],
     )
     assert inf.statement == "Alice was born in 1991"
     assert inf.derivation == "age=33, current_year=2024"
@@ -43,18 +43,6 @@ async def test_create_inference_default_depth_is_one(db: aiosqlite.Connection) -
         db, character_id=char.id, statement="Test", derivation="from facts"
     )
     assert inf.depth == 1
-
-
-async def test_source_fact_ids_stored_and_retrieved_as_list(db: aiosqlite.Connection) -> None:
-    char = await create_character(db, name="Alice", modelfile_base="qwen3:7b")
-    inf = await create_inference(
-        db,
-        character_id=char.id,
-        statement="Test",
-        derivation="from facts",
-        source_fact_ids=[1, 2],
-    )
-    assert inf.source_fact_ids == [1, 2]
 
 
 async def test_source_inference_ids_empty_list_when_not_set(db: aiosqlite.Connection) -> None:

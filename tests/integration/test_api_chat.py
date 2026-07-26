@@ -12,10 +12,8 @@ from httpx import AsyncClient
 from memories.database import (
     _embedding_to_blob,
     create_experience,
-    create_fact,
     create_inference,
     get_decisions,
-    get_fact_rows,
     get_facts,
     get_messages,
     set_facts,
@@ -476,7 +474,6 @@ async def test_send_message_system_message_includes_inferences(
     session: Session,
 ) -> None:
     """When character has active inferences, Ollama request system message contains them."""
-    await create_fact(db, character_id=character.id, key="age", value="33")
     await create_inference(
         db,
         character_id=character.id,
@@ -610,27 +607,6 @@ async def test_send_message_evaluator_contradiction_still_triggers_regeneration(
 # ---------------------------------------------------------------------------
 # Phase 4 additions — category sections and mutability annotations in prompts
 # ---------------------------------------------------------------------------
-
-
-async def test_chat_system_prompt_groups_user_and_character_facts(
-    db: aiosqlite.Connection,
-    client: AsyncClient,
-    character: Character,
-    session: Session,
-) -> None:
-    await create_fact(db, character_id=character.id, key="user_name", value="Jon", category="user")
-    await create_fact(
-        db, character_id=character.id, key="occupation", value="surgeon", category="character"
-    )
-
-    with respx.mock:
-        route = respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn())
-        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
-
-    char_call_body = json.loads(route.calls[1].request.content)
-    system_prompt = char_call_body["messages"][0]["content"]
-    assert "User" in system_prompt
-    assert "Character" in system_prompt
 
 
 async def test_chat_system_prompt_renders_all_schema_sections(
@@ -987,52 +963,6 @@ async def test_send_message_experience_scores_scores_are_floats(
     scores = json.loads(msg_event["data"]).get("experience_scores", [])
     for entry in scores:
         assert isinstance(entry["score"], int | float)
-
-
-# ---------------------------------------------------------------------------
-
-
-async def test_accept_implication_on_high_mutability_fact_preserves_mutability(
-    db: aiosqlite.Connection,
-    client: AsyncClient,
-    character: Character,
-    session: Session,
-) -> None:
-    # Create a high-mutability fact
-    await create_fact(
-        db, character_id=character.id, key="mood", value="cheerful", mutability="high"
-    )
-
-    _VIOLATION = {
-        "type": "implication",
-        "description": (
-            "Mood appears to have shifted from 'cheerful' to 'anxious' (high-mutability fact)"
-        ),
-        "suggested_fact": {"key": "mood", "value": "anxious"},
-    }
-
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(
-            side_effect=[
-                _mock_world_builder(),
-                httpx.Response(200, content=make_plain_tool_response("I feel anxious today.")),
-                httpx.Response(200, content=make_tool_call_response("report_pass", {})),
-            ]
-        )
-        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "How are you?"})
-
-    # Accept the implication (value changes, but we expect mutability to be preserved)
-    with respx.mock:
-        respx.post(_OLLAMA_CHAT_URL).mock(side_effect=_mock_turn("I feel anxious today."))
-        await client.post(
-            f"/api/sessions/{session.id}/turns/1/accept-implication",
-            json={"key": "mood", "value": "anxious", "regenerate": False},
-        )
-
-    facts = await get_fact_rows(db, character.id)
-    mood_fact = next((f for f in facts if f.key == "mood"), None)
-    assert mood_fact is not None
-    assert mood_fact.mutability == "high"
 
 
 # ---------------------------------------------------------------------------

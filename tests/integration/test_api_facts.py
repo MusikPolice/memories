@@ -147,7 +147,7 @@ async def test_list_inferences_returns_active_inferences(
         character_id=char_id,
         statement="Works long hours",
         derivation="occupation=surgeon",
-        source_fact_ids=[],
+        source_fact_paths=[],
         inference_type="probabilistic",
     )
 

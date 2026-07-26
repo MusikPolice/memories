@@ -10,10 +10,13 @@ import respx
 from httpx import AsyncClient
 
 from memories.database import create_inference, get_inferences
-from memories.models import Character, Fact
+from memories.models import Character
 from tests.unit.conftest import make_ollama_ndjson
 
 _OLLAMA_CHAT_URL = "http://test-ollama-integration:11434/api/chat"
+
+_AGE_PATH = "Character.Identity.Age"
+_OCCUPATION_PATH = "Character.Identity.Occupation"
 
 
 def _mock_eager_pass_response(items: list[dict]) -> httpx.Response:
@@ -30,7 +33,7 @@ _DEFAULT_EAGER_ITEM = {
     "inference_type": "logical",
     "statement": "Alice was born in 1993",
     "derivation": "age=33, current_year=2026",
-    "source_fact_ids": [],
+    "source_fact_paths": [],
     "source_inference_ids": [],
 }
 
@@ -39,9 +42,7 @@ _DEFAULT_EAGER_ITEM = {
 # ---------------------------------------------------------------------------
 
 
-async def test_generate_inferences_returns_200(
-    client: AsyncClient, character: Character, fact: Fact
-) -> None:
+async def test_generate_inferences_returns_200(client: AsyncClient, character: Character) -> None:
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(
             return_value=_mock_eager_pass_response([_DEFAULT_EAGER_ITEM])
@@ -51,7 +52,7 @@ async def test_generate_inferences_returns_200(
 
 
 async def test_generate_inferences_returns_new_inferences_list(
-    client: AsyncClient, character: Character, fact: Fact
+    client: AsyncClient, character: Character
 ) -> None:
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(
@@ -64,9 +65,9 @@ async def test_generate_inferences_returns_new_inferences_list(
 
 
 async def test_generate_inferences_stores_to_db(
-    client: AsyncClient, character: Character, fact: Fact, db: aiosqlite.Connection
+    client: AsyncClient, character: Character, db: aiosqlite.Connection
 ) -> None:
-    item = dict(_DEFAULT_EAGER_ITEM, source_fact_ids=[fact.id])
+    item = dict(_DEFAULT_EAGER_ITEM, source_fact_paths=[_AGE_PATH])
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(return_value=_mock_eager_pass_response([item]))
         await client.post(f"/api/characters/{character.id}/inferences/generate")
@@ -83,7 +84,7 @@ async def test_generate_inferences_unknown_character_returns_404(
 
 
 async def test_generate_inferences_respects_depth_cap(
-    client: AsyncClient, character: Character, fact: Fact, db: aiosqlite.Connection
+    client: AsyncClient, character: Character, db: aiosqlite.Connection
 ) -> None:
     from memories.services.inference_service import MAX_INFERENCE_DEPTH
 
@@ -98,7 +99,7 @@ async def test_generate_inferences_respects_depth_cap(
         "inference_type": "logical",
         "statement": "Exceeds depth cap",
         "derivation": "from deep",
-        "source_fact_ids": [],
+        "source_fact_paths": [],
         "source_inference_ids": [existing.id],
     }
     with respx.mock:
@@ -111,7 +112,7 @@ async def test_generate_inferences_respects_depth_cap(
 
 
 async def test_generate_inferences_applies_breadth_cap(
-    client: AsyncClient, character: Character, fact: Fact, db: aiosqlite.Connection
+    client: AsyncClient, character: Character, db: aiosqlite.Connection
 ) -> None:
     from memories.services.inference_service import MAX_INFERENCE_BREADTH
 
@@ -120,7 +121,7 @@ async def test_generate_inferences_applies_breadth_cap(
             "inference_type": "logical",
             "statement": f"Inference {i}",
             "derivation": "d",
-            "source_fact_ids": [fact.id],
+            "source_fact_paths": [_AGE_PATH],
             "source_inference_ids": [],
         }
         for i in range(MAX_INFERENCE_BREADTH + 2)
@@ -133,7 +134,7 @@ async def test_generate_inferences_applies_breadth_cap(
 
 
 async def test_generate_inferences_empty_response_returns_empty_list(
-    client: AsyncClient, character: Character, fact: Fact
+    client: AsyncClient, character: Character
 ) -> None:
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(return_value=_mock_eager_pass_response([]))
@@ -144,7 +145,7 @@ async def test_generate_inferences_empty_response_returns_empty_list(
 
 
 async def test_generate_inferences_on_parse_error_returns_warning(
-    client: AsyncClient, character: Character, fact: Fact
+    client: AsyncClient, character: Character
 ) -> None:
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(
@@ -165,39 +166,39 @@ async def test_generate_inferences_on_parse_error_returns_warning(
 
 
 async def test_revalidate_returns_200(
-    client: AsyncClient, character: Character, fact: Fact, db: aiosqlite.Connection
+    client: AsyncClient, character: Character, db: aiosqlite.Connection
 ) -> None:
     await create_inference(
         db,
         character_id=character.id,
         statement="Dep on fact",
         derivation="d",
-        source_fact_ids=[fact.id],
+        source_fact_paths=[_OCCUPATION_PATH],
     )
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(return_value=_mock_revalidation_response(False))
         response = await client.post(
             f"/api/characters/{character.id}/inferences/revalidate",
-            json={"changed_fact_id": fact.id},
+            json={"changed_path": _OCCUPATION_PATH},
         )
     assert response.status_code == 200
 
 
 async def test_revalidate_returns_stale_inferences(
-    client: AsyncClient, character: Character, fact: Fact, db: aiosqlite.Connection
+    client: AsyncClient, character: Character, db: aiosqlite.Connection
 ) -> None:
     await create_inference(
         db,
         character_id=character.id,
         statement="Dep on fact",
         derivation="d",
-        source_fact_ids=[fact.id],
+        source_fact_paths=[_OCCUPATION_PATH],
     )
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(return_value=_mock_revalidation_response(False))
         response = await client.post(
             f"/api/characters/{character.id}/inferences/revalidate",
-            json={"changed_fact_id": fact.id},
+            json={"changed_path": _OCCUPATION_PATH},
         )
     data = response.json()
     assert "stale_inferences" in data
@@ -205,40 +206,40 @@ async def test_revalidate_returns_stale_inferences(
 
 
 async def test_revalidate_marks_stale_in_db(
-    client: AsyncClient, character: Character, fact: Fact, db: aiosqlite.Connection
+    client: AsyncClient, character: Character, db: aiosqlite.Connection
 ) -> None:
     inf = await create_inference(
         db,
         character_id=character.id,
         statement="Will become stale",
         derivation="d",
-        source_fact_ids=[fact.id],
+        source_fact_paths=[_OCCUPATION_PATH],
     )
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(return_value=_mock_revalidation_response(False))
         await client.post(
             f"/api/characters/{character.id}/inferences/revalidate",
-            json={"changed_fact_id": fact.id},
+            json={"changed_path": _OCCUPATION_PATH},
         )
     stale = await get_inferences(db, character.id, status="stale")
     assert any(s.id == inf.id for s in stale)
 
 
 async def test_revalidate_does_not_affect_unrelated_inferences(
-    client: AsyncClient, character: Character, fact: Fact, db: aiosqlite.Connection
+    client: AsyncClient, character: Character, db: aiosqlite.Connection
 ) -> None:
     unrelated = await create_inference(
         db,
         character_id=character.id,
         statement="Unrelated inference",
         derivation="d",
-        source_fact_ids=[999],
+        source_fact_paths=[_AGE_PATH],
     )
     with respx.mock:
         respx.post(_OLLAMA_CHAT_URL).mock(return_value=_mock_revalidation_response(False))
         await client.post(
             f"/api/characters/{character.id}/inferences/revalidate",
-            json={"changed_fact_id": fact.id},
+            json={"changed_path": _OCCUPATION_PATH},
         )
     active = await get_inferences(db, character.id, status="active")
     assert any(a.id == unrelated.id for a in active)
@@ -247,23 +248,23 @@ async def test_revalidate_does_not_affect_unrelated_inferences(
 async def test_revalidate_unknown_character_returns_404(client: AsyncClient) -> None:
     response = await client.post(
         "/api/characters/9999/inferences/revalidate",
-        json={"changed_fact_id": 1},
+        json={"changed_path": _OCCUPATION_PATH},
     )
     assert response.status_code == 404
 
 
-async def test_revalidate_unknown_fact_returns_404(
+async def test_revalidate_unknown_path_returns_422(
     client: AsyncClient, character: Character
 ) -> None:
     response = await client.post(
         f"/api/characters/{character.id}/inferences/revalidate",
-        json={"changed_fact_id": 9999},
+        json={"changed_path": "Nope.Not.Here"},
     )
-    assert response.status_code == 404
+    assert response.status_code == 422
 
 
 # ---------------------------------------------------------------------------
-# Inference management — DELETE and PATCH
+# Inference management — DELETE
 # ---------------------------------------------------------------------------
 
 
@@ -292,62 +293,4 @@ async def test_delete_inference_unknown_id_returns_404(
     client: AsyncClient, character: Character
 ) -> None:
     response = await client.delete(f"/api/characters/{character.id}/inferences/9999")
-    assert response.status_code == 404
-
-
-async def test_patch_inference_status_to_active_returns_200(
-    client: AsyncClient, character: Character, db: aiosqlite.Connection
-) -> None:
-    inf = await create_inference(
-        db, character_id=character.id, statement="Will become active", derivation="d"
-    )
-    # First mark as stale
-    from memories.database import update_inference_status
-
-    await update_inference_status(db, inf.id, "stale")
-
-    response = await client.patch(
-        f"/api/characters/{character.id}/inferences/{inf.id}",
-        json={"status": "active"},
-    )
-    assert response.status_code == 200
-    assert response.json()["status"] == "active"
-
-
-async def test_patch_inference_status_to_stale_returns_200(
-    client: AsyncClient, character: Character, db: aiosqlite.Connection
-) -> None:
-    inf = await create_inference(
-        db, character_id=character.id, statement="Will become stale", derivation="d"
-    )
-    response = await client.patch(
-        f"/api/characters/{character.id}/inferences/{inf.id}",
-        json={"status": "stale"},
-    )
-    assert response.status_code == 200
-
-
-async def test_patch_inference_status_updates_db(
-    client: AsyncClient, character: Character, db: aiosqlite.Connection
-) -> None:
-    inf = await create_inference(
-        db, character_id=character.id, statement="Test inference", derivation="d"
-    )
-    await client.patch(
-        f"/api/characters/{character.id}/inferences/{inf.id}",
-        json={"status": "invalidated"},
-    )
-    row = await (
-        await db.execute("SELECT status FROM inferences WHERE id = ?", (inf.id,))
-    ).fetchone()
-    assert row[0] == "invalidated"
-
-
-async def test_patch_inference_unknown_id_returns_404(
-    client: AsyncClient, character: Character
-) -> None:
-    response = await client.patch(
-        f"/api/characters/{character.id}/inferences/9999",
-        json={"status": "active"},
-    )
     assert response.status_code == 404

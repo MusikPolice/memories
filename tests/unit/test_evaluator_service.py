@@ -104,7 +104,7 @@ _ESTABLISHED_INFERENCE = Inference(
     character_id=1,
     statement="Alice was born in 1993",
     derivation="age=33, current_year=2026",
-    source_fact_ids=[1],
+    source_fact_paths=["Character.Identity.Age"],
     source_inference_ids=[],
     depth=1,
     inference_type="logical",

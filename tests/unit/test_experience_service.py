@@ -12,7 +12,7 @@ import pytest
 import respx
 
 from memories.database import _blob_to_embedding, _embedding_to_blob, create_experience
-from memories.models import Character, Experience, Fact, Inference, Message, Session
+from memories.models import Character, Experience, Inference, Message, Session
 from memories.services.experience_service import (
     EMBED_MODEL,
     SessionEndParseError,
@@ -39,9 +39,7 @@ _NOW = datetime(2026, 1, 1)
 
 _CHARACTER = Character(id=1, name="Alice", modelfile_base="qwen3:7b", created_at=_NOW)
 
-_FACTS = [
-    Fact(id=1, character_id=1, key="occupation", value="surgeon", created_at=_NOW),
-]
+_FACTS_BLOB = {"Character": {"Identity": {"Occupation": {"Value": "surgeon"}}}}
 
 _INFERENCES = [
     Inference(
@@ -49,7 +47,7 @@ _INFERENCES = [
         character_id=1,
         statement="Alice works long hours",
         derivation="occupation=surgeon",
-        source_fact_ids=[1],
+        source_fact_paths=["Character.Identity.Occupation"],
         source_inference_ids=[],
         depth=1,
         inference_type="probabilistic",
@@ -594,18 +592,18 @@ async def test_cold_start_retrieve_returns_empty_on_ollama_error(
 
 
 def test_session_end_prompt_includes_character_name() -> None:
-    prompt = build_session_end_prompt(_CHARACTER, _FACTS, _INFERENCES, [])
+    prompt = build_session_end_prompt(_CHARACTER, _FACTS_BLOB, _INFERENCES, [])
     assert "Alice" in prompt
 
 
 def test_session_end_prompt_includes_all_facts() -> None:
-    prompt = build_session_end_prompt(_CHARACTER, _FACTS, _INFERENCES, [])
-    assert "occupation" in prompt
+    prompt = build_session_end_prompt(_CHARACTER, _FACTS_BLOB, _INFERENCES, [])
+    assert "Character.Identity.Occupation" in prompt
     assert "surgeon" in prompt
 
 
 def test_session_end_prompt_includes_all_inferences() -> None:
-    prompt = build_session_end_prompt(_CHARACTER, _FACTS, _INFERENCES, [])
+    prompt = build_session_end_prompt(_CHARACTER, _FACTS_BLOB, _INFERENCES, [])
     assert "Alice works long hours" in prompt
 
 
@@ -614,42 +612,42 @@ def test_session_end_prompt_includes_all_messages() -> None:
         _make_message(msg_id=1, role="user", content="Hello there", turn_id=1),
         _make_message(msg_id=2, role="assistant", content="Hi, how are you?", turn_id=1),
     ]
-    prompt = build_session_end_prompt(_CHARACTER, _FACTS, _INFERENCES, messages)
+    prompt = build_session_end_prompt(_CHARACTER, _FACTS_BLOB, _INFERENCES, messages)
     assert "Hello there" in prompt
     assert "Hi, how are you?" in prompt
 
 
 def test_session_end_prompt_labels_user_messages() -> None:
     messages = [_make_message(role="user", content="User message", turn_id=1)]
-    prompt = build_session_end_prompt(_CHARACTER, _FACTS, _INFERENCES, messages)
+    prompt = build_session_end_prompt(_CHARACTER, _FACTS_BLOB, _INFERENCES, messages)
     assert "User" in prompt
 
 
 def test_session_end_prompt_labels_character_messages() -> None:
     messages = [_make_message(role="assistant", content="Character message", turn_id=1)]
-    prompt = build_session_end_prompt(_CHARACTER, _FACTS, _INFERENCES, messages)
+    prompt = build_session_end_prompt(_CHARACTER, _FACTS_BLOB, _INFERENCES, messages)
     assert _CHARACTER.name in prompt
 
 
 def test_session_end_prompt_includes_task_instructions() -> None:
-    prompt = build_session_end_prompt(_CHARACTER, _FACTS, _INFERENCES, [])
+    prompt = build_session_end_prompt(_CHARACTER, _FACTS_BLOB, _INFERENCES, [])
     prompt_lower = prompt.lower()
     assert "closing journal" in prompt_lower
     assert "proposed experiences" in prompt_lower or "proposed_experiences" in prompt_lower
 
 
 def test_session_end_prompt_no_facts_shows_fallback() -> None:
-    prompt = build_session_end_prompt(_CHARACTER, [], _INFERENCES, [])
+    prompt = build_session_end_prompt(_CHARACTER, {}, _INFERENCES, [])
     assert "(none)" in prompt
 
 
 def test_session_end_prompt_no_inferences_shows_fallback() -> None:
-    prompt = build_session_end_prompt(_CHARACTER, _FACTS, [], [])
+    prompt = build_session_end_prompt(_CHARACTER, _FACTS_BLOB, [], [])
     assert "(none)" in prompt
 
 
 def test_session_end_prompt_no_messages_shows_empty_section() -> None:
-    prompt = build_session_end_prompt(_CHARACTER, _FACTS, _INFERENCES, [])
+    prompt = build_session_end_prompt(_CHARACTER, _FACTS_BLOB, _INFERENCES, [])
     assert "Full Conversation" in prompt
 
 
@@ -674,7 +672,7 @@ async def test_session_end_evaluator_returns_closing_journal(ollama: OllamaClien
     respx.post(_CHAT_URL).mock(
         return_value=httpx.Response(200, content=_session_end_ndjson("A fine day indeed."))
     )
-    result = await run_session_end_evaluator(_CHARACTER, _FACTS, _INFERENCES, [], ollama)
+    result = await run_session_end_evaluator(_CHARACTER, _FACTS_BLOB, _INFERENCES, [], ollama)
     assert result.closing_journal == "A fine day indeed."
 
 
@@ -689,7 +687,7 @@ async def test_session_end_evaluator_returns_proposed_experiences(ollama: Ollama
             200, content=_session_end_ndjson("Good session.", proposed=proposals)
         )
     )
-    result = await run_session_end_evaluator(_CHARACTER, _FACTS, _INFERENCES, [], ollama)
+    result = await run_session_end_evaluator(_CHARACTER, _FACTS_BLOB, _INFERENCES, [], ollama)
     assert len(result.proposed_experiences) == 2
 
 
@@ -699,7 +697,7 @@ async def test_session_end_evaluator_experience_has_statement(ollama: OllamaClie
     respx.post(_CHAT_URL).mock(
         return_value=httpx.Response(200, content=_session_end_ndjson(proposed=proposals))
     )
-    result = await run_session_end_evaluator(_CHARACTER, _FACTS, _INFERENCES, [], ollama)
+    result = await run_session_end_evaluator(_CHARACTER, _FACTS_BLOB, _INFERENCES, [], ollama)
     assert result.proposed_experiences[0].statement == "User owns a cat"
 
 
@@ -712,7 +710,7 @@ async def test_session_end_evaluator_experience_has_source(ollama: OllamaClient)
     respx.post(_CHAT_URL).mock(
         return_value=httpx.Response(200, content=_session_end_ndjson(proposed=proposals))
     )
-    result = await run_session_end_evaluator(_CHARACTER, _FACTS, _INFERENCES, [], ollama)
+    result = await run_session_end_evaluator(_CHARACTER, _FACTS_BLOB, _INFERENCES, [], ollama)
     sources = {p.source for p in result.proposed_experiences}
     assert sources <= {"told_by_user", "observed"}
 
@@ -722,7 +720,7 @@ async def test_session_end_evaluator_empty_proposals_is_valid(ollama: OllamaClie
     respx.post(_CHAT_URL).mock(
         return_value=httpx.Response(200, content=_session_end_ndjson("Journal entry.", proposed=[]))
     )
-    result = await run_session_end_evaluator(_CHARACTER, _FACTS, _INFERENCES, [], ollama)
+    result = await run_session_end_evaluator(_CHARACTER, _FACTS_BLOB, _INFERENCES, [], ollama)
     assert isinstance(result, SessionEndResult)
     assert result.proposed_experiences == []
 
@@ -733,7 +731,7 @@ async def test_session_end_evaluator_raises_on_non_json(ollama: OllamaClient) ->
         return_value=httpx.Response(200, content=make_ollama_ndjson("This is not JSON"))
     )
     with pytest.raises(SessionEndParseError):
-        await run_session_end_evaluator(_CHARACTER, _FACTS, _INFERENCES, [], ollama)
+        await run_session_end_evaluator(_CHARACTER, _FACTS_BLOB, _INFERENCES, [], ollama)
 
 
 @respx.mock
@@ -746,7 +744,7 @@ async def test_session_end_evaluator_raises_on_missing_closing_journal(
         return_value=httpx.Response(200, content=make_ollama_ndjson(json.dumps(data)))
     )
     with pytest.raises(SessionEndParseError):
-        await run_session_end_evaluator(_CHARACTER, _FACTS, _INFERENCES, [], ollama)
+        await run_session_end_evaluator(_CHARACTER, _FACTS_BLOB, _INFERENCES, [], ollama)
 
 
 @respx.mock
@@ -754,7 +752,7 @@ async def test_session_end_evaluator_sends_think_false(ollama: OllamaClient) -> 
     route = respx.post(_CHAT_URL).mock(
         return_value=httpx.Response(200, content=_session_end_ndjson())
     )
-    await run_session_end_evaluator(_CHARACTER, _FACTS, _INFERENCES, [], ollama)
+    await run_session_end_evaluator(_CHARACTER, _FACTS_BLOB, _INFERENCES, [], ollama)
     body = json.loads(route.calls[0].request.content)
     assert body.get("think") is False
 
@@ -764,7 +762,7 @@ async def test_session_end_evaluator_sends_format_json(ollama: OllamaClient) -> 
     route = respx.post(_CHAT_URL).mock(
         return_value=httpx.Response(200, content=_session_end_ndjson())
     )
-    await run_session_end_evaluator(_CHARACTER, _FACTS, _INFERENCES, [], ollama)
+    await run_session_end_evaluator(_CHARACTER, _FACTS_BLOB, _INFERENCES, [], ollama)
     body = json.loads(route.calls[0].request.content)
     assert body.get("format") == "json"
 
@@ -774,5 +772,5 @@ async def test_session_end_evaluator_strips_markdown_code_fences(ollama: OllamaC
     data = {"closing_journal": "Good session.", "proposed_experiences": []}
     fenced = "```json\n" + json.dumps(data) + "\n```"
     respx.post(_CHAT_URL).mock(return_value=httpx.Response(200, content=make_ollama_ndjson(fenced)))
-    result = await run_session_end_evaluator(_CHARACTER, _FACTS, _INFERENCES, [], ollama)
+    result = await run_session_end_evaluator(_CHARACTER, _FACTS_BLOB, _INFERENCES, [], ollama)
     assert result.closing_journal == "Good session."

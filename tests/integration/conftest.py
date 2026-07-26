@@ -10,10 +10,10 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from memories import database
-from memories.database import create_character, create_fact, create_session
+from memories.database import create_character, create_session
 from memories.deps import get_db, get_ollama
 from memories.main import app
-from memories.models import Character, Fact, Session
+from memories.models import Character, Session
 from memories.services import experience_service
 from memories.services.ollama_client import OllamaClient
 
@@ -57,8 +57,3 @@ async def character(db: aiosqlite.Connection) -> Character:
 @pytest.fixture
 async def session(db: aiosqlite.Connection, character: Character) -> Session:
     return await create_session(db, character_id=character.id)
-
-
-@pytest.fixture
-async def fact(db: aiosqlite.Connection, character: Character) -> Fact:
-    return await create_fact(db, character_id=character.id, key="occupation", value="surgeon")
