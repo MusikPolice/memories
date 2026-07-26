@@ -963,11 +963,13 @@ No migration script is needed. The schema masking at read time handles legacy da
 On first startup after deployment:
 
 1. Create `character_facts` with an empty blob `{}` for each existing character
-2. Legacy `facts` table rows are left in place but never read again
-3. Molly's facts effectively reset to a clean slate; the user re-establishes them through
+2. Molly's facts effectively reset to a clean slate; the user re-establishes them through
    normal roleplay (the evaluator will surface unset immutable paths as it encounters them)
 
-The legacy `facts` table can be dropped in a future cleanup.
+Through Steps 2–8 the legacy `facts` table remained in place but unread. Step 9 removes it
+entirely along with the rest of the flat-fact layer (see the Step 9 sketch), so no
+future-cleanup debt remains. Because the DB is wiped on first run of the new schema, dropping
+the table needs no migration.
 
 ---
 
@@ -1270,16 +1272,37 @@ user provides the value. This avoids mid-generation suspension entirely.
 - Add `fact_update_fluid`, `fact_update_mutable`, `fact_update_immutable_unset` sidechannel
   cards; all three follow the four-part commit rule
 
-**Step 9 — Inference path migration**
-- Rename `source_fact_ids` → `source_fact_paths` in the `inferences` `CREATE TABLE`
-  statement in `init_db()` — no migration needed; the DB is wiped on first run of the
-  new schema (see resolved Open Question 7)
-- Update `inference_service.py` to write and read path strings (`run_eager_pass()`,
-  `cascade_on_fact_edit()`, `cascade_on_fact_delete()`, `revalidate_single_inference()`)
-- Remove `POST /api/characters/{id}/inferences/{id}/promote` endpoint and its
-  integration tests
-- Tests: inference written with `source_fact_paths`; cascade walks paths correctly;
-  promote endpoint removed and returns 404
+**Step 9 — Inference path migration & legacy fact-layer removal**
+
+This is the last code step; the goal is a codebase with no dead legacy fact machinery
+(Step 10 is documentation only). See `docs/step9.md` for the full design.
+
+- Remove `source_fact_ids` from the `inferences` `CREATE TABLE` statement, the `Inference`
+  model, `_parse_inference()`, and `create_inference()` — inferences key on
+  `source_fact_paths` (schema paths) and `source_inference_ids` only. No migration needed;
+  the DB is wiped on first run of the new schema (see resolved Open Question 7)
+- Rewrite `inference_service.py` (`run_eager_pass()`, `revalidate_single_inference()`,
+  `cascade_on_fact_edit()`, `cascade_on_fact_delete()`, and the two prompt builders) to read
+  facts from the `character_facts` blob and match on paths. `cascade_on_fact_edit`/`_delete`
+  and the `revalidate` endpoint take a `changed_path`/`deleted_path` string
+- Remove `POST /api/characters/{id}/inferences/{id}/promote` endpoint
+- Remove the legacy `implication.py` router entirely (dead since Step 8; unmount from
+  `main.py`) — it is the last consumer of the integer-id cascade and the flat-fact writes
+- Migrate the session-end evaluator (`build_session_end_prompt`,
+  `run_session_end_evaluator`, `sessions.py`) to read the blob instead of `list[Fact]`
+- Delete the legacy flat-fact layer now that nothing reads it: the `facts` table, the `Fact`
+  model, and the repo helpers (`create_fact`, `get_fact`, `get_fact_by_category_key`,
+  `update_fact`, `get_fact_rows`); the shared `fact` test fixtures; and `test_facts_repo.py`.
+  Add a shared `schema_loader.iter_populated_leaves()` helper for the blob-walk used by the
+  eager-pass, revalidation, and session-end prompts
+- Sweep up adjacent dead inference-management code: remove the orphaned PATCH
+  `/inferences/{id}` status endpoint and the three unused `chat.js` helpers
+  (`apiGenerateInferences`, `apiRevalidateInferences`, `apiPatchInferenceStatus`)
+- Be judicious throughout: delete dead flat-fact seeds and tests rather than porting them
+- Tests: inference written with `source_fact_paths`; cascade walks paths correctly; promote
+  and implication endpoints removed and return 404; session-end prompt renders blob facts;
+  the flat-fact removals leave `uv run pytest`, `ruff`, `mypy`, and `npm run test:coverage`
+  all green
 
 **Step 10 — Documentation update**
 - Rewrite the architecture section of `CLAUDE.md` to reflect the three-pass design
