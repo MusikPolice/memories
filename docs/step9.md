@@ -646,3 +646,18 @@ Phase-3/4 inference-management machinery with no live caller.
 ---
 
 ## Post-Implementation Cleanup Tasks
+
+No cleanup tasks identified. Implementation matches the spec.
+
+All nine Parts (A–I) are implemented exactly as specified. `grep` for `source_fact_ids`,
+`get_fact_rows`, `create_fact`, and the `Fact` model in `src/` returns only innocuous
+substring hits; all cascade callers pass `changed_path` strings; the Pydantic silent-drop of
+the legacy `source_fact_ids` key is pinned by a dedicated test; and the removed promote,
+PATCH-status, and implication routes 404. The full suite (684 passed, 4 skipped, 93.93 %
+coverage), `ruff check src/`, `mypy src/`, and `npm run test:coverage` (100 % on `chat.js`)
+are all green.
+
+One process note, already resolved in the feat commit: the Test Plan omitted
+`tests/integration/test_db_init.py`, whose `facts`-table assertions broke when the DDL was
+removed. The implementer caught this gap and retired those assertions in `feat(step9)`; no
+action remains.
