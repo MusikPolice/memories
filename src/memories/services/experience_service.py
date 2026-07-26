@@ -17,7 +17,8 @@ from memories.database import (
     get_experiences_with_embeddings,
     get_previous_session,
 )
-from memories.models import Character, Experience, Fact, Inference, Message
+from memories.models import Character, Experience, Inference, Message
+from memories.schema_loader import iter_populated_leaves
 from memories.services.ollama_client import OllamaClient, OllamaConnectionError, OllamaResponseError
 
 _log = logging.getLogger(__name__)
@@ -203,7 +204,7 @@ async def embed_and_store(
 
 def build_session_end_prompt(
     character: Character,
-    facts: list[Fact],
+    facts_blob: dict[str, Any],
     inferences: list[Inference],
     messages: list[Message],
 ) -> str:
@@ -211,9 +212,10 @@ def build_session_end_prompt(
         f"Character: {character.name}",
         "\n## Character Facts",
     ]
-    if facts:
-        for f in facts:
-            parts.append(f"[{f.id}] {f.key}: {f.value}")
+    fact_lines = iter_populated_leaves(facts_blob)
+    if fact_lines:
+        for path, value in fact_lines:
+            parts.append(f"{path}: {value}")
     else:
         parts.append("(none)")
 
@@ -267,13 +269,13 @@ learned, return an empty list.""")
 
 async def run_session_end_evaluator(
     character: Character,
-    facts: list[Fact],
+    facts_blob: dict[str, Any],
     inferences: list[Inference],
     messages: list[Message],
     ollama: OllamaClient,
 ) -> SessionEndResult:
     """Run the session-end LLM call and return parsed closing journal + proposals."""
-    prompt = build_session_end_prompt(character, facts, inferences, messages)
+    prompt = build_session_end_prompt(character, facts_blob, inferences, messages)
     model = character.current_model_name or character.modelfile_base
     llm_messages: list[dict[str, str]] = [
         {

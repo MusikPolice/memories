@@ -13,7 +13,7 @@ from memories.database import (
     create_session,
     end_session,
     get_character,
-    get_fact_rows,
+    get_facts,
     get_inferences,
     get_messages,
     get_previous_session,
@@ -77,7 +77,7 @@ async def end_session_endpoint(session_id: int, db: _DB, ollama: _Ollama) -> _En
 
     character = await get_character(db, session.character_id)
     assert character is not None
-    facts = await get_fact_rows(db, session.character_id)
+    facts_blob = await get_facts(db, session.character_id)
     inferences = await get_inferences(db, session.character_id)
     messages = await get_messages(db, session_id)
 
@@ -85,7 +85,9 @@ async def end_session_endpoint(session_id: int, db: _DB, ollama: _Ollama) -> _En
     session = await end_session(db, session_id)
 
     try:
-        result = await run_session_end_evaluator(character, facts, inferences, messages, ollama)
+        result = await run_session_end_evaluator(
+            character, facts_blob, inferences, messages, ollama
+        )
     except (
         SessionEndParseError,
         NotImplementedError,

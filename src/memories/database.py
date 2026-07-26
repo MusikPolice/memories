@@ -18,7 +18,6 @@ from memories.models import (
     Character,
     Decision,
     Experience,
-    Fact,
     Inference,
     Message,
     Session,
@@ -48,18 +47,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_character ON sessions(character_id);
 
-CREATE TABLE IF NOT EXISTS facts (
-    id               INTEGER PRIMARY KEY,
-    character_id     INTEGER REFERENCES characters(id),
-    key              TEXT NOT NULL,
-    value            TEXT NOT NULL,
-    category         TEXT NOT NULL DEFAULT 'character',
-    mutability       TEXT NOT NULL DEFAULT 'immutable',
-    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(character_id, category, key)
-);
-CREATE INDEX IF NOT EXISTS idx_facts_character ON facts(character_id);
-
 CREATE TABLE IF NOT EXISTS character_facts (
     character_id INTEGER PRIMARY KEY REFERENCES characters(id),
     facts_json   TEXT NOT NULL DEFAULT '{}',
@@ -71,7 +58,6 @@ CREATE TABLE IF NOT EXISTS inferences (
     character_id          INTEGER REFERENCES characters(id),
     statement             TEXT NOT NULL,
     derivation            TEXT NOT NULL,
-    source_fact_ids       TEXT,
     source_inference_ids  TEXT,
     source_fact_paths     TEXT,
     depth                 INTEGER NOT NULL DEFAULT 1,
@@ -177,99 +163,6 @@ async def list_characters(db: aiosqlite.Connection) -> list[Character]:
     cursor = await db.execute("SELECT * FROM characters ORDER BY id")
     rows = await cursor.fetchall()
     return [Character.model_validate(_row(r)) for r in rows]
-
-
-# ---------------------------------------------------------------------------
-# Facts (legacy row-based — keeps the existing facts.py router working)
-# ---------------------------------------------------------------------------
-
-
-async def create_fact(
-    db: aiosqlite.Connection,
-    *,
-    character_id: int,
-    key: str,
-    value: str,
-    category: str = "character",
-    mutability: str = "immutable",
-) -> Fact:
-    cursor = await db.execute(
-        "INSERT INTO facts (character_id, key, value, category, mutability) VALUES (?, ?, ?, ?, ?)",
-        (character_id, key, value, category, mutability),
-    )
-    await db.commit()
-    assert cursor.lastrowid is not None
-    row = await (
-        await db.execute("SELECT * FROM facts WHERE id = ?", (cursor.lastrowid,))
-    ).fetchone()
-    assert row is not None
-    return Fact.model_validate(_row(row))
-
-
-async def get_fact_rows(db: aiosqlite.Connection, character_id: int) -> list[Fact]:
-    cursor = await db.execute(
-        "SELECT * FROM facts WHERE character_id = ? ORDER BY id",
-        (character_id,),
-    )
-    rows = await cursor.fetchall()
-    return [Fact.model_validate(_row(r)) for r in rows]
-
-
-async def get_fact(db: aiosqlite.Connection, character_id: int, fact_id: int) -> Fact | None:
-    """Return a single fact owned by character_id, or None if not found."""
-    row = await (
-        await db.execute(
-            "SELECT * FROM facts WHERE id = ? AND character_id = ?",
-            (fact_id, character_id),
-        )
-    ).fetchone()
-    return Fact.model_validate(_row(row)) if row is not None else None
-
-
-async def update_fact(
-    db: aiosqlite.Connection,
-    *,
-    fact_id: int,
-    value: str,
-    category: str | None = None,
-    mutability: str | None = None,
-) -> Fact:
-    updates = ["value = ?"]
-    params: list[Any] = [value]
-    if category is not None:
-        updates.append("category = ?")
-        params.append(category)
-    if mutability is not None:
-        updates.append("mutability = ?")
-        params.append(mutability)
-
-    params.append(fact_id)
-    cursor = await db.execute(
-        f"UPDATE facts SET {', '.join(updates)} WHERE id = ?",  # nosec B608
-        tuple(params),
-    )
-    await db.commit()
-    if cursor.rowcount == 0:
-        raise NotFoundError(f"Fact {fact_id} not found")
-    row = await (await db.execute("SELECT * FROM facts WHERE id = ?", (fact_id,))).fetchone()
-    assert row is not None
-    return Fact.model_validate(_row(row))
-
-
-async def get_fact_by_category_key(
-    db: aiosqlite.Connection,
-    *,
-    character_id: int,
-    category: str,
-    key: str,
-) -> Fact | None:
-    row = await (
-        await db.execute(
-            "SELECT * FROM facts WHERE character_id = ? AND category = ? AND key = ?",
-            (character_id, category, key),
-        )
-    ).fetchone()
-    return Fact.model_validate(_row(row)) if row else None
 
 
 # ---------------------------------------------------------------------------
@@ -501,7 +394,6 @@ async def get_decisions(db: aiosqlite.Connection, session_id: int) -> list[Decis
 
 def _parse_inference(row: aiosqlite.Row) -> Inference:
     d = _row(row)
-    d["source_fact_ids"] = json.loads(d["source_fact_ids"]) if d.get("source_fact_ids") else []
     d["source_inference_ids"] = (
         json.loads(d["source_inference_ids"]) if d.get("source_inference_ids") else []
     )
@@ -517,25 +409,22 @@ async def create_inference(
     character_id: int,
     statement: str,
     derivation: str,
-    source_fact_ids: list[int] | None = None,
     source_inference_ids: list[int] | None = None,
     source_fact_paths: list[str] | None = None,
     depth: int = 1,
     inference_type: str = "logical",
 ) -> Inference:
-    fact_ids_json = json.dumps(source_fact_ids or [])
     inf_ids_json = json.dumps(source_inference_ids or [])
     paths_json = json.dumps(source_fact_paths or [])
     cursor = await db.execute(
         """INSERT INTO inferences
-               (character_id, statement, derivation, source_fact_ids, source_inference_ids,
+               (character_id, statement, derivation, source_inference_ids,
                 source_fact_paths, depth, inference_type)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (
             character_id,
             statement,
             derivation,
-            fact_ids_json,
             inf_ids_json,
             paths_json,
             depth,

@@ -22,7 +22,6 @@ from memories.routers import (
     experiences,
     fact_approval,
     facts,
-    implication,
     inferences,
     require_fact,
     schema,
@@ -81,7 +80,6 @@ app.include_router(characters.router, prefix="/api/characters", tags=["character
 app.include_router(facts.router, prefix="/api/characters", tags=["facts"])
 app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])
 app.include_router(chat.router, prefix="/api/sessions", tags=["chat"])
-app.include_router(implication.router, prefix="/api/sessions", tags=["implication"])
 app.include_router(decisions.router, prefix="/api/sessions", tags=["decisions"])
 app.include_router(inferences.router, prefix="/api/characters", tags=["inferences"])
 app.include_router(experiences.router, prefix="/api/characters", tags=["experiences"])

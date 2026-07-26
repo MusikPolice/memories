@@ -198,50 +198,12 @@ export function schemaLeaf(schema, path) {
 
 /**
  * @param {number} characterId
- * @returns {Promise<Response>}
- */
-export function apiGenerateInferences(characterId) {
-  return fetch(`/api/characters/${characterId}/inferences/generate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
-/**
- * @param {number} characterId
- * @param {number} changedFactId
- * @returns {Promise<Response>}
- */
-export function apiRevalidateInferences(characterId, changedFactId) {
-  return fetch(`/api/characters/${characterId}/inferences/revalidate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ changed_fact_id: changedFactId }),
-  });
-}
-
-/**
- * @param {number} characterId
  * @param {number} inferenceId
  * @returns {Promise<Response>}
  */
 export function apiDeleteInference(characterId, inferenceId) {
   return fetch(`/api/characters/${characterId}/inferences/${inferenceId}`, {
     method: 'DELETE',
-  });
-}
-
-/**
- * @param {number} characterId
- * @param {number} inferenceId
- * @param {string} status
- * @returns {Promise<Response>}
- */
-export function apiPatchInferenceStatus(characterId, inferenceId, status) {
-  return fetch(`/api/characters/${characterId}/inferences/${inferenceId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status }),
   });
 }
 

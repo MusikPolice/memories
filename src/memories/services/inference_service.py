@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any
 
 import aiosqlite
 
 from memories.database import (
     create_inference,
     get_character,
-    get_fact_rows,
+    get_facts,
     get_inferences,
     update_inference_status,
 )
-from memories.models import Character, Fact, Inference
+from memories.models import Character, Inference
+from memories.schema_loader import iter_populated_leaves
 from memories.services.ollama_client import OllamaClient
 
 MAX_INFERENCE_DEPTH: int = int(os.getenv("MAX_INFERENCE_DEPTH", "5"))
@@ -45,16 +47,16 @@ def compute_depth(
 
 def build_eager_pass_prompt(
     character: Character,
-    facts: list[Fact],
+    facts_blob: dict[str, Any],
     existing_inferences: list[Inference],
     max_breadth: int,
     max_depth: int = MAX_INFERENCE_DEPTH,
 ) -> str:
     lines: list[str] = [f"Character: {character.name}", ""]
 
-    lines.append("## Current Facts (id: key: value)")
-    for f in facts:
-        lines.append(f"[{f.id}] {f.key}: {f.value}")
+    lines.append("## Current Facts (path: value)")
+    for path, value in iter_populated_leaves(facts_blob):
+        lines.append(f"{path}: {value}")
 
     lines.append("")
     lines.append("## Already Established Inferences (do NOT re-derive these)")
@@ -77,7 +79,7 @@ def build_eager_pass_prompt(
             "- PROBABILISTIC: a well-founded tendency or likelihood given the Facts, not a",
             "  specific invented detail.",
             "- Do NOT re-derive anything already in the Established Inferences list.",
-            "- Cite source Facts and Inferences by id.",
+            "- Cite source Facts by their schema path and source Inferences by id.",
             "- Cross-references within this same response are NOT allowed — only cite Facts",
             "  and Inferences already established before this pass.",
             f"- Aim for depth {max_depth} or fewer hops from root Facts.",
@@ -88,7 +90,7 @@ def build_eager_pass_prompt(
             '    "inference_type": "logical | probabilistic",',
             '    "statement": "...",',
             '    "derivation": "brief explanation of how this follows",',
-            '    "source_fact_ids": [int, ...],',
+            '    "source_fact_paths": ["Character.Identity.Age", ...],',
             '    "source_inference_ids": [int, ...]',
             "  }",
             "]",
@@ -116,10 +118,16 @@ def _coerce_id_list(raw: object) -> list[int]:
     return [v for v in raw if isinstance(v, int)]
 
 
+def _coerce_str_list(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return [v for v in raw if isinstance(v, str)]
+
+
 async def run_eager_pass(
     db: aiosqlite.Connection,
     character: Character,
-    facts: list[Fact],
+    facts_blob: dict[str, Any],
     existing_inferences: list[Inference],
     ollama: OllamaClient,
     max_depth: int = MAX_INFERENCE_DEPTH,
@@ -131,7 +139,7 @@ async def run_eager_pass(
         "Return only a JSON array as instructed. No other text."
     )
     user_msg = build_eager_pass_prompt(
-        character, facts, existing_inferences, max_breadth, max_depth
+        character, facts_blob, existing_inferences, max_breadth, max_depth
     )
     messages: list[dict[str, str]] = [
         {"role": "system", "content": system_msg},
@@ -155,7 +163,7 @@ async def run_eager_pass(
         if not isinstance(item, dict):
             continue
 
-        src_fact_ids = _coerce_id_list(item.get("source_fact_ids", []))
+        src_paths = _coerce_str_list(item.get("source_fact_paths", []))
         src_inf_ids = _coerce_id_list(item.get("source_inference_ids", []))
 
         # Reject same-pass cross-references
@@ -174,7 +182,7 @@ async def run_eager_pass(
             character_id=character.id,
             statement=str(item.get("statement", "")),
             derivation=str(item.get("derivation", "")),
-            source_fact_ids=src_fact_ids,
+            source_fact_paths=src_paths,
             source_inference_ids=src_inf_ids,
             inference_type=str(item.get("inference_type", "logical")),
             depth=depth,
@@ -186,12 +194,12 @@ async def run_eager_pass(
 
 def build_revalidation_prompt(
     inference: Inference,
-    facts: list[Fact],
+    facts_blob: dict[str, Any],
     active_inferences: list[Inference],
 ) -> str:
-    lines: list[str] = ["## Current Facts (id: key: value)"]
-    for f in facts:
-        lines.append(f"[{f.id}] {f.key}: {f.value}")
+    lines: list[str] = ["## Current Facts (path: value)"]
+    for path, value in iter_populated_leaves(facts_blob):
+        lines.append(f"{path}: {value}")
 
     lines.append("")
     lines.append("## Other Active Inferences (context only)")
@@ -207,7 +215,7 @@ def build_revalidation_prompt(
             "## Inference to Revalidate",
             f'Statement: "{inference.statement}"',
             f'Original derivation: "{inference.derivation}"',
-            f"Original sources: Facts {inference.source_fact_ids}, "
+            f"Original sources: Facts {inference.source_fact_paths}, "
             f"Inferences {inference.source_inference_ids}",
             "",
             "## Your Task",
@@ -222,12 +230,12 @@ def build_revalidation_prompt(
 
 async def revalidate_single_inference(
     inference: Inference,
-    facts: list[Fact],
+    facts_blob: dict[str, Any],
     active_inferences: list[Inference],
     ollama: OllamaClient,
     model: str = "default",
 ) -> bool:
-    prompt = build_revalidation_prompt(inference, facts, active_inferences)
+    prompt = build_revalidation_prompt(inference, facts_blob, active_inferences)
     messages: list[dict[str, str]] = [
         {
             "role": "system",
@@ -254,7 +262,7 @@ async def revalidate_single_inference(
 async def cascade_on_fact_edit(
     db: aiosqlite.Connection,
     character_id: int,
-    changed_fact_id: int,
+    changed_path: str,
     ollama: OllamaClient,
 ) -> list[Inference]:
     """Mark inferences stale when a fact changes. Returns all newly-stale inferences."""
@@ -268,13 +276,13 @@ async def cascade_on_fact_edit(
     _all = await get_inferences(db, character_id, status="all")
     non_invalidated = [inf for inf in _all if inf.status != "invalidated"]
     active = [inf for inf in non_invalidated if inf.status == "active"]
-    facts = await get_fact_rows(db, character_id)
+    facts_blob = await get_facts(db, character_id)
 
     newly_stale: set[int] = set()
     processed: set[int] = set()
 
     # Seed with all non-invalidated inferences that directly depend on the changed fact
-    worklist = [inf for inf in non_invalidated if changed_fact_id in inf.source_fact_ids]
+    worklist = [inf for inf in non_invalidated if changed_path in inf.source_fact_paths]
 
     while worklist:
         inference = worklist.pop(0)
@@ -293,7 +301,7 @@ async def cascade_on_fact_edit(
                 i for i in active if i.id not in newly_stale and i.id != inference.id
             ]
             holds = await revalidate_single_inference(
-                inference, facts, remaining_active, ollama, model=model
+                inference, facts_blob, remaining_active, ollama, model=model
             )
             if not holds:
                 await update_inference_status(db, inference.id, "stale")
@@ -313,12 +321,12 @@ async def cascade_on_fact_edit(
 async def cascade_on_fact_delete(
     db: aiosqlite.Connection,
     character_id: int,
-    deleted_fact_id: int,
+    deleted_path: str,
 ) -> list[Inference]:
     """Invalidate all inferences that depend on a deleted fact (pure DB, no LLM)."""
     active = await get_inferences(db, character_id, status="active")
 
-    to_invalidate: set[int] = {inf.id for inf in active if deleted_fact_id in inf.source_fact_ids}
+    to_invalidate: set[int] = {inf.id for inf in active if deleted_path in inf.source_fact_paths}
 
     # Iteratively expand through transitive inference dependencies
     changed = True

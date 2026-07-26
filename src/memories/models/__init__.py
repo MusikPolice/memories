@@ -14,16 +14,6 @@ class Character(BaseModel):
     created_at: datetime
 
 
-class Fact(BaseModel):
-    id: int
-    character_id: int
-    key: str
-    value: str
-    category: Literal["user", "character", "setting"] = "character"
-    mutability: Literal["immutable", "low", "high"] = "immutable"
-    created_at: datetime
-
-
 class Session(BaseModel):
     id: int
     character_id: int
@@ -59,7 +49,6 @@ class Inference(BaseModel):
     character_id: int
     statement: str
     derivation: str
-    source_fact_ids: list[int] = []
     source_inference_ids: list[int] = []
     source_fact_paths: list[str] = []
     depth: int = 1

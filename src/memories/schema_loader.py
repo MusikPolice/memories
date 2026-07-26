@@ -151,6 +151,31 @@ def render_current_fact_values(
     return "\n".join(lines)
 
 
+def iter_populated_leaves(
+    facts_blob: dict[str, Any],
+    schema: dict[str, Any] | None = None,
+) -> list[tuple[str, str | int | float | bool]]:
+    """Return (dot.path, value) for every schema leaf that has a Value in the blob,
+    in schema declaration order. Unset leaves are skipped."""
+    if schema is None:
+        schema = load_schema()
+    result: list[tuple[str, str | int | float | bool]] = []
+    for path, _leaf in _collect_leaves(schema):
+        node: Any = facts_blob
+        found = True
+        for part in path.split("."):
+            if not isinstance(node, dict) or part not in node:
+                found = False
+                break
+            node = node[part]
+        if not found or not isinstance(node, dict):
+            continue
+        value = node.get("Value")
+        if value is not None:
+            result.append((path, value))
+    return result
+
+
 def _collect_leaves(
     node: dict[str, Any],
     prefix: str = "",
