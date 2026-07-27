@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 
 import aiosqlite
 import httpx
+import pytest
 import respx
 from httpx import AsyncClient
 
@@ -1212,3 +1215,33 @@ async def test_message_event_has_no_ungrounded_key(
     assert len(message_events) == 1
     msg_data = json.loads(message_events[0]["data"])
     assert "ungrounded" not in msg_data
+
+
+# ---------------------------------------------------------------------------
+# Step 10 addition — SSE stream logs a traceback when run_turn raises (D4)
+# ---------------------------------------------------------------------------
+
+
+async def test_stream_logs_traceback_when_run_turn_raises(
+    client: AsyncClient,
+    character: Character,
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When run_turn raises inside the stream, the chat router logs it via _log.exception."""
+
+    async def _boom(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("distinctive boom")
+
+    monkeypatch.setattr("memories.routers.chat.run_turn", _boom)
+
+    # The exception may surface through the buffered ASGI transport; the log call is
+    # the code under test, so a raised error here is acceptable.
+    with (
+        caplog.at_level(logging.ERROR, logger="memories.routers.chat"),
+        contextlib.suppress(RuntimeError),
+    ):
+        await client.post(f"/api/sessions/{session.id}/messages", json={"content": "Hello"})
+
+    assert "run_turn failed" in caplog.text
