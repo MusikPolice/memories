@@ -345,6 +345,7 @@ async def run_evaluator(
                         },
                     )
                 )
+            _log.info("evaluator set_fact (fluid) turn=%d %s=%r", turn_id, path, coerced)
             return f"Wrote {path} = {coerced!r}."
 
         if mutability == "Immutable":
@@ -387,11 +388,23 @@ async def run_evaluator(
                         },
                     )
                 )
+            _log.info(
+                "evaluator set_fact approval surfaced turn=%d path=%s tier=Immutable",
+                turn_id,
+                path,
+            )
             raw = await await_gate(session_id, turn_id)
             decision: dict[str, str | None] = (
                 json.loads(raw) if raw is not None else {"action": "dismiss"}
             )
             action = decision.get("action", "dismiss")
+            _log.info(
+                "evaluator set_fact resolved turn=%d path=%s action=%s value=%r",
+                turn_id,
+                path,
+                action,
+                decision.get("value"),
+            )
             await store_decision(
                 db,
                 character_id=character.id,
@@ -439,9 +452,7 @@ async def run_evaluator(
                 _set_leaf(working_blob, path, user_val)
                 await db_set_facts(db, character.id, working_blob)
                 _regeneration_needed[0] = True
-                return (
-                    f"Wrote {path} = {user_val!r}. Response will be regenerated " "with this value."
-                )
+                return f"Wrote {path} = {user_val!r}. Response will be regenerated with this value."
             # dismiss
             return f"No value recorded for {path}. Do not rely on the invented value."
 
@@ -477,9 +488,21 @@ async def run_evaluator(
                     },
                 )
             )
+        _log.info(
+            "evaluator set_fact approval surfaced turn=%d path=%s tier=Mutable",
+            turn_id,
+            path,
+        )
         raw = await await_gate(session_id, turn_id)
         decision = json.loads(raw) if raw is not None else {"action": "reject"}
         action = decision.get("action", "reject")
+        _log.info(
+            "evaluator set_fact resolved turn=%d path=%s action=%s value=%r",
+            turn_id,
+            path,
+            action,
+            decision.get("value"),
+        )
         await store_decision(
             db,
             character_id=character.id,
@@ -558,6 +581,12 @@ async def run_evaluator(
             },
             user_input=None,
         )
+        _log.info(
+            "evaluator propose_inference turn=%d id=%d stmt=%r",
+            turn_id,
+            stored.id,
+            statement[:120],
+        )
         if on_event is not None:
             await on_event(
                 SSEEvent(
@@ -583,6 +612,7 @@ async def run_evaluator(
             tool_args={"description": description},
             user_input=None,
         )
+        _log.info("evaluator report_contradiction turn=%d: %s", turn_id, description)
         return "Contradiction recorded."
 
     async def _handle_report_pass(_args: dict[str, Any]) -> str:

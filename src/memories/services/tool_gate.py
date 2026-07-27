@@ -9,7 +9,10 @@ awaits it, and the user-response endpoint resolves it.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import OrderedDict
+
+_log = logging.getLogger(__name__)
 
 # Upper bound on how many resolved-gate keys we retain to detect late double-resolves.
 # Without a bound this set would grow by one entry per resolved gate for the lifetime of
@@ -33,6 +36,7 @@ def create_gate(session_id: int, turn_id: int) -> None:
         raise ValueError(f"Gate for ({session_id}, {turn_id}) already exists")
     _pending[key] = asyncio.Queue(maxsize=1)
     _resolved.pop(key, None)
+    _log.debug("gate created session=%d turn=%d", session_id, turn_id)
 
 
 async def await_gate(session_id: int, turn_id: int) -> str | None:
@@ -56,6 +60,7 @@ def resolve_gate(session_id: int, turn_id: int, value: str | None) -> None:
         raise asyncio.QueueFull()
     _pending[key].put_nowait(value)
     _resolved[key] = None
+    _log.debug("gate resolved session=%d turn=%d", session_id, turn_id)
     # Bound memory: drop the oldest resolved keys once we exceed the cap.
     while len(_resolved) > _MAX_RESOLVED_KEYS:
         _resolved.popitem(last=False)
@@ -69,3 +74,4 @@ def cleanup_gate(session_id: int, turn_id: int) -> None:
     arrives after cleanup.
     """
     _pending.pop((session_id, turn_id), None)
+    _log.debug("gate cleanup session=%d turn=%d", session_id, turn_id)

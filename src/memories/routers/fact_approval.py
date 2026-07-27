@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
@@ -17,6 +18,8 @@ from pydantic import BaseModel
 from memories.services.tool_gate import resolve_gate
 
 router = APIRouter()
+
+_log = logging.getLogger(__name__)
 
 
 class _ApprovalBody(BaseModel):
@@ -45,4 +48,10 @@ async def respond_to_set_fact(
     except asyncio.QueueFull as exc:
         raise HTTPException(status_code=409, detail="Already resolved") from exc
 
+    _log.info(
+        "set-fact resolved session=%d turn=%d action=%s",
+        session_id,
+        turn_id,
+        body.action,
+    )
     return {"status": "ok"}

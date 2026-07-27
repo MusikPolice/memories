@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from memories import deps
 from memories.database import init_db, list_characters
+from memories.logging_config import configure_logging
 from memories.routers import (
     characters,
     chat,
@@ -30,6 +31,7 @@ from memories.routers import (
 from memories.services.ollama_client import OllamaClient, OllamaConnectionError, OllamaResponseError
 
 _log = logging.getLogger(__name__)
+configure_logging()
 
 
 async def _warmup_models(db: aiosqlite.Connection, ollama: OllamaClient) -> None:
@@ -55,6 +57,7 @@ async def _warmup_models(db: aiosqlite.Connection, ollama: OllamaClient) -> None
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     db_path = os.getenv("MEMORIES_DB_PATH", "memories.db")
     ollama = OllamaClient()
+    _log.info("starting Memories — db=%s ollama=%s", db_path, ollama.base_url)
     deps.set_ollama(ollama)
     async with aiosqlite.connect(db_path) as conn:
         await init_db(conn)

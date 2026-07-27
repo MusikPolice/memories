@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncGenerator
 from typing import Annotated
 
@@ -19,6 +20,8 @@ from memories.services.experience_service import get_active_experiences
 from memories.services.ollama_client import OllamaClient
 
 router = APIRouter()
+
+_log = logging.getLogger(__name__)
 
 _DB = Annotated[aiosqlite.Connection, Depends(get_db)]
 _Ollama = Annotated[OllamaClient, Depends(get_ollama)]
@@ -45,6 +48,8 @@ async def send_message(
         async def _on_event(event: SSEEvent) -> None:
             await _q.put(event)
 
+        _log.info("chat stream open session=%d", session_id)
+
         yield 'event: status\ndata: {"state": "extracting"}\n\n'
 
         _task = asyncio.create_task(
@@ -63,6 +68,7 @@ async def send_message(
 
         exc = _task.exception()
         if exc is not None:
+            _log.exception("run_turn failed session=%d", session_id, exc_info=exc)
             raise exc
 
         (

@@ -175,7 +175,20 @@ async def run_contradiction_loop(
                 )
             )
 
+        _log.info(
+            "require_fact awaiting user input session=%d turn=%d path=%s",
+            session_id,
+            turn_id,
+            path,
+        )
         value = await await_gate(session_id, turn_id)
+        _log.info(
+            "require_fact resolved session=%d turn=%d path=%s provided=%s",
+            session_id,
+            turn_id,
+            path,
+            value is not None,
+        )
 
         tool_args: dict[str, Any] = {"path": path, "reason": reason}
         if suggested_value is not None:
@@ -213,8 +226,7 @@ async def run_contradiction_loop(
                 coerced = int(value)
             except ValueError:
                 _log.warning(
-                    "require_fact: user value %r for %s is not a valid integer — "
-                    "storing verbatim",
+                    "require_fact: user value %r for %s is not a valid integer — storing verbatim",
                     value,
                     path,
                 )
@@ -346,6 +358,14 @@ async def run_turn(
         next_turn_id(db, session_id),
     )
     assert character is not None
+
+    _log.info(
+        "turn start session=%d turn=%d think=%s msg=%r",
+        session_id,
+        turn_id,
+        think,
+        user_content[:120],
+    )
 
     create_gate(session_id, turn_id)
     try:

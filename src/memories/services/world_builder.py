@@ -51,8 +51,7 @@ _AUTHOR_SET_FACTS_TOOL: dict[str, Any] = {
                             "path": {
                                 "type": "string",
                                 "description": (
-                                    "Dot-notation schema path, e.g. "
-                                    "'Character.State-Of-Mind.Mood'."
+                                    "Dot-notation schema path, e.g. 'Character.State-Of-Mind.Mood'."
                                 ),
                             },
                             "value": {
@@ -217,6 +216,24 @@ async def run_world_builder(
                         },
                     )
                 )
+
+        if written:
+            written_log = ", ".join(f"{w['path']}={w['value']!r}" for w in written)
+            _log.info(
+                "world_builder session=%d turn=%d wrote %d fact(s): %s",
+                session_id,
+                turn_id,
+                len(written),
+                written_log,
+            )
+        if errors:
+            _log.warning(
+                "world_builder session=%d turn=%d rejected %d entr(y/ies): %s",
+                session_id,
+                turn_id,
+                len(errors),
+                "; ".join(errors),
+            )
 
         result_parts: list[str] = []
         if written:

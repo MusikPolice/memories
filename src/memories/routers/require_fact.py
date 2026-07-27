@@ -8,6 +8,7 @@ chat_service.run_contradiction_loop._handle_require_fact).
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -15,6 +16,8 @@ from pydantic import BaseModel
 from memories.services.tool_gate import resolve_gate
 
 router = APIRouter()
+
+_log = logging.getLogger(__name__)
 
 
 class _RespondBody(BaseModel):
@@ -41,4 +44,10 @@ async def respond_to_require_fact(
     except asyncio.QueueFull as exc:
         raise HTTPException(status_code=409, detail="Already resolved") from exc
 
+    _log.info(
+        "require-fact resolved session=%d turn=%d provided=%s",
+        session_id,
+        turn_id,
+        body.value is not None,
+    )
     return {"status": "ok"}

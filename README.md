@@ -1,17 +1,18 @@
 # Memories
 
-A locally-hosted character roleplay chatbot. It solves the problem that LLMs hallucinate biographical details freely and forget them just as freely — ask a raw model what a character's mother's name is and it will invent one confidently, then invent a different one ten turns later. Memories grounds character behaviour in a structured, user-defined fact sheet and uses a second LLM pass to enforce it.
+A locally-hosted character roleplay chatbot. It solves the problem that LLMs hallucinate biographical details freely and forget them just as freely — ask a raw model what a character's mother's name is and it will invent one confidently, then invent a different one ten turns later. Memories grounds character behaviour in a structured, user-defined fact sheet and uses additional LLM passes to enforce it.
 
 ## How it works
 
-Every user message triggers two sequential LLM calls:
+Every user message runs through three LLM passes:
 
-1. **Character LLM** — generates an in-character response, buffered server-side
-2. **Evaluator LLM** — checks the buffered response against the character's established Facts and Inferences; returns a structured verdict
+1. **World Builder** — reads your message before the character sees it and updates the character's world: any facts your message implies are written into the fact sheet.
+2. **Character LLM** — generates the in-character reply, buffered server-side so you never see an unchecked response.
+3. **Evaluator** — checks the buffered reply against the character's established facts before it reaches you. If the reply contradicts a known fact, it is suppressed and the character regenerates automatically. If the reply implies a new detail, the fact sheet is updated (and, for some facts, you are asked to confirm the value first).
 
-If the evaluator finds a contradiction, the response is suppressed and the character regenerates automatically. If it finds a new ungrounded detail, the user is prompted to accept or discard it. Only clean responses reach the chat window.
+Facts live in a fixed schema — the character can fill in the categories that already exist but can never invent new ones — so the world stays internally consistent.
 
-Over multiple sessions, Experiences accumulate — things the character learned through conversation — and are retrieved by semantic similarity at the start of each new session so the character remembers without being explicitly told.
+Over multiple sessions, Experiences accumulate — things the character learned through conversation — and are retrieved by semantic similarity each turn so the character remembers without being explicitly told.
 
 ## Prerequisites
 
@@ -45,9 +46,7 @@ The same model handles both the character roleplay and the evaluator critic pass
 
 #### What to look for
 
-**Instruction following.** The evaluator must return a specific JSON structure with a fixed vocabulary of verdict strings (`pass`, `contradiction`, `implication`, etc.). A model that drifts from the schema — returning prose instead of JSON, or inventing verdict names — will cause evaluator parse errors and degrade reliability. Prioritise models known for strong instruction following.
-
-**JSON output compatibility.** The evaluator call uses Ollama's `format: "json"` constraint to nudge the model toward valid JSON. Most modern instruction-tuned models handle this well. Older or smaller models may still produce malformed output.
+**Tool calling.** All three passes work by having the model call tools — the World Builder writes facts, the character can request an unknown value, and the evaluator records facts, proposes inferences, or reports a contradiction, all through tool calls. The model must therefore support Ollama tool calling and follow tool schemas reliably. A model that ignores the tool schema or hallucinates arguments will degrade reliability. Prioritise a tool-calling-capable model with strong instruction following.
 
 **Context window.** The character's Facts, Inferences, and conversation history are all injected into the prompt on every turn. A 4K context window is marginal for anything beyond a short session. 8K is comfortable for typical use; 16K or more gives headroom for long sessions and rich character sheets without degradation.
 
@@ -66,7 +65,7 @@ Running on CPU is possible but character response latency will be several second
 
 #### Recommended starting point
 
-**[qwen3:7b](https://ollama.com/library/qwen3)** is the model this project was developed and tested against. It has strong instruction following, reliably produces valid JSON for the evaluator, handles the system prompt structure well, and fits comfortably in 8 GB of VRAM at Q4_K_M quantisation.
+**[qwen3:7b](https://ollama.com/library/qwen3)** is the model this project was developed and tested against. It has strong instruction following, reliably drives the tool calls each pass depends on, handles the system prompt structure well, and fits comfortably in 8 GB of VRAM at Q4_K_M quantisation.
 
 ```
 ollama pull qwen3:7b
@@ -128,9 +127,20 @@ npm test
 | `EMBED_MODEL` | `nomic-embed-text` | Embedding model for Experience retrieval |
 | `MEMORIES_DB_PATH` | `memories.db` | SQLite database file path |
 | `MAX_CONTRADICTION_RETRIES` | `3` | Evaluator retry limit before delivering unverified |
+| `MAX_TOOL_CALL_ROUNDS` | `10` | Maximum tool-call rounds per LLM pass |
 | `MAX_INFERENCE_DEPTH` | `5` | Maximum inference chain depth from root Facts |
 | `MAX_INFERENCE_BREADTH` | `5` | Maximum inferences generated per eager pass |
 | `TOP_K_EXPERIENCES` | `5` | Experiences retrieved per turn for context |
+| `MIN_EXPERIENCE_SCORE` | `0.0` | Minimum similarity score for an Experience to be injected |
+| `LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG` surfaces LLM prompts and tool payloads) |
+
+## Logging
+
+Logs are written to stderr at `INFO` level by default, giving a readable trace of each turn: what the World Builder wrote, what the evaluator decided, what you were asked to approve, and the final verdict. Set `LOG_LEVEL=DEBUG` to also surface the full LLM prompts and raw tool-call payloads — the fastest way to see why a character behaved unexpectedly:
+
+```bash
+LOG_LEVEL=DEBUG uv run uvicorn memories.main:app --reload --host 0.0.0.0 --port 8000
+```
 
 ## Known limitations
 
